@@ -6,3 +6,23 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anchor-client = "0.28.0"
+anyhow = "1.0.79"
+backoff = { version = "0.4.0", features = [ "futures", "tokio" ] }
+bytes = "1.5.0"
+dashmap = "5.5.3"
+env_logger = "0.10.1"
+fixed = "1.24.0"
+futures = "0.3.30"
+log = "0.4.20"
+marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2.git", branch = "man0s/release-process" }
+solana-account-decoder = "1.16.17"
+solana-client = "1.16.17"
+solana-program = "1.16.17"
+solana-rpc-client-api = "1.16.17"
+solana-sdk = "1.16.17"
+tokio = "1.35.1"
+tonic = "0.10.2"
+tonic-health = "0.10.2"
+yellowstone-grpc-client = "1.12.0"
+yellowstone-grpc-proto = "1.11.0"
