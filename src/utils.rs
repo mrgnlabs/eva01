@@ -6,6 +6,18 @@ use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcAccountIn
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 
+pub struct BatchLoadingConfig {
+    pub max_batch_size: usize,
+    pub max_concurrent_calls: usize,
+}
+
+impl BatchLoadingConfig {
+    pub const DEFAULT: Self = Self {
+        max_batch_size: 64,
+        max_concurrent_calls: 8,
+    };
+}
+
 /// Batch load accounts from the RPC client using the getMultipleAccounts RPC call.
 ///
 /// - `max_batch_size`: The maximum number of accounts to load in a single RPC call.
@@ -18,9 +30,11 @@ use solana_sdk::account::Account;
 /// the size of each chunk, and the current progress using trace and debug logs.
 pub async fn batch_get_mutliple_accounts(
     rpc_client: Arc<RpcClient>,
-    addresses: Vec<Pubkey>,
-    max_batch_size: usize,
-    max_concurrent_calls: usize,
+    addresses: &[Pubkey],
+    BatchLoadingConfig {
+        max_batch_size,
+        max_concurrent_calls,
+    }: BatchLoadingConfig,
 ) -> anyhow::Result<Vec<Option<Account>>> {
     let batched_addresses = addresses.chunks(max_batch_size * max_concurrent_calls);
     let total_addresses = addresses.len();
@@ -92,4 +106,28 @@ pub async fn batch_get_mutliple_accounts(
     );
 
     Ok(accounts)
+}
+
+// Field parsers to save compute. All account validation is assumed to be done
+// outside of these methods.
+pub mod accessor {
+    use super::*;
+
+    pub fn amount(bytes: &[u8]) -> u64 {
+        let mut amount_bytes = [0u8; 8];
+        amount_bytes.copy_from_slice(&bytes[64..72]);
+        u64::from_le_bytes(amount_bytes)
+    }
+
+    pub fn mint(bytes: &[u8]) -> Pubkey {
+        let mut mint_bytes = [0u8; 32];
+        mint_bytes.copy_from_slice(&bytes[..32]);
+        Pubkey::new_from_array(mint_bytes)
+    }
+
+    pub fn authority(bytes: &[u8]) -> Pubkey {
+        let mut owner_bytes = [0u8; 32];
+        owner_bytes.copy_from_slice(&bytes[32..64]);
+        Pubkey::new_from_array(owner_bytes)
+    }
 }

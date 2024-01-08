@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 anchor-client = "0.28.0"
+anchor-spl = "0.29.0"
 anyhow = "1.0.79"
 backoff = { version = "0.4.0", features = [ "futures", "tokio" ] }
 bytes = "1.5.0"
@@ -21,6 +22,8 @@ solana-client = "1.16.17"
 solana-program = "1.16.17"
 solana-rpc-client-api = "1.16.17"
 solana-sdk = "1.16.17"
+spl-associated-token-account = "2.0.0"
+spl-token = "4.0.0"
 tokio = "1.35.1"
 tonic = "0.10.2"
 tonic-health = "0.10.2"
