@@ -5,9 +5,9 @@ use std::{
 
 use anchor_client::Program;
 use anyhow::Result;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use fixed::types::I80F48;
-use log::error;
+use log::{debug, error, warn};
 use marginfi::{
     program::Marginfi,
     state::{
@@ -21,8 +21,8 @@ use solana_client::{
     nonblocking::rpc_client::RpcClient,
     rpc_filter::{Memcmp, RpcFilterType},
 };
-use solana_program::{account_info::IntoAccountInfo, pubkey::Pubkey};
-use solana_sdk::signature::Keypair;
+use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::Pubkey};
+use solana_sdk::{account::Account, signature::Keypair};
 
 use crate::utils::{accessor, batch_get_mutliple_accounts, BatchLoadingConfig};
 
@@ -65,15 +65,15 @@ impl OracleWrapper {
 pub struct BankWrapper {
     pub address: Pubkey,
     pub bank: Bank,
-    pub price_adapter: Arc<RwLock<OracleWrapper>>,
+    pub oracle_adapter: OracleWrapper,
 }
 
 impl BankWrapper {
-    pub fn new(address: Pubkey, bank: Bank, price_adapter: Arc<RwLock<OracleWrapper>>) -> Self {
+    pub fn new(address: Pubkey, bank: Bank, oracle_adapter_wrapper: OracleWrapper) -> Self {
         Self {
             address,
             bank,
-            price_adapter,
+            oracle_adapter: oracle_adapter_wrapper,
         }
     }
 }
@@ -97,20 +97,22 @@ pub struct StateEngineConfig {
 pub struct StateEngineService {
     nb_rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
     rpc_client: Arc<solana_client::rpc_client::RpcClient>,
-    anchor_client: anchor_client::Client<Rc<Keypair>>,
+    anchor_client: anchor_client::Client<Arc<Keypair>>,
     marginfi_accounts: DashMap<Pubkey, Arc<RwLock<MarginfiAccountWrapper>>>,
     banks: DashMap<Pubkey, Arc<RwLock<BankWrapper>>>,
     token_accounts: DashMap<Pubkey, Arc<RwLock<TokenAccountWrapper>>>,
-    oracles: DashMap<Pubkey, Arc<RwLock<OracleWrapper>>>,
     config: StateEngineConfig,
     accounts_to_track: Arc<RwLock<Vec<Pubkey>>>,
+    oracle_to_bank_map: DashMap<Pubkey, Vec<Arc<RwLock<BankWrapper>>>>,
+    tracked_oracle_accounts: DashSet<Pubkey>,
+    tracked_token_accounts: DashSet<Pubkey>,
 }
 
 impl StateEngineService {
     pub async fn start(config: StateEngineConfig) -> anyhow::Result<Arc<Self>> {
         let anchor_client = anchor_client::Client::new(
             anchor_client::Cluster::Custom(config.rpc_url.clone(), "".to_string()),
-            Rc::new(Keypair::new()),
+            Arc::new(Keypair::new()),
         );
 
         let nb_rpc_client = Arc::new(solana_client::nonblocking::rpc_client::RpcClient::new(
@@ -128,8 +130,10 @@ impl StateEngineService {
             config,
             nb_rpc_client,
             rpc_client,
-            oracles: DashMap::new(),
-            accounts_to_track: Arc::new(RwLock::new(vec![])),
+            accounts_to_track: Arc::new(RwLock::new(Vec::new())),
+            oracle_to_bank_map: DashMap::new(),
+            tracked_oracle_accounts: DashSet::new(),
+            tracked_token_accounts: DashSet::new(),
         });
 
         state_engine_service.load_oracles_and_banks().await?;
@@ -144,33 +148,16 @@ impl StateEngineService {
         Ok(())
     }
 
-    /// Store pubkeys of oracles and token accounts to track
-    fn cache_accounts_to_track(self: &Arc<Self>) -> Result<()> {
-        let mut accounts = vec![];
-
-        self.oracles.iter().for_each(|e| {
-            accounts.push(*e.key());
-        });
-
-        self.token_accounts.iter().for_each(|e| {
-            accounts.push(e.value().read().unwrap().address);
-        });
-
-        let aatt = self.accounts_to_track.clone();
-        let mut att = aatt.write().unwrap();
-
-        att.clear();
-        att.append(&mut accounts);
-
-        Ok(())
-    }
-
     pub fn get_accounts_to_track(&self) -> Vec<Pubkey> {
-        self.accounts_to_track.try_read().unwrap().clone()
+        self.tracked_oracle_accounts
+            .iter()
+            .chain(self.tracked_token_accounts.iter())
+            .map(|e| *e)
+            .collect::<Vec<_>>()
     }
 
     async fn load_oracles_and_banks(self: &Arc<Self>) -> anyhow::Result<()> {
-        let program: Program<Rc<Keypair>> = self.anchor_client.program(marginfi::id())?;
+        let program: Program<Arc<Keypair>> = self.anchor_client.program(marginfi::id())?;
         let banks =
             program.accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
                 BANK_GROUP_PK_OFFSET,
@@ -201,38 +188,8 @@ impl StateEngineService {
                 (*oracle_address, maybe_oracle_account.as_mut().unwrap()).into_account_info();
             let oracle_ai_c = oracle_ai.clone();
 
-            // Insert an oracle or update the existing one
-            self.oracles
-                .entry(**oracle_address)
-                .and_modify(move |oracle| {
-                    if let Ok(mut oracle) = oracle.write() {
-                        oracle.price_adapter = OraclePriceFeedAdapter::try_from_bank_config(
-                            &bank.config,
-                            &[oracle_ai],
-                            i64::MAX,
-                            u64::MAX,
-                        )
-                        .unwrap();
-                    } else {
-                        error!("Failed to acquire write lock on oracle");
-                    }
-                })
-                .or_insert_with(|| {
-                    let oracle_price_feed_adapter = OraclePriceFeedAdapter::try_from_bank_config(
-                        &bank.config,
-                        &[oracle_ai_c],
-                        i64::MAX,
-                        u64::MAX,
-                    )
-                    .unwrap();
-                    Arc::new(RwLock::new(OracleWrapper::new(
-                        **oracle_address,
-                        oracle_price_feed_adapter,
-                    )))
-                });
-
-            // Insert a bank or update the existing one
-            self.banks
+            let bank_ref = self
+                .banks
                 .entry(*bank_address)
                 .and_modify(|bank_entry| match bank_entry.try_write() {
                     Ok(mut bank_wg) => {
@@ -246,12 +203,97 @@ impl StateEngineService {
                     Arc::new(RwLock::new(BankWrapper::new(
                         *bank_address,
                         bank.clone(),
-                        self.oracles.get(oracle_address).unwrap().clone(),
+                        OracleWrapper::new(
+                            **oracle_address,
+                            OraclePriceFeedAdapter::try_from_bank_config(
+                                &bank.config,
+                                &[oracle_ai_c],
+                                i64::MAX,
+                                u64::MAX,
+                            )
+                            .unwrap(),
+                        ),
                     )))
                 });
+
+            self.oracle_to_bank_map
+                .entry(**oracle_address)
+                .and_modify(|vec| vec.push(bank_ref.clone()))
+                .or_insert_with(|| vec![bank_ref.clone()]);
+
+            self.tracked_oracle_accounts.insert(**oracle_address);
         }
 
         Ok(())
+    }
+
+    pub fn update_oracle(
+        &self,
+        oracle_address: &Pubkey,
+        mut oracle_account: Account,
+    ) -> anyhow::Result<()> {
+        if let Some(banks_to_update) = self.oracle_to_bank_map.get(oracle_address) {
+            let oracle_ai = (oracle_address, &mut oracle_account).into_account_info();
+            for bank_to_update in banks_to_update.iter() {
+                if let Ok(mut bank_to_update) = bank_to_update.try_write() {
+                    bank_to_update.oracle_adapter.price_adapter =
+                        OraclePriceFeedAdapter::try_from_bank_config(
+                            &bank_to_update.bank.config,
+                            &[oracle_ai.clone()],
+                            i64::MAX,
+                            u64::MAX,
+                        )?;
+                } else {
+                    warn!("Failed to acquire write lock on bank, oracle update skipped");
+                }
+            }
+        } else {
+            warn!("Received update for unknown oracle {}", oracle_address);
+        }
+
+        Ok(())
+    }
+
+    pub fn update_bank(&self, bank_address: &Pubkey, bank: Account) -> anyhow::Result<bool> {
+        let bank = bytemuck::from_bytes::<Bank>(&bank.data.as_slice()[8..]);
+
+        let new_bank = self.banks.contains_key(bank_address);
+
+        self.banks
+            .entry(*bank_address)
+            .and_modify(|bank_entry| {
+                if let Ok(mut bank_entry) = bank_entry.try_write() {
+                    bank_entry.bank = bank.clone();
+                } else {
+                    warn!("Failed to acquire write lock on bank, bank update skipped");
+                }
+            })
+            .or_insert_with(|| {
+                debug!("Received update for a new bank {}", bank_address);
+
+                let oracle_address = bank.config.oracle_keys[0];
+                let mut oracle_account = self.rpc_client.get_account(&oracle_address).unwrap();
+                let oracle_account_ai = (&oracle_address, &mut oracle_account).into_account_info();
+
+                self.tracked_oracle_accounts.insert(oracle_address);
+
+                Arc::new(RwLock::new(BankWrapper::new(
+                    *bank_address,
+                    bank.clone(),
+                    OracleWrapper::new(
+                        oracle_address,
+                        OraclePriceFeedAdapter::try_from_bank_config(
+                            &bank.config,
+                            &[oracle_account_ai],
+                            i64::MAX,
+                            u64::MAX,
+                        )
+                        .unwrap(),
+                    ),
+                )))
+            });
+
+        Ok(new_bank)
     }
 
     async fn load_token_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
@@ -278,7 +320,7 @@ impl StateEngineService {
         )
         .await?;
 
-        let mut token_accounts_with_addresses_and_mints = token_account_addresses
+        let token_accounts_with_addresses_and_mints = token_account_addresses
             .iter()
             .zip(bank_mints.iter())
             .zip(accounst)
@@ -311,7 +353,45 @@ impl StateEngineService {
                         mint_decimals: 0,
                     }))
                 });
+
+            self.tracked_token_accounts.insert(**token_account_address);
         }
+
+        Ok(())
+    }
+
+    pub fn update_token_account(
+        &self,
+        token_account_address: &Pubkey,
+        token_account: Account,
+    ) -> anyhow::Result<()> {
+        let token_accounts = self.token_accounts.clone();
+        let mint = accessor::mint(&token_account.data);
+        let balance = accessor::amount(&token_account.data);
+
+        token_accounts
+            .entry(mint)
+            .and_modify(|token_account_ref| {
+                if let Ok(mut token_account_ref) = token_account_ref.write() {
+                    token_account_ref.balance = balance;
+                } else {
+                    error!("Failed to acquire write lock on token account");
+                }
+            })
+            .or_insert_with(|| {
+                let mint_account = self.rpc_client.get_account(&mint).unwrap();
+                let decimals = spl_token::state::Mint::unpack(&mint_account.data)
+                    .map_err(|e| anyhow::anyhow!("Failed to unpack mint: {:?}", e))
+                    .unwrap()
+                    .decimals;
+
+                Arc::new(RwLock::new(TokenAccountWrapper {
+                    address: *token_account_address,
+                    mint,
+                    balance,
+                    mint_decimals: decimals,
+                }))
+            });
 
         Ok(())
     }
@@ -322,5 +402,13 @@ impl StateEngineService {
 
     pub fn get_marginfi_program_id(&self) -> Pubkey {
         self.config.marginfi_program_id
+    }
+
+    pub fn is_tracked_oracle(&self, address: &Pubkey) -> bool {
+        self.tracked_oracle_accounts.contains(address)
+    }
+
+    pub fn is_tracked_token_account(&self, address: &Pubkey) -> bool {
+        self.tracked_token_accounts.contains(address)
     }
 }

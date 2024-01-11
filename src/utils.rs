@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
+use anyhow::Result;
 use backoff::ExponentialBackoff;
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
+use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
@@ -130,4 +132,17 @@ pub mod accessor {
         owner_bytes.copy_from_slice(&bytes[32..64]);
         Pubkey::new_from_array(owner_bytes)
     }
+}
+
+pub fn account_update_to_account(account_update: &SubscribeUpdateAccountInfo) -> Result<Account> {
+    let mut account = Account::new_data(
+        account_update.lamports,
+        &account_update.data,
+        &Pubkey::try_from(account_update.pubkey.clone()).expect("Invalid pubkey"),
+    )?;
+
+    account.executable = account_update.executable;
+    account.rent_epoch = account_update.rent_epoch;
+
+    Ok(account)
 }
