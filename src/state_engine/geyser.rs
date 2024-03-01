@@ -100,7 +100,9 @@ impl GeyserService {
 
                 let state_engine = state_engine.clone();
 
-                tokio::spawn(async move { Self::subscribe_and_run(geyser_client, state_engine).await });
+                tokio::spawn(
+                    async move { Self::subscribe_and_run(geyser_client, state_engine).await },
+                );
 
                 Ok::<(), backoff::Error<GeyserServiceError>>(())
             },
