@@ -1,8 +1,10 @@
 use std::{
     rc::Rc,
+    str::FromStr,
     sync::{Arc, RwLock},
 };
 
+use anchor_client::anchor_lang::AccountDeserialize;
 use anchor_client::Program;
 use anyhow::Result;
 use dashmap::{DashMap, DashSet};
@@ -24,7 +26,7 @@ use solana_client::{
 use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::Pubkey};
 use solana_sdk::{account::Account, signature::Keypair};
 
-use crate::utils::{accessor, batch_get_mutliple_accounts, BatchLoadingConfig};
+use crate::utils::{accessor, batch_get_multiple_accounts, BatchLoadingConfig};
 
 const BANK_GROUP_PK_OFFSET: usize = 8 + 8 + 1;
 
@@ -109,7 +111,32 @@ pub struct StateEngineService {
 }
 
 impl StateEngineService {
-    pub async fn start(config: StateEngineConfig) -> anyhow::Result<Arc<Self>> {
+    pub async fn start(config: Option<StateEngineConfig>) -> anyhow::Result<Arc<Self>> {
+        let config = match config {
+            Some(cfg) => cfg,
+            None => StateEngineConfig {
+                rpc_url: std::env::var("RPC_URL").expect("Expected RPC_URL to be set in env"),
+                yellowstone_endpoint: std::env::var("YELLOWSTONE_ENDPOINT")
+                    .expect("Expected YELLOWSTONE_ENDPOINT to be set in env"),
+                yellowstone_x_token: std::env::var("YELLOWSTONE_X_TOKEN").ok(),
+                marginfi_program_id: Pubkey::from_str(
+                    &std::env::var("MARGINFI_PROGRAM_ID")
+                        .expect("Expected MARGINFI_PROGRAM_ID to be set in env"),
+                )
+                .unwrap(),
+                marginfi_group_address: Pubkey::from_str(
+                    &std::env::var("MARGINFI_GROUP_ADDRESS")
+                        .expect("Expected MARGINFI_GROUP_ADDRESS to be set in env"),
+                )
+                .unwrap(),
+                signer_pubkey: Pubkey::from_str(
+                    &std::env::var("SIGNER_PUBKEY")
+                        .expect("Expected SIGNER_PUBKEY to be set in env"),
+                )
+                .unwrap(),
+            },
+        };
+
         let anchor_client = anchor_client::Client::new(
             anchor_client::Cluster::Custom(config.rpc_url.clone(), "".to_string()),
             Arc::new(Keypair::new()),
@@ -169,7 +196,7 @@ impl StateEngineService {
             .map(|(_, bank)| bank.config.oracle_keys[0])
             .collect::<Vec<_>>();
 
-        let mut oracle_accounts = batch_get_mutliple_accounts(
+        let mut oracle_accounts = batch_get_multiple_accounts(
             self.nb_rpc_client.clone(),
             &oracle_keys,
             BatchLoadingConfig::DEFAULT,
@@ -313,7 +340,7 @@ impl StateEngineService {
             token_account_addresses.push(ata);
         }
 
-        let accounst = batch_get_mutliple_accounts(
+        let accounts = batch_get_multiple_accounts(
             self.nb_rpc_client.clone(),
             &token_account_addresses,
             BatchLoadingConfig::DEFAULT,
@@ -323,7 +350,7 @@ impl StateEngineService {
         let token_accounts_with_addresses_and_mints = token_account_addresses
             .iter()
             .zip(bank_mints.iter())
-            .zip(accounst)
+            .zip(accounts)
             .collect::<Vec<_>>();
 
         for ((token_account_address, mint), maybe_token_account) in
@@ -410,5 +437,66 @@ impl StateEngineService {
 
     pub fn is_tracked_token_account(&self, address: &Pubkey) -> bool {
         self.tracked_token_accounts.contains(address)
+    }
+
+    async fn load_marginfi_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
+        let program: Program<Arc<Keypair>> = self.anchor_client.program(marginfi::id())?;
+        let marginfi_account_addresses = program.accounts::<MarginfiAccount>(vec![])?;
+
+        let marginfi_account_pubkeys: Vec<Pubkey> = marginfi_account_addresses
+            .iter()
+            .map(|(pubkey, _)| *pubkey)
+            .collect();
+        let mut marginfi_accounts = batch_get_multiple_accounts(
+            self.nb_rpc_client.clone(),
+            &marginfi_account_pubkeys,
+            BatchLoadingConfig::DEFAULT,
+        )
+        .await?;
+
+        for (address, account) in marginfi_account_addresses
+            .iter()
+            .zip(marginfi_accounts.iter_mut())
+        {
+            let account = account.as_mut().unwrap();
+            let mut data_slice = account.data.as_slice();
+            let marginfi_account = MarginfiAccount::try_deserialize(&mut data_slice).unwrap();
+            self.marginfi_accounts.entry(address.0).or_insert_with(|| {
+                Arc::new(RwLock::new(MarginfiAccountWrapper::new(
+                    address.0,
+                    marginfi_account,
+                    Vec::new(),
+                )))
+            });
+        }
+
+        Ok(())
+    }
+
+    pub fn update_marginfi_account(
+        &self,
+        marginfi_account_address: &Pubkey,
+        marginfi_account: MarginfiAccount,
+    ) -> anyhow::Result<()> {
+        let marginfi_accounts = self.marginfi_accounts.clone();
+
+        marginfi_accounts
+            .entry(*marginfi_account_address)
+            .and_modify(|marginfi_account_ref| {
+                if let Ok(mut marginfi_account_ref) = marginfi_account_ref.write() {
+                    marginfi_account_ref.account = marginfi_account.clone();
+                } else {
+                    error!("Failed to acquire write lock on marginfi account");
+                }
+            })
+            .or_insert_with(|| {
+                Arc::new(RwLock::new(MarginfiAccountWrapper::new(
+                    *marginfi_account_address,
+                    marginfi_account.clone(),
+                    Vec::new(),
+                )))
+            });
+
+        Ok(())
     }
 }

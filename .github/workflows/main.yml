@@ -1,0 +1,47 @@
+name: Rust CI 
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, assigned, labeled, ready_for_review]
+
+jobs:
+    cargo-check:
+      runs-on: ubuntu-latest
+      steps:
+          - uses: actions/checkout@v3
+          - name: Install latest nightly
+            uses: actions-rs/toolchain@v1
+            with:
+              toolchain: nightly
+              override: true
+              components: rustfmt
+          - name: Cargo Check
+            run: cargo check
+
+    cargo-fmt:
+      runs-on: ubuntu-latest
+      steps:
+      - uses: actions/checkout@v3
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          components: rustfmt
+          override: true
+      - name: Check Formatting
+        run: |
+          cargo fmt -- --check
+
+    cargo-clippy:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v3
+        - name: Setup Rust toolchain
+          uses: actions-rs/toolchain@v1
+          with:
+            toolchain: nightly
+            components: clippy, rustfmt
+            override: true
+        - name: Clippy Lint
+          run: | 
+            cargo clippy

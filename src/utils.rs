@@ -30,7 +30,7 @@ impl BatchLoadingConfig {
 /// await until some calls complete before initiating more, to respect the concurrency limit.
 /// Additionally, logs progress information including the number of accounts being fetched,
 /// the size of each chunk, and the current progress using trace and debug logs.
-pub async fn batch_get_mutliple_accounts(
+pub async fn batch_get_multiple_accounts(
     rpc_client: Arc<RpcClient>,
     addresses: &[Pubkey],
     BatchLoadingConfig {
