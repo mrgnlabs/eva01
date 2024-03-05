@@ -99,7 +99,6 @@ pub struct StateEngineConfig {
     marginfi_program_id: Pubkey,
     marginfi_group_address: Pubkey,
     signer_pubkey: Pubkey,
-    update_tasks: Arc<Mutex<HashMap<Pubkey, tokio::task::JoinHandle<anyhow::Result<()>>>>>,
 }
 
 pub struct StateEngineService {
@@ -114,6 +113,7 @@ pub struct StateEngineService {
     oracle_to_bank_map: DashMap<Pubkey, Vec<Arc<RwLock<BankWrapper>>>>,
     tracked_oracle_accounts: DashSet<Pubkey>,
     tracked_token_accounts: DashSet<Pubkey>,
+    update_tasks: Arc<Mutex<HashMap<Pubkey, tokio::task::JoinHandle<anyhow::Result<()>>>>>,
 }
 
 impl StateEngineService {
@@ -545,9 +545,9 @@ impl StateEngineService {
     {
         loop {
             let cloned_accounts = accounts.clone();
-            for (address, account) in cloned_accounts.iter() {
-                let address = *address;
-                let account = get_account(&account.read().unwrap());
+            for account_ref in cloned_accounts.iter() {
+                let address = *account_ref.key();
+                let account = get_account(&account_ref.value().read().unwrap());
                 let update_future = update_account(address, account);
 
                 let mut update_tasks = self.update_tasks.lock().await;
@@ -560,7 +560,7 @@ impl StateEngineService {
     }
 
     async fn update_all_marginfi_accounts(&self) -> anyhow::Result<()> {
-        self.update_all_accounts(
+        self.update_all_accounts_helper(
             self.marginfi_accounts.clone(),
             |account_wrapper| account_wrapper.account.clone(),
             |address, account| {
@@ -574,7 +574,7 @@ impl StateEngineService {
     }
 
     async fn update_all_bank_accounts(&self) -> anyhow::Result<()> {
-        self.update_all_accounts(
+        self.update_all_accounts_helper(
             self.bank_accounts.clone(),
             |account_wrapper| account_wrapper.account.clone(),
             |address, account| {
@@ -586,7 +586,7 @@ impl StateEngineService {
     }
 
     async fn update_all_token_accounts(&self) -> anyhow::Result<()> {
-        self.update_all_accounts(
+        self.update_all_accounts_helper(
             self.token_accounts.clone(),
             |account_wrapper| account_wrapper.account.clone(),
             |address, account| {
