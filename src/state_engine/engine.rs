@@ -535,78 +535,27 @@ impl StateEngineService {
         Ok(())
     }
 
-    async fn update_all_accounts_helper<T, F, G>(
-        &self,
-        accounts: DashMap<Pubkey, Arc<RwLock<T>>>,
-        get_account: F,
-        update_account: G,
-    ) -> anyhow::Result<()>
-    where
-        F: Fn(&T) -> Account + Send + Sync,
-        G: Fn(Pubkey, Account) -> tokio::task::JoinHandle<anyhow::Result<()>> + Send + Sync,
-    {
-        loop {
-            let cloned_accounts = accounts.clone();
-            for account_ref in cloned_accounts.iter() {
-                let address = *account_ref.key();
-                let account = get_account(&account_ref.value().read().unwrap());
-                let update_future = update_account(address, account);
-
-                let mut update_tasks = self.update_tasks.lock().await;
-                if let Some(task) = update_tasks.get(&address) {
-                    let _ = task.await;
-                }
-                update_tasks.insert(address, tokio::spawn(update_future));
-            }
-        }
-    }
-
     async fn update_all_marginfi_accounts(&self) -> anyhow::Result<()> {
-        self.update_all_accounts_helper(
-            self.marginfi_accounts.clone(),
-            |account_wrapper| Account::from(account_wrapper.account.clone()),
-            |address, account| {
-                let self_clone = self.clone();
-                let marginfi_account = MarginfiAccount::from(account);
-                tokio::spawn(async move {
-                    self_clone.update_marginfi_account(&address, marginfi_account)
-                })
-            },
-        )
-        .await
-    }
+        let marginfi_accounts = self.marginfi_accounts.clone();
+        for account_ref in marginfi_accounts.iter() {
+            let account = account_ref.value().read().unwrap();
+            let marginfi_account = account.clone();
+            let update_future = self.update_marginfi_account(&address, marginfi_account);
 
-    async fn update_all_bank_accounts(&self) -> anyhow::Result<()> {
-        self.update_all_accounts_helper(
-            self.banks.clone(),
-            |account_wrapper| account_wrapper.account.clone(),
-            |address, account| {
-                let self_clone = self.clone();
-                tokio::spawn(async move {
-                    let _ = self_clone.update_bank(&address, account);
-                    Ok(())
-                })
-            },
-        )
-        .await
-    }
-
-    async fn update_all_token_accounts(&self) -> anyhow::Result<()> {
-        self.update_all_accounts_helper(
-            self.token_accounts.clone(),
-            |account_wrapper| account_wrapper.clone(),
-            |address, account| {
-                let self_clone = self.clone();
-                tokio::spawn(async move { self_clone.update_token_account(&address, account) })
-            },
-        )
-        .await
+            let mut update_tasks = self.update_tasks.lock().await;
+            if let Some(task) = update_tasks.get(&address) {
+                let _ = task.clone().await;
+            }
+            let join_handle = tokio::spawn(update_future);
+            update_tasks.insert(
+                address,
+                join_handle.map(|res| res.unwrap_or_else(|_| Err(anyhow::anyhow!("JoinError")))),
+            );
+        }
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
         loop {
-            self.update_all_bank_accounts().await?;
-            self.update_all_token_accounts().await?;
             self.update_all_marginfi_accounts().await?;
         }
     }
