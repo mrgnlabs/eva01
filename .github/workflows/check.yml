@@ -1,0 +1,19 @@
+name: Rust CI - cargo check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, assigned, labeled, ready_for_review]
+
+jobs:
+    cargo-check:
+      runs-on: ubuntu-latest
+      steps:
+          - uses: actions/checkout@v3
+          - name: Install latest nightly
+            uses: dsherret/rust-toolchain-file@v1
+            with:
+              toolchain: nightly
+              override: true
+              components: rustfmt
+          - name: Cargo Check
+            run: cargo check
