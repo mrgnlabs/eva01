@@ -455,7 +455,7 @@ impl StateEngineService {
                         encoding: Some(UiAccountEncoding::Base64),
                         data_slice: Some(UiDataSliceConfig {
                             offset: 0,
-                            length: Some(0),
+                            length: 0,
                         }),
                         ..Default::default()
                     },
@@ -475,6 +475,7 @@ impl StateEngineService {
                             encoding: None,
                         }),
                     ]),
+                    with_context: false,
                 },
             )
             .await?;
