@@ -475,7 +475,7 @@ impl StateEngineService {
                             encoding: None,
                         }),
                     ]),
-                    with_context: false,
+                    with_context: Some(false),
                 },
             )
             .await?;
