@@ -563,4 +563,9 @@ impl StateEngineService {
             self.clone().update_all_marginfi_accounts().await?;
         }
     }
+
+    pub async fn start_and_run(config: Option<StateEngineConfig>) -> anyhow::Result<()> {
+        let service = Self::start(config).await?;
+        service.run().await
+    }
 }
