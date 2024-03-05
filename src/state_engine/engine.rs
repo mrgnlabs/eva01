@@ -25,8 +25,8 @@ use marginfi::{
 };
 use solana_client::{
     nonblocking::rpc_client::RpcClient,
+    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
-    rpc_config::{RpcProgramAccountsConfig, RpcAccountInfoConfig},
 };
 use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::Pubkey};
 use solana_sdk::{account::Account, signature::Keypair};
@@ -460,24 +460,20 @@ impl StateEngineService {
                         ..Default::default()
                     },
                     filters: Some(vec![
-                        RpcFilterType::Memcmp(
-                            Memcmp {
-                                offset: 8,
-                                bytes: MemcmpEncodedBytes::Binary(
-                                    self.config.marginfi_group_address.to_string(),
-                                ),
-                                encoding: None,
-                            },
-                        ),
-                        RpcFilterType::Memcmp(
-                            Memcmp {
-                                offset: 0,
-                                bytes: MemcmpEncodedBytes::Binary(
-                                    bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
-                                ),
-                                encoding: None,
-                            },
-                        ),
+                        RpcFilterType::Memcmp(Memcmp {
+                            offset: 8,
+                            bytes: MemcmpEncodedBytes::Binary(
+                                self.config.marginfi_group_address.to_string(),
+                            ),
+                            encoding: None,
+                        }),
+                        RpcFilterType::Memcmp(Memcmp {
+                            offset: 0,
+                            bytes: MemcmpEncodedBytes::Binary(
+                                bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
+                            ),
+                            encoding: None,
+                        }),
                     ]),
                 },
             )
