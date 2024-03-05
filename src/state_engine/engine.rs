@@ -560,7 +560,7 @@ impl StateEngineService {
 
     pub async fn run(self: Arc<Self>) -> anyhow::Result<()> {
         loop {
-            self.update_all_marginfi_accounts().await?;
+            self.clone().update_all_marginfi_accounts().await?;
         }
     }
 }
