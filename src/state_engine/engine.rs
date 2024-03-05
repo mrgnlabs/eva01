@@ -541,14 +541,15 @@ impl StateEngineService {
             let account = account_ref.value().read().unwrap();
             let marginfi_account = account.account.clone(); // clone the underlying data
             let address = account.address; // get the address from the account
-            let update_future: anyhow::Result<()> =
-                self.update_marginfi_account(&address, marginfi_account);
 
             let mut update_tasks = self.update_tasks.lock().await;
             if let Some(task) = update_tasks.get(&address) {
-                let _ = task.clone().await;
+                let _ = task.value().clone().await;
             }
-            let join_handle = tokio::spawn(async move { update_future.await });
+            let join_handle = tokio::spawn(async move {
+                self.update_marginfi_account(&address, marginfi_account)
+                    .await
+            });
             update_tasks.insert(
                 address,
                 join_handle.map(|res| res.unwrap_or_else(|_| Err(anyhow::anyhow!("JoinError")))),
