@@ -536,7 +536,7 @@ impl StateEngineService {
         Ok(())
     }
 
-    async fn update_all_marginfi_accounts(&self) -> anyhow::Result<()> {
+    async fn update_all_marginfi_accounts(self: Arc<Self>) -> anyhow::Result<()> {
         let marginfi_accounts = self.marginfi_accounts.clone();
         for account_ref in marginfi_accounts.iter() {
             let account = account_ref.value().read().unwrap();
@@ -547,8 +547,10 @@ impl StateEngineService {
             if let Some(task) = update_tasks.get(&address) {
                 let _ = task.value().clone();
             }
+            let self_clone = Arc::clone(&self);
             let join_handle = tokio::spawn(async move {
-                self.update_marginfi_account(&address, marginfi_account)
+                self_clone
+                    .update_marginfi_account(&address, marginfi_account)
                     .map_err(|_| anyhow::anyhow!("JoinError"))
             });
             update_tasks.insert(address, join_handle);
