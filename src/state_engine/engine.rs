@@ -565,9 +565,7 @@ impl StateEngineService {
             |account_wrapper| account_wrapper.account.clone(),
             |address, account| {
                 let self_clone = self.clone();
-                tokio::spawn(
-                    async move { self_clone.update_marginfi_account(&address, account).await },
-                )
+                tokio::spawn(async move { self_clone.update_marginfi_account(&address, account) })
             },
         )
         .await
@@ -579,7 +577,7 @@ impl StateEngineService {
             |account_wrapper| account_wrapper.account.clone(),
             |address, account| {
                 let self_clone = self.clone();
-                tokio::spawn(async move { self_clone.update_bank(&address, account).await })
+                tokio::spawn(async move { self_clone.update_bank(&address, account) })
             },
         )
         .await
@@ -591,9 +589,7 @@ impl StateEngineService {
             |account_wrapper| account_wrapper.account.clone(),
             |address, account| {
                 let self_clone = self.clone();
-                tokio::spawn(
-                    async move { self_clone.update_token_account(&address, account).await },
-                )
+                tokio::spawn(async move { self_clone.update_token_account(&address, account) })
             },
         )
         .await
