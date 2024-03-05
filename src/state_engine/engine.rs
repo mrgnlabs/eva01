@@ -570,7 +570,7 @@ impl StateEngineService {
                 )
             },
         )
-        .await;
+        .await
     }
 
     async fn update_all_bank_accounts(&self) -> anyhow::Result<()> {
@@ -582,7 +582,7 @@ impl StateEngineService {
                 tokio::spawn(async move { self_clone.update_bank(&address, account).await })
             },
         )
-        .await;
+        .await
     }
 
     async fn update_all_token_accounts(&self) -> anyhow::Result<()> {
@@ -596,7 +596,7 @@ impl StateEngineService {
                 )
             },
         )
-        .await;
+        .await
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
