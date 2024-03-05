@@ -3,7 +3,10 @@ use std::{
     str::FromStr,
     sync::{Arc, RwLock},
 };
-use bs58;
+use solana_sdk::bs58;
+use solana_account_decoder::UiAccountEncoding;
+use solana_account_decoder::UiDataSliceConfig;
+use solana_client::rpc_filter::RpcFilterType;
 
 use anchor_client::anchor_lang::AccountDeserialize;
 use anchor_client::anchor_lang::Discriminator;
@@ -482,7 +485,7 @@ impl StateEngineService {
 
         let marginfi_account_pubkeys: Vec<Pubkey> = marginfi_account_addresses
             .iter()
-            .map(|(pubkey, _)| pubkey)
+            .map(|(pubkey, _)| *pubkey)
             .collect();
 
         let mut marginfi_accounts = batch_get_multiple_accounts(
