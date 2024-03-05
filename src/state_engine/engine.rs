@@ -558,9 +558,16 @@ impl StateEngineService {
         Ok(())
     }
 
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(self: Arc<Self>) -> anyhow::Result<()> {
         loop {
-            self.update_all_marginfi_accounts().await?;
+            match Arc::try_unwrap(self.clone()) {
+                Ok(unwrapped_self) => {
+                    unwrapped_self.update_all_marginfi_accounts().await?;
+                }
+                Err(_) => {
+                    return Err(anyhow::anyhow!("Failed to unwrap Arc<Self>"));
+                }
+            }
         }
     }
 }
