@@ -441,12 +441,46 @@ impl StateEngineService {
 
     async fn load_marginfi_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
         let program: Program<Arc<Keypair>> = self.anchor_client.program(marginfi::id())?;
-        let marginfi_account_addresses = program.accounts::<MarginfiAccount>(vec![])?;
+        let marginfi_account_addresses = self
+            .nb_rpc_client
+            .get_program_accounts_with_config(
+                &self.config.marginfi_program_id,
+                solana_client::rpc_config::RpcProgramAccountsConfig {
+                    account_config: solana_client::rpc_config::RpcAccountInfoConfig {
+                        encoding: Some(solana_client::rpc_config::UiAccountEncoding::Base64),
+                        data_slice: Some(solana_client::rpc_config::UiDataSliceConfig {
+                            offset: 0,
+                            length: Some(0),
+                        }),
+                        ..Default::default()
+                    },
+                    filters: Some(vec![
+                        solana_client::rpc_config::RpcFilterType::Memcmp(
+                            solana_client::rpc_filter::Memcmp {
+                                offset: 8,
+                                bytes: solana_client::rpc_filter::MemcmpEncodedBytes::Binary(
+                                    self.config.marginfi_group_address.to_string(),
+                                ),
+                                encoding: None,
+                            },
+                        ),
+                        solana_client::rpc_config::RpcFilterType::Memcmp(
+                            solana_client::rpc_filter::Memcmp {
+                                offset: 0,
+                                bytes: solana_client::rpc_filter::MemcmpEncodedBytes::Binary(
+                                    bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
+                                ),
+                                encoding: None,
+                            },
+                        ),
+                    ]),
+                },
+            )
+            .await?
+            .into_iter()
+            .map(|(pubkey, _)| pubkey)
+            .collect::<Vec<Pubkey>>();
 
-        let marginfi_account_pubkeys: Vec<Pubkey> = marginfi_account_addresses
-            .iter()
-            .map(|(pubkey, _)| *pubkey)
-            .collect();
         let mut marginfi_accounts = batch_get_multiple_accounts(
             self.nb_rpc_client.clone(),
             &marginfi_account_pubkeys,
