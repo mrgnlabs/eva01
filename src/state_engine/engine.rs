@@ -99,6 +99,7 @@ pub struct StateEngineConfig {
     marginfi_program_id: Pubkey,
     marginfi_group_address: Pubkey,
     signer_pubkey: Pubkey,
+    update_tasks: Arc<Mutex<HashMap<Pubkey, tokio::task::JoinHandle<anyhow::Result<()>>>>>,
 }
 
 pub struct StateEngineService {
@@ -499,13 +500,7 @@ impl StateEngineService {
             let account = account.as_mut().unwrap();
             let mut data_slice = account.data.as_slice();
             let marginfi_account = MarginfiAccount::try_deserialize(&mut data_slice).unwrap();
-            self.marginfi_accounts.entry(address.0).or_insert_with(|| {
-                Arc::new(RwLock::new(MarginfiAccountWrapper::new(
-                    address.0,
-                    marginfi_account,
-                    Vec::new(),
-                )))
-            });
+            self.update_marginfi_account(&address.0, marginfi_account)?;
         }
 
         Ok(())
@@ -536,5 +531,79 @@ impl StateEngineService {
             });
 
         Ok(())
+    }
+
+    async fn update_all_accounts_helper<T, F, G>(
+        &self,
+        accounts: DashMap<Pubkey, Arc<RwLock<T>>>,
+        get_account: F,
+        update_account: G,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn(&T) -> Account + Send + Sync,
+        G: Fn(Pubkey, Account) -> tokio::task::JoinHandle<anyhow::Result<()>> + Send + Sync,
+    {
+        loop {
+            let cloned_accounts = accounts.clone();
+            for (address, account) in cloned_accounts.iter() {
+                let address = *address;
+                let account = get_account(&account.read().unwrap());
+                let update_future = update_account(address, account);
+
+                let mut update_tasks = self.update_tasks.lock().await;
+                if let Some(task) = update_tasks.get(&address) {
+                    let _ = task.await;
+                }
+                update_tasks.insert(address, tokio::spawn(update_future));
+            }
+        }
+    }
+
+    async fn update_all_marginfi_accounts(&self) -> anyhow::Result<()> {
+        self.update_all_accounts(
+            self.marginfi_accounts.clone(),
+            |account_wrapper| account_wrapper.account.clone(),
+            |address, account| {
+                let self_clone = self.clone();
+                tokio::spawn(
+                    async move { self_clone.update_marginfi_account(&address, account).await },
+                )
+            },
+        )
+        .await;
+    }
+
+    async fn update_all_bank_accounts(&self) -> anyhow::Result<()> {
+        self.update_all_accounts(
+            self.bank_accounts.clone(),
+            |account_wrapper| account_wrapper.account.clone(),
+            |address, account| {
+                let self_clone = self.clone();
+                tokio::spawn(async move { self_clone.update_bank(&address, account).await })
+            },
+        )
+        .await;
+    }
+
+    async fn update_all_token_accounts(&self) -> anyhow::Result<()> {
+        self.update_all_accounts(
+            self.token_accounts.clone(),
+            |account_wrapper| account_wrapper.account.clone(),
+            |address, account| {
+                let self_clone = self.clone();
+                tokio::spawn(
+                    async move { self_clone.update_token_account(&address, account).await },
+                )
+            },
+        )
+        .await;
+    }
+
+    pub async fn run(&self) -> anyhow::Result<()> {
+        loop {
+            self.update_all_bank_accounts().await?;
+            self.update_all_token_accounts().await?;
+            self.update_all_marginfi_accounts().await?;
+        }
     }
 }
