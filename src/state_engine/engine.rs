@@ -476,10 +476,12 @@ impl StateEngineService {
                     ]),
                 },
             )
-            .await?
-            .into_iter()
+            .await?;
+
+        let marginfi_account_pubkeys: Vec<Pubkey> = marginfi_account_addresses
+            .iter()
             .map(|(pubkey, _)| pubkey)
-            .collect::<Vec<Pubkey>>();
+            .collect();
 
         let mut marginfi_accounts = batch_get_multiple_accounts(
             self.nb_rpc_client.clone(),
