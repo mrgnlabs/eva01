@@ -541,7 +541,8 @@ impl StateEngineService {
             let account = account_ref.value().read().unwrap();
             let marginfi_account = account.account.clone(); // clone the underlying data
             let address = account.address; // get the address from the account
-            let update_future = self.update_marginfi_account(&address, marginfi_account);
+            let update_future: anyhow::Result<()> =
+                self.update_marginfi_account(&address, marginfi_account);
 
             let mut update_tasks = self.update_tasks.lock().await;
             if let Some(task) = update_tasks.get(&address) {
