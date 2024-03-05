@@ -30,6 +30,7 @@ use solana_client::{
 };
 use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::Pubkey};
 use solana_sdk::{account::Account, signature::Keypair};
+use tokio::sync::Mutex;
 
 use crate::utils::{accessor, batch_get_multiple_accounts, BatchLoadingConfig};
 
@@ -113,7 +114,7 @@ pub struct StateEngineService {
     oracle_to_bank_map: DashMap<Pubkey, Vec<Arc<RwLock<BankWrapper>>>>,
     tracked_oracle_accounts: DashSet<Pubkey>,
     tracked_token_accounts: DashSet<Pubkey>,
-    update_tasks: Arc<Mutex<HashMap<Pubkey, tokio::task::JoinHandle<anyhow::Result<()>>>>>,
+    update_tasks: Arc<Mutex<DashMap<Pubkey, tokio::task::JoinHandle<anyhow::Result<()>>>>>,
 }
 
 impl StateEngineService {
@@ -167,6 +168,7 @@ impl StateEngineService {
             oracle_to_bank_map: DashMap::new(),
             tracked_oracle_accounts: DashSet::new(),
             tracked_token_accounts: DashSet::new(),
+            update_tasks: Arc::new(Mutex::new(DashMap::new())),
         });
 
         state_engine_service.load_oracles_and_banks().await?;
@@ -562,10 +564,13 @@ impl StateEngineService {
     async fn update_all_marginfi_accounts(&self) -> anyhow::Result<()> {
         self.update_all_accounts_helper(
             self.marginfi_accounts.clone(),
-            |account_wrapper| account_wrapper.account.clone(),
+            |account_wrapper| Account::from(account_wrapper.account.clone()),
             |address, account| {
                 let self_clone = self.clone();
-                tokio::spawn(async move { self_clone.update_marginfi_account(&address, account) })
+                let marginfi_account = MarginfiAccount::from(account);
+                tokio::spawn(async move {
+                    self_clone.update_marginfi_account(&address, marginfi_account)
+                })
             },
         )
         .await
@@ -573,11 +578,14 @@ impl StateEngineService {
 
     async fn update_all_bank_accounts(&self) -> anyhow::Result<()> {
         self.update_all_accounts_helper(
-            self.bank_accounts.clone(),
+            self.banks.clone(),
             |account_wrapper| account_wrapper.account.clone(),
             |address, account| {
                 let self_clone = self.clone();
-                tokio::spawn(async move { self_clone.update_bank(&address, account) })
+                tokio::spawn(async move {
+                    let _ = self_clone.update_bank(&address, account);
+                    Ok(())
+                })
             },
         )
         .await
@@ -586,7 +594,7 @@ impl StateEngineService {
     async fn update_all_token_accounts(&self) -> anyhow::Result<()> {
         self.update_all_accounts_helper(
             self.token_accounts.clone(),
-            |account_wrapper| account_wrapper.account.clone(),
+            |account_wrapper| account_wrapper.clone(),
             |address, account| {
                 let self_clone = self.clone();
                 tokio::spawn(async move { self_clone.update_token_account(&address, account) })
