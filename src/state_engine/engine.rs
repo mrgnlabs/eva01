@@ -1,6 +1,5 @@
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
-use solana_client::rpc_filter::RpcFilterType;
 use solana_sdk::bs58;
 use std::{
     rc::Rc,
@@ -26,7 +25,8 @@ use marginfi::{
 };
 use solana_client::{
     nonblocking::rpc_client::RpcClient,
-    rpc_filter::{Memcmp, RpcFilterType},
+    rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
+    rpc_config::{RpcProgramAccountsConfig, RpcAccountInfoConfig},
 };
 use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::Pubkey};
 use solana_sdk::{account::Account, signature::Keypair};
@@ -450,29 +450,29 @@ impl StateEngineService {
             .nb_rpc_client
             .get_program_accounts_with_config(
                 &self.config.marginfi_program_id,
-                solana_client::rpc_config::RpcProgramAccountsConfig {
-                    account_config: solana_client::rpc_config::RpcAccountInfoConfig {
-                        encoding: Some(solana_client::rpc_config::UiAccountEncoding::Base64),
-                        data_slice: Some(solana_client::rpc_config::UiDataSliceConfig {
+                RpcProgramAccountsConfig {
+                    account_config: RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        data_slice: Some(UiDataSliceConfig {
                             offset: 0,
                             length: Some(0),
                         }),
                         ..Default::default()
                     },
                     filters: Some(vec![
-                        solana_client::rpc_config::RpcFilterType::Memcmp(
-                            solana_client::rpc_filter::Memcmp {
+                        RpcFilterType::Memcmp(
+                            Memcmp {
                                 offset: 8,
-                                bytes: solana_client::rpc_filter::MemcmpEncodedBytes::Binary(
+                                bytes: MemcmpEncodedBytes::Binary(
                                     self.config.marginfi_group_address.to_string(),
                                 ),
                                 encoding: None,
                             },
                         ),
-                        solana_client::rpc_config::RpcFilterType::Memcmp(
-                            solana_client::rpc_filter::Memcmp {
+                        RpcFilterType::Memcmp(
+                            Memcmp {
                                 offset: 0,
-                                bytes: solana_client::rpc_filter::MemcmpEncodedBytes::Binary(
+                                bytes: MemcmpEncodedBytes::Binary(
                                     bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
                                 ),
                                 encoding: None,
