@@ -8,7 +8,6 @@ use anchor_client::anchor_lang::Discriminator;
 use anchor_client::Program;
 use anyhow::anyhow;
 use dashmap::{DashMap, DashSet};
-use futures::FutureExt;
 use log::{debug, error, warn};
 use marginfi::state::{
     marginfi_account::MarginfiAccount, marginfi_group::Bank, price::OraclePriceFeedAdapter,
@@ -316,10 +315,11 @@ impl StateEngineService {
 
     async fn load_token_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
         let banks = self.banks.clone();
-        let bank_mints = banks
-            .into_iter()
-            .map(|(_, bank)| bank.read().unwrap().bank.mint)
-            .collect::<Vec<_>>();
+        let mut bank_mints = Vec::new();
+        for (_, bank) in banks {
+            let bank_guard = bank.read().await;
+            bank_mints.push(bank_guard.bank.mint);
+        }
 
         let mut token_account_addresses = vec![];
 
@@ -357,11 +357,13 @@ impl StateEngineService {
             token_accounts
                 .entry(**mint)
                 .and_modify(|token_account| {
-                    if let Ok(mut token_account) = token_account.write() {
-                        token_account.balance = balance;
-                    } else {
-                        error!("Failed to acquire write lock on token account");
-                    }
+                    tokio::spawn(async move {
+                        if let Ok(mut token_account) = token_account.write().await {
+                            token_account.balance = balance;
+                        } else {
+                            error!("Failed to acquire write lock on token account");
+                        }
+                    });
                 })
                 .or_insert_with(|| {
                     Arc::new(RwLock::new(TokenAccountWrapper {
@@ -445,19 +447,21 @@ impl StateEngineService {
                         ..Default::default()
                     },
                     filters: Some(vec![
+                        #[allow(deprecated)]
                         RpcFilterType::Memcmp(Memcmp {
                             offset: 8,
+                            #[allow(deprecated)]
                             bytes: MemcmpEncodedBytes::Base58(
                                 self.config.marginfi_group_address.to_string(),
                             ),
-                            encoding: None,
                         }),
+                        #[allow(deprecated)]
                         RpcFilterType::Memcmp(Memcmp {
                             offset: 0,
+                            #[allow(deprecated)]
                             bytes: MemcmpEncodedBytes::Base58(
                                 bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
                             ),
-                            encoding: None,
                         }),
                     ]),
                     with_context: Some(false),
@@ -484,7 +488,7 @@ impl StateEngineService {
             let account = account.as_mut().unwrap();
             let mut data_slice = account.data.as_slice();
             let marginfi_account = MarginfiAccount::try_deserialize(&mut data_slice).unwrap();
-            self.update_marginfi_account(&address.0, marginfi_account)?;
+            self.update_marginfi_account(&address.0, &marginfi_account)?;
         }
 
         Ok(())
