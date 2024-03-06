@@ -394,13 +394,18 @@ impl StateEngineService {
 
         token_accounts
             .entry(mint)
-            .and_modify(|token_account_ref| match token_account.write().await {
-                Ok(mut token_account) => {
-                    token_account.balance = balance;
-                }
-                Err(_) => {
-                    error!("Failed to acquire write lock on token account");
-                }
+            .and_modify(|token_account_ref| {
+                let balance = balance.clone();
+                tokio::spawn(async move {
+                    match token_account_ref.write().await {
+                        Ok(mut token_account) => {
+                            token_account.balance = balance;
+                        }
+                        Err(_) => {
+                            error!("Failed to acquire write lock on token account");
+                        }
+                    }
+                });
             })
             .or_insert_with(|| {
                 let mint_account = self.rpc_client.get_account(&mint).unwrap();
