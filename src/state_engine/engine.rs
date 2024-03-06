@@ -537,9 +537,6 @@ impl StateEngineService {
             let address = account.address; // get the address from the account
 
             let update_tasks = self.update_tasks.lock().await;
-            if let Some(task) = update_tasks.get(&address) {
-                let _ = task.value().clone();
-            }
             let self_clone = Arc::clone(&self);
             let join_handle = tokio::spawn(async move {
                 self_clone
