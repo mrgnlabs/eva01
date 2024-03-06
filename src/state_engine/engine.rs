@@ -358,10 +358,13 @@ impl StateEngineService {
                 .entry(**mint)
                 .and_modify(|token_account| {
                     tokio::spawn(async move {
-                        if let Ok(mut token_account) = token_account.write().await {
-                            token_account.balance = balance;
-                        } else {
-                            error!("Failed to acquire write lock on token account");
+                        match token_account.write().await {
+                            Ok(mut token_account) => {
+                                token_account.balance = balance;
+                            }
+                            Err(_) => {
+                                error!("Failed to acquire write lock on token account");
+                            }
                         }
                     });
                 })
@@ -391,10 +394,11 @@ impl StateEngineService {
 
         token_accounts
             .entry(mint)
-            .and_modify(|token_account_ref| {
-                if let Ok(mut token_account_ref) = token_account_ref.write() {
-                    token_account_ref.balance = balance;
-                } else {
+            .and_modify(|token_account_ref| match token_account.write().await {
+                Ok(mut token_account) => {
+                    token_account.balance = balance;
+                }
+                Err(_) => {
                     error!("Failed to acquire write lock on token account");
                 }
             })
@@ -454,6 +458,8 @@ impl StateEngineService {
                             bytes: MemcmpEncodedBytes::Base58(
                                 self.config.marginfi_group_address.to_string(),
                             ),
+                            #[allow(deprecated)]
+                            encoding: None,
                         }),
                         #[allow(deprecated)]
                         RpcFilterType::Memcmp(Memcmp {
@@ -462,6 +468,8 @@ impl StateEngineService {
                             bytes: MemcmpEncodedBytes::Base58(
                                 bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
                             ),
+                            #[allow(deprecated)]
+                            encoding: None,
                         }),
                     ]),
                     with_context: Some(false),
@@ -524,7 +532,7 @@ impl StateEngineService {
     async fn update_all_marginfi_accounts(self: Arc<Self>) -> anyhow::Result<()> {
         let marginfi_accounts = self.marginfi_accounts.clone();
         for account_ref in marginfi_accounts.iter() {
-            let account = account_ref.value().read().await.unwrap();
+            let account = account_ref.value().read().await;
             let marginfi_account = account.account.clone(); // clone the underlying data
             let address = account.address; // get the address from the account
 
