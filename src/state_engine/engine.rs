@@ -388,8 +388,7 @@ impl StateEngineService {
 
         token_accounts
             .entry(mint)
-            .and_modify(|token_account_ref| {
-                let balance = balance.clone();
+            .and_modify(|token_account| {
                 tokio::spawn(async move {
                     let mut token_account_guard = token_account.write().await;
                     token_account_guard.balance = balance;
@@ -505,10 +504,10 @@ impl StateEngineService {
         marginfi_accounts
             .entry(*marginfi_account_address)
             .and_modify(|marginfi_account_ref| {
-                let marginfi_account = marginfi_account.clone();
                 tokio::spawn(async move {
-                    let mut marginfi_account_ref = marginfi_account_ref.write().await;
-                    *marginfi_account_ref.account = marginfi_account;
+                    let marginfi_account_updated = marginfi_account.clone();
+                    let mut marginfi_account_guard = marginfi_account_ref.write().await;
+                    marginfi_account_guard.account = marginfi_account_updated;
                 });
             })
             .or_insert_with(|| {
