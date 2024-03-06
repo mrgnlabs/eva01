@@ -4,7 +4,7 @@ use solana_sdk::bs58;
 use std::{
     rc::Rc,
     str::FromStr,
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
 use anchor_client::anchor_lang::AccountDeserialize;
@@ -31,7 +31,7 @@ use solana_client::{
 };
 use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::Pubkey};
 use solana_sdk::{account::Account, signature::Keypair};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::utils::{accessor, batch_get_multiple_accounts, BatchLoadingConfig};
 
@@ -532,10 +532,10 @@ impl StateEngineService {
     async fn update_all_marginfi_accounts(self: Arc<Self>) -> anyhow::Result<()> {
         let marginfi_accounts = self.marginfi_accounts.clone();
         for account_ref in marginfi_accounts.iter() {
-            let account = account_ref.value().read().unwrap();
+            let account = account_ref.value().read().await.unwrap();
             let marginfi_account = account.account.clone(); // clone the underlying data
             let address = account.address; // get the address from the account
-
+    
             let update_tasks = self.update_tasks.lock().await;
             let self_clone = Arc::clone(&self);
             let join_handle = tokio::spawn(async move {
