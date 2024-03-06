@@ -449,7 +449,6 @@ impl StateEngineService {
     }
 
     async fn load_marginfi_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
-        let program: Program<Arc<Keypair>> = self.anchor_client.program(marginfi::id())?;
         let marginfi_account_addresses = self
             .nb_rpc_client
             .get_program_accounts_with_config(
