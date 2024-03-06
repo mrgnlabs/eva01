@@ -1,11 +1,7 @@
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
-use std::{
-    rc::Rc,
-    str::FromStr,
-    sync::Arc,
-};
+use std::{rc::Rc, str::FromStr, sync::Arc};
 
 use anchor_client::anchor_lang::AccountDeserialize;
 use anchor_client::anchor_lang::Discriminator;
@@ -505,7 +501,7 @@ impl StateEngineService {
     pub fn update_marginfi_account(
         &self,
         marginfi_account_address: &Pubkey,
-        marginfi_account: MarginfiAccount,
+        marginfi_account: &MarginfiAccount,
     ) -> anyhow::Result<()> {
         let marginfi_accounts = self.marginfi_accounts.clone();
 
@@ -513,7 +509,7 @@ impl StateEngineService {
             .entry(*marginfi_account_address)
             .and_modify(|marginfi_account_ref| {
                 if let Ok(mut marginfi_account_ref) = marginfi_account_ref.write() {
-                    marginfi_account_ref.account = marginfi_account.clone();
+                    *marginfi_account_ref.account = marginfi_account.clone();
                 } else {
                     error!("Failed to acquire write lock on marginfi account");
                 }
@@ -535,12 +531,12 @@ impl StateEngineService {
             let account = account_ref.value().read().await.unwrap();
             let marginfi_account = account.account.clone(); // clone the underlying data
             let address = account.address; // get the address from the account
-    
+
             let update_tasks = self.update_tasks.lock().await;
             let self_clone = Arc::clone(&self);
             let join_handle = tokio::spawn(async move {
                 self_clone
-                    .update_marginfi_account(&address, marginfi_account)
+                    .update_marginfi_account(&address, &marginfi_account)
                     .map_err(|e| anyhow!("error updating marginfi account {}", e))
             });
             update_tasks.insert(address, join_handle);
