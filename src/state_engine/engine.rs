@@ -552,9 +552,14 @@ impl StateEngineService {
     }
 
     pub async fn run(self: Arc<Self>) -> anyhow::Result<()> {
-        loop {
-            self.clone().update_all_marginfi_accounts().await?;
-        }
+        tokio::task::spawn(async move {
+            loop {
+                if let Err(e) = self.clone().update_all_marginfi_accounts().await {
+                    error!("Failed to update all marginfi accounts: {}", e);
+                }
+            }
+        });
+        Ok(())
     }
 
     pub async fn start_and_run(config: Option<StateEngineConfig>) -> anyhow::Result<()> {
