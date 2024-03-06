@@ -358,6 +358,7 @@ impl StateEngineService {
                 .entry(**mint)
                 .and_modify(|token_account| {
                     tokio::spawn(async move {
+                        let token_account = Arc::clone(token_account);
                         let mut token_account_guard = token_account.write().await;
                         token_account_guard.balance = balance;
                     });
