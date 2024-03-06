@@ -1,27 +1,19 @@
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
-use std::{rc::Rc, str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc};
 
 use anchor_client::anchor_lang::AccountDeserialize;
 use anchor_client::anchor_lang::Discriminator;
 use anchor_client::Program;
-use anyhow::Result;
+use anyhow::anyhow;
 use dashmap::{DashMap, DashSet};
-use fixed::types::I80F48;
 use futures::FutureExt;
 use log::{debug, error, warn};
-use marginfi::{
-    program::Marginfi,
-    state::{
-        marginfi_account::MarginfiAccount,
-        marginfi_group::Bank,
-        price::{OraclePriceFeedAdapter, PriceAdapter},
-    },
-    utils,
+use marginfi::state::{
+    marginfi_account::MarginfiAccount, marginfi_group::Bank, price::OraclePriceFeedAdapter,
 };
 use solana_client::{
-    nonblocking::rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
@@ -455,14 +447,14 @@ impl StateEngineService {
                     filters: Some(vec![
                         RpcFilterType::Memcmp(Memcmp {
                             offset: 8,
-                            bytes: MemcmpEncodedBytes::Binary(
+                            bytes: MemcmpEncodedBytes::Base58(
                                 self.config.marginfi_group_address.to_string(),
                             ),
                             encoding: None,
                         }),
                         RpcFilterType::Memcmp(Memcmp {
                             offset: 0,
-                            bytes: MemcmpEncodedBytes::Binary(
+                            bytes: MemcmpEncodedBytes::Base58(
                                 bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
                             ),
                             encoding: None,

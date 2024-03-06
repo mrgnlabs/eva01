@@ -1,5 +1,5 @@
 use std::mem::size_of;
-use std::{collections::HashMap, error::Error, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use backoff::{retry, ExponentialBackoff};
 use futures::SinkExt;
