@@ -505,11 +505,8 @@ impl StateEngineService {
         marginfi_accounts
             .entry(*marginfi_account_address)
             .and_modify(|marginfi_account_ref| {
-                if let Ok(mut marginfi_account_ref) = marginfi_account_ref.write() {
-                    *marginfi_account_ref.account = marginfi_account.clone();
-                } else {
-                    error!("Failed to acquire write lock on marginfi account");
-                }
+                let mut marginfi_account_ref = marginfi_account_ref.write().await;
+                *marginfi_account_ref.account = marginfi_account.clone();
             })
             .or_insert_with(|| {
                 Arc::new(RwLock::new(MarginfiAccountWrapper::new(
