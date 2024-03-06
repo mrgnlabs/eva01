@@ -178,12 +178,6 @@ impl StateEngineService {
         Ok(state_engine_service)
     }
 
-    async fn start_geyser(self: &Arc<Self>) -> Result<()> {
-        let aself = self.clone();
-
-        Ok(())
-    }
-
     pub fn get_accounts_to_track(&self) -> Vec<Pubkey> {
         self.tracked_oracle_accounts
             .iter()
