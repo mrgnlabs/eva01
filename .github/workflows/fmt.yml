@@ -12,7 +12,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dsherret/rust-toolchain-file@v1
         with:
-          toolchain: 1.71
+          toolchain: stable
           components: rustfmt
           override: true
       - name: Check Formatting
