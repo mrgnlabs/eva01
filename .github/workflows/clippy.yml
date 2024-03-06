@@ -17,4 +17,4 @@ jobs:
             override: true
         - name: Clippy Lint
           run: | 
-            cargo clippy
+            cargo clippy -- -D warnings
