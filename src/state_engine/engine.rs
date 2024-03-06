@@ -550,7 +550,7 @@ impl StateEngineService {
             let join_handle = tokio::spawn(async move {
                 self_clone
                     .update_marginfi_account(&address, marginfi_account)
-                    .map_err(|_| anyhow::anyhow!("JoinError"))
+                     .map_err(|e| anyhow!("error updating marginfi account {}", e))
             });
             update_tasks.insert(address, join_handle);
         }
