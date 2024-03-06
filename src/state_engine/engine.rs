@@ -542,7 +542,7 @@ impl StateEngineService {
             let marginfi_account = account.account.clone(); // clone the underlying data
             let address = account.address; // get the address from the account
 
-            let mut update_tasks = self.update_tasks.lock().await;
+            let update_tasks = self.update_tasks.lock().await;
             if let Some(task) = update_tasks.get(&address) {
                 let _ = task.value().clone();
             }
