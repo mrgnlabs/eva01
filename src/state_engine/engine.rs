@@ -358,14 +358,8 @@ impl StateEngineService {
                 .entry(**mint)
                 .and_modify(|token_account| {
                     tokio::spawn(async move {
-                        match token_account.write().await {
-                            Ok(mut token_account) => {
-                                token_account.balance = balance;
-                            }
-                            Err(_) => {
-                                error!("Failed to acquire write lock on token account");
-                            }
-                        }
+                        let mut token_account_guard = token_account.write().await;
+                        token_account_guard.balance = balance;
                     });
                 })
                 .or_insert_with(|| {
@@ -397,14 +391,8 @@ impl StateEngineService {
             .and_modify(|token_account_ref| {
                 let balance = balance.clone();
                 tokio::spawn(async move {
-                    match token_account_ref.write().await {
-                        Ok(mut token_account) => {
-                            token_account.balance = balance;
-                        }
-                        Err(_) => {
-                            error!("Failed to acquire write lock on token account");
-                        }
-                    }
+                    let mut token_account_guard = token_account.write().await;
+                    token_account_guard.balance = balance;
                 });
             })
             .or_insert_with(|| {
