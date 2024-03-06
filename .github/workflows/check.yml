@@ -12,7 +12,7 @@ jobs:
           - name: Install latest nightly
             uses: dsherret/rust-toolchain-file@v1
             with:
-              toolchain: nightly
+              toolchain: 1.71
               override: true
               components: rustfmt
           - name: Cargo Check
