@@ -505,8 +505,11 @@ impl StateEngineService {
         marginfi_accounts
             .entry(*marginfi_account_address)
             .and_modify(|marginfi_account_ref| {
-                let mut marginfi_account_ref = marginfi_account_ref.write().await;
-                *marginfi_account_ref.account = marginfi_account.clone();
+                let marginfi_account = marginfi_account.clone();
+                tokio::spawn(async move {
+                    let mut marginfi_account_ref = marginfi_account_ref.write().await;
+                    *marginfi_account_ref.account = marginfi_account;
+                });
             })
             .or_insert_with(|| {
                 Arc::new(RwLock::new(MarginfiAccountWrapper::new(
