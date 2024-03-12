@@ -1,5 +1,5 @@
 use std::mem::size_of;
-use std::{collections::HashMap, error::Error, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use backoff::{retry, ExponentialBackoff};
 use futures::SinkExt;
@@ -100,7 +100,9 @@ impl GeyserService {
 
                 let state_engine = state_engine.clone();
 
-                tokio::spawn(async move { Self::subscribe_and_run(geyser_client, state_engine) });
+                tokio::spawn(
+                    async move { Self::subscribe_and_run(geyser_client, state_engine).await },
+                );
 
                 Ok::<(), backoff::Error<GeyserServiceError>>(())
             },
