@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anchor-client = "0.28.0"
+anchor-client = { version = "0.28.0", features = ["async"] }
 anchor-spl = "0.29.0"
 anyhow = "1.0.79"
 backoff = { version = "0.4.0", features = [ "futures", "tokio" ] }
@@ -27,7 +27,7 @@ solana-sdk = "1.16.17"
 spl-associated-token-account = "2.0.0"
 spl-token = "4.0.0"
 thiserror = "1.0.56"
-tokio = "1.35.1"
+tokio = { version = "1.35.1", features = ["rt"] }
 tonic = "0.10.2"
 tonic-health = "0.10.2"
 yellowstone-grpc-client = "1.12.0"

@@ -82,12 +82,12 @@ pub struct TokenAccountWrapper {
 }
 
 pub struct StateEngineConfig {
-    rpc_url: String,
-    yellowstone_endpoint: String,
-    yellowstone_x_token: Option<String>,
-    marginfi_program_id: Pubkey,
-    marginfi_group_address: Pubkey,
-    signer_pubkey: Pubkey,
+    pub rpc_url: String,
+    pub yellowstone_endpoint: String,
+    pub yellowstone_x_token: Option<String>,
+    pub marginfi_program_id: Pubkey,
+    pub marginfi_group_address: Pubkey,
+    pub signer_pubkey: Pubkey,
 }
 
 pub struct StateEngineService {
@@ -175,11 +175,12 @@ impl StateEngineService {
 
     async fn load_oracles_and_banks(self: &Arc<Self>) -> anyhow::Result<()> {
         let program: Program<Arc<Keypair>> = self.anchor_client.program(marginfi::id())?;
-        let banks =
-            program.accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
+        let banks = program
+            .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
                 BANK_GROUP_PK_OFFSET,
                 self.config.marginfi_group_address.as_ref(),
-            ))])?;
+            ))])
+            .await?;
 
         let oracle_keys = banks
             .iter()
