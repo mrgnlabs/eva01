@@ -13,7 +13,7 @@ All components run concurrently, the main idea is that the liquidator is not blo
 2. Account Liquidator
     1. Observe marginfi accounts and select unhealty ones
     2. Send liquidation txs for unhealthy accounts
-    3. Stop and wait of liquidator health falls under safety threshold
+    3. Stop and wait if liquidator health falls under safety threshold
 3. Seller
     1. Swap collateral into liabs with flashloans and jupiter api
     2. Sell of remanining collateral

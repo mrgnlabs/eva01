@@ -556,6 +556,7 @@ impl StateEngineService {
     }
 
     pub async fn start_and_run(config: Option<StateEngineConfig>) -> anyhow::Result<()> {
+        debug!("start_and_run");
         let service = Self::start(config).await?;
         service.run().await
     }
