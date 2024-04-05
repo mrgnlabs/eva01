@@ -107,33 +107,8 @@ pub struct StateEngineService {
 }
 
 impl StateEngineService {
-    pub async fn start(config: Option<StateEngineConfig>) -> anyhow::Result<Arc<Self>> {
+    pub async fn start(config: StateEngineConfig) -> anyhow::Result<Arc<Self>> {
         debug!("StateEngineService::start");
-        debug!("config {:#?}", config);
-        let config = match config {
-            Some(cfg) => cfg,
-            None => StateEngineConfig {
-                rpc_url: std::env::var("RPC_URL").expect("Expected RPC_URL to be set in env"),
-                yellowstone_endpoint: std::env::var("YELLOWSTONE_ENDPOINT")
-                    .expect("Expected YELLOWSTONE_ENDPOINT to be set in env"),
-                yellowstone_x_token: std::env::var("YELLOWSTONE_X_TOKEN").ok(),
-                marginfi_program_id: Pubkey::from_str(
-                    &std::env::var("MARGINFI_PROGRAM_ID")
-                        .expect("Expected MARGINFI_PROGRAM_ID to be set in env"),
-                )
-                .unwrap(),
-                marginfi_group_address: Pubkey::from_str(
-                    &std::env::var("MARGINFI_GROUP_ADDRESS")
-                        .expect("Expected MARGINFI_GROUP_ADDRESS to be set in env"),
-                )
-                .unwrap(),
-                signer_pubkey: Pubkey::from_str(
-                    &std::env::var("SIGNER_PUBKEY")
-                        .expect("Expected SIGNER_PUBKEY to be set in env"),
-                )
-                .unwrap(),
-            },
-        };
 
         let anchor_client = anchor_client::Client::new(
             anchor_client::Cluster::Custom(config.rpc_url.clone(), "".to_string()),
@@ -558,7 +533,7 @@ impl StateEngineService {
         Ok(())
     }
 
-    pub async fn start_and_run(config: Option<StateEngineConfig>) -> anyhow::Result<()> {
+    pub async fn start_and_run(config: StateEngineConfig) -> anyhow::Result<()> {
         debug!("start_and_run");
         let service = Self::start(config).await?;
         service.run().await
