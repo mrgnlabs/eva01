@@ -1,7 +1,7 @@
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 
 use anchor_client::anchor_lang::AccountDeserialize;
 use anchor_client::anchor_lang::Discriminator;
@@ -91,6 +91,7 @@ pub struct StateEngineConfig {
     pub signer_pubkey: Pubkey,
 }
 
+#[allow(dead_code)]
 pub struct StateEngineService {
     nb_rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
     rpc_client: Arc<solana_client::rpc_client::RpcClient>,
@@ -106,6 +107,7 @@ pub struct StateEngineService {
     update_tasks: Arc<Mutex<DashMap<Pubkey, tokio::task::JoinHandle<anyhow::Result<()>>>>>,
 }
 
+#[allow(dead_code)]
 impl StateEngineService {
     pub async fn start(config: StateEngineConfig) -> anyhow::Result<Arc<Self>> {
         debug!("StateEngineService::start");
@@ -189,7 +191,7 @@ impl StateEngineService {
                 .entry(*bank_address)
                 .and_modify(|bank_entry| match bank_entry.try_write() {
                     Ok(mut bank_wg) => {
-                        bank_wg.bank = bank.clone();
+                        bank_wg.bank = *bank;
                     }
                     Err(e) => {
                         error!("Failed to acquire write lock on bank: {}", e);
@@ -198,7 +200,7 @@ impl StateEngineService {
                 .or_insert_with(|| {
                     Arc::new(RwLock::new(BankWrapper::new(
                         *bank_address,
-                        bank.clone(),
+                        *bank,
                         OracleWrapper::new(
                             **oracle_address,
                             OraclePriceFeedAdapter::try_from_bank_config(
@@ -259,7 +261,7 @@ impl StateEngineService {
             .entry(*bank_address)
             .and_modify(|bank_entry| {
                 if let Ok(mut bank_entry) = bank_entry.try_write() {
-                    bank_entry.bank = bank.clone();
+                    bank_entry.bank = *bank;
                 } else {
                     warn!("Failed to acquire write lock on bank, bank update skipped");
                 }
@@ -275,7 +277,7 @@ impl StateEngineService {
 
                 Arc::new(RwLock::new(BankWrapper::new(
                     *bank_address,
-                    bank.clone(),
+                    *bank,
                     OracleWrapper::new(
                         oracle_address,
                         OraclePriceFeedAdapter::try_from_bank_config(
@@ -305,7 +307,7 @@ impl StateEngineService {
         for mint in bank_mints.iter() {
             let ata = spl_associated_token_account::get_associated_token_address(
                 &self.config.signer_pubkey,
-                &mint,
+                mint,
             );
             token_account_addresses.push(ata);
         }
@@ -486,7 +488,7 @@ impl StateEngineService {
             .entry(*marginfi_account_address)
             .and_modify(|marginfi_account_ref| {
                 let marginfi_account_ref = Arc::clone(marginfi_account_ref);
-                let marginfi_account_updated = marginfi_account.clone();
+                let marginfi_account_updated = *marginfi_account;
                 tokio::spawn(async move {
                     let mut marginfi_account_guard = marginfi_account_ref.write().await;
                     marginfi_account_guard.account = marginfi_account_updated;
@@ -495,7 +497,7 @@ impl StateEngineService {
             .or_insert_with(|| {
                 Arc::new(RwLock::new(MarginfiAccountWrapper::new(
                     *marginfi_account_address,
-                    marginfi_account.clone(),
+                    *marginfi_account,
                     Vec::new(),
                 )))
             });
@@ -507,7 +509,7 @@ impl StateEngineService {
         let marginfi_accounts = self.marginfi_accounts.clone();
         for account_ref in marginfi_accounts.iter() {
             let account = account_ref.value().read().await;
-            let marginfi_account = account.account.clone(); // clone the underlying data
+            let marginfi_account = account.account; // clone the underlying data
             let address = account.address; // get the address from the account
 
             let update_tasks = self.update_tasks.lock().await;

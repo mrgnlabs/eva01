@@ -19,21 +19,25 @@ use crate::utils::account_update_to_account;
 
 use super::engine::StateEngineService;
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, thiserror::Error)]
 pub enum GeyserServiceError {
+    #[allow(dead_code)]
     #[error("Generic error")]
     GenericError,
     #[error("Geyser client error: {0}")]
-    GeyserServiceError(#[from] GeyserGrpcClientError),
+    ServiceError(#[from] GeyserGrpcClientError),
     #[error("Error parsing account: {0}")]
     AnyhowError(#[from] anyhow::Error),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 struct GeyserRequestUpdate {
     accounts: Vec<Pubkey>,
 }
 
+#[allow(dead_code)]
 impl GeyserRequestUpdate {
     fn merge(&mut self, other: GeyserRequestUpdate) {
         self.accounts.extend(other.accounts);
@@ -71,16 +75,21 @@ impl GeyserRequestUpdate {
     }
 }
 
+#[allow(dead_code)]
 pub struct GeyserServiceConfig {
     pub endpoint: String,
     pub x_token: Option<String>,
 }
 
+#[allow(dead_code)]
 const MARGINFI_ACCOUNT_GROUP_PK_OFFSET: usize = 8;
+#[allow(dead_code)]
 const BANK_GROUP_PK_OFFSET: usize = 8;
 
+#[allow(dead_code)]
 pub struct GeyserService {}
 
+#[allow(dead_code)]
 impl GeyserService {
     pub async fn connect(
         config: GeyserServiceConfig,
@@ -119,7 +128,7 @@ impl GeyserService {
         let sub_req = Self::build_geyser_subscribe_request(&state_engine);
         let (mut subscribe_tx, mut subscribe_rx) = geyser_client.subscribe().await?;
 
-        subscribe_tx.send(sub_req);
+        let _ = subscribe_tx.send(sub_req).await;
 
         while let Some(msg) = subscribe_rx.next().await {
             let update = match msg {
@@ -163,7 +172,7 @@ impl GeyserService {
                         if let Ok(account_owner_pk) = Pubkey::try_from(account.owner.clone()) {
                             if account_owner_pk == state_engine.get_marginfi_program_id() {
                                 let maybe_update =
-                                    Self::process_marginfi_account_update(state_engine, &account)?;
+                                    Self::process_marginfi_account_update(state_engine, account)?;
                                 if let Some(update) = maybe_update {
                                     geyser_update_request.merge(update);
                                 }
@@ -173,12 +182,12 @@ impl GeyserService {
 
                         if let Ok(address) = Pubkey::try_from(account.pubkey.clone()) {
                             if state_engine.is_tracked_oracle(&address) {
-                                Self::process_oracle_account_update(state_engine, &account)?;
+                                Self::process_oracle_account_update(state_engine, account)?;
                                 processed = true;
                             }
 
                             if state_engine.is_tracked_token_account(&address) {
-                                Self::process_token_account_update(state_engine, &account)?;
+                                Self::process_token_account_update(state_engine, account)?;
                                 processed = true;
                             }
                         }
@@ -248,12 +257,12 @@ impl GeyserService {
             error!("Error parsing oracle account: {:?}", e);
             GeyserServiceError::GenericError
         })?;
-        state_engine.update_oracle(&oracle_addres, oracle_account);
+        state_engine.update_oracle(&oracle_addres, oracle_account)?;
         Ok(())
     }
     fn process_token_account_update(
-        state_engine: &Arc<StateEngineService>,
-        account_update: &SubscribeUpdateAccountInfo,
+        _state_engine: &Arc<StateEngineService>,
+        _account_update: &SubscribeUpdateAccountInfo,
     ) -> Result<(), GeyserServiceError> {
         Ok(())
     }

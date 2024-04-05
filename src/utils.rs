@@ -127,6 +127,7 @@ pub mod accessor {
         Pubkey::new_from_array(mint_bytes)
     }
 
+    #[allow(dead_code)]
     pub fn authority(bytes: &[u8]) -> Pubkey {
         let mut owner_bytes = [0u8; 32];
         owner_bytes.copy_from_slice(&bytes[32..64]);
