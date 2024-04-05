@@ -81,6 +81,7 @@ pub struct TokenAccountWrapper {
     pub mint_decimals: u8,
 }
 
+#[derive(Debug)]
 pub struct StateEngineConfig {
     pub rpc_url: String,
     pub yellowstone_endpoint: String,
@@ -107,6 +108,8 @@ pub struct StateEngineService {
 
 impl StateEngineService {
     pub async fn start(config: Option<StateEngineConfig>) -> anyhow::Result<Arc<Self>> {
+        debug!("StateEngineService::start");
+        debug!("config {:#?}", config);
         let config = match config {
             Some(cfg) => cfg,
             None => StateEngineConfig {
