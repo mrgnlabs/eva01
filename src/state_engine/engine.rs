@@ -1,6 +1,11 @@
+use anchor_client::anchor_lang::AnchorSerialize;
+use serde::Deserialize;
+use serde::Deserializer;
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
+use solana_sdk::pubkey;
+use std::error::Error;
 use std::{str::FromStr, sync::Arc};
 
 use anchor_client::anchor_lang::AccountDeserialize;
@@ -20,9 +25,9 @@ use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::
 use solana_sdk::{account::Account, signature::Keypair};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::utils::{accessor, batch_get_multiple_accounts, BatchLoadingConfig};
+use crate::utils::{accessor, batch_get_multiple_accounts, from_pubkey_string, BatchLoadingConfig};
 
-const BANK_GROUP_PK_OFFSET: usize = 8 + 8 + 1;
+const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
 
 pub struct MarginfiAccountWrapper {
     pub address: Pubkey,
@@ -81,14 +86,47 @@ pub struct TokenAccountWrapper {
     pub mint_decimals: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 pub struct StateEngineConfig {
     pub rpc_url: String,
     pub yellowstone_endpoint: String,
     pub yellowstone_x_token: Option<String>,
+
+    #[serde(
+        default = "StateEngineConfig::default_marginfi_program_id",
+        deserialize_with = "from_pubkey_string"
+    )]
     pub marginfi_program_id: Pubkey,
+    #[serde(
+        default = "StateEngineConfig::default_marginfi_group_address",
+        deserialize_with = "from_pubkey_string"
+    )]
     pub marginfi_group_address: Pubkey,
+    #[serde(deserialize_with = "from_pubkey_string")]
     pub signer_pubkey: Pubkey,
+    #[serde(default = "StateEngineConfig::default_skip_account_loading")]
+    /// Skip loading of marginfi accounts on startup
+    pub skip_account_loading: bool,
+}
+
+impl StateEngineConfig {
+    pub fn default_marginfi_program_id() -> Pubkey {
+        marginfi::id()
+    }
+
+    pub fn default_marginfi_group_address() -> Pubkey {
+        pubkey!("4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8")
+    }
+
+    pub fn default_skip_account_loading() -> bool {
+        false
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StateEngineError {
+    #[error("Failed to load from RPC")]
+    RpcError,
 }
 
 pub struct StateEngineService {
@@ -107,7 +145,7 @@ pub struct StateEngineService {
 }
 
 impl StateEngineService {
-    pub async fn start(config: StateEngineConfig) -> anyhow::Result<Arc<Self>> {
+    pub async fn setup(config: StateEngineConfig) -> anyhow::Result<Arc<Self>> {
         debug!("StateEngineService::start");
 
         let anchor_client = anchor_client::Client::new(
@@ -127,7 +165,7 @@ impl StateEngineService {
             banks: DashMap::new(),
             token_accounts: DashMap::new(),
             anchor_client,
-            config,
+            config: config.clone(),
             nb_rpc_client,
             rpc_client,
             accounts_to_track: Arc::new(RwLock::new(Vec::new())),
@@ -140,6 +178,10 @@ impl StateEngineService {
         state_engine_service.load_oracles_and_banks().await?;
         state_engine_service.load_token_accounts().await?;
 
+        if !config.skip_account_loading {
+            state_engine_service.load_marginfi_accounts().await?;
+        }
+
         Ok(state_engine_service)
     }
 
@@ -151,8 +193,20 @@ impl StateEngineService {
             .collect::<Vec<_>>()
     }
 
+    // fn load_group_banks(&self) -> Result<Vec<Bank>, StateEngineError> {
+    //     self.rpc_client.get_program_accounts_with_config(
+    //         &self.config.marginfi_program_id,
+    //         RpcProgramAccountsConfig {
+    //             filters: vec![],
+    //             ..Default::default()
+    //         },
+    //     )
+    // }
+
     async fn load_oracles_and_banks(self: &Arc<Self>) -> anyhow::Result<()> {
-        let program: Program<Arc<Keypair>> = self.anchor_client.program(marginfi::id())?;
+        let program: Program<Arc<Keypair>> = self
+            .anchor_client
+            .program(self.config.marginfi_program_id)?;
         let banks = program
             .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
                 BANK_GROUP_PK_OFFSET,
@@ -160,17 +214,21 @@ impl StateEngineService {
             ))])
             .await?;
 
+        debug!("Found {} banks", banks.len());
+
         let oracle_keys = banks
             .iter()
             .map(|(_, bank)| bank.config.oracle_keys[0])
             .collect::<Vec<_>>();
 
         let mut oracle_accounts = batch_get_multiple_accounts(
-            self.nb_rpc_client.clone(),
+            self.rpc_client.clone(),
             &oracle_keys,
             BatchLoadingConfig::DEFAULT,
         )
         .await?;
+
+        debug!("Found {} oracle accounts", oracle_accounts.len());
 
         let mut oracles_with_addresses = oracle_keys
             .iter()
@@ -201,10 +259,10 @@ impl StateEngineService {
                         bank.clone(),
                         OracleWrapper::new(
                             **oracle_address,
-                            OraclePriceFeedAdapter::try_from_bank_config(
+                            OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                                 &bank.config,
                                 &[oracle_ai_c],
-                                i64::MAX,
+                                0,
                                 u64::MAX,
                             )
                             .unwrap(),
@@ -220,6 +278,8 @@ impl StateEngineService {
             self.tracked_oracle_accounts.insert(**oracle_address);
         }
 
+        debug!("Done loading oracles and banks");
+
         Ok(())
     }
 
@@ -233,7 +293,7 @@ impl StateEngineService {
             for bank_to_update in banks_to_update.iter() {
                 if let Ok(mut bank_to_update) = bank_to_update.try_write() {
                     bank_to_update.oracle_adapter.price_adapter =
-                        OraclePriceFeedAdapter::try_from_bank_config(
+                        OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                             &bank_to_update.bank.config,
                             &[oracle_ai.clone()],
                             i64::MAX,
@@ -278,7 +338,7 @@ impl StateEngineService {
                     bank.clone(),
                     OracleWrapper::new(
                         oracle_address,
-                        OraclePriceFeedAdapter::try_from_bank_config(
+                        OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                             &bank.config,
                             &[oracle_account_ai],
                             i64::MAX,
@@ -293,6 +353,8 @@ impl StateEngineService {
     }
 
     async fn load_token_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
+        debug!("Loading token accounts");
+
         let banks = self.banks.clone();
         let mut bank_mints = Vec::new();
         for (_, bank) in banks {
@@ -311,11 +373,13 @@ impl StateEngineService {
         }
 
         let accounts = batch_get_multiple_accounts(
-            self.nb_rpc_client.clone(),
+            self.rpc_client.clone(),
             &token_account_addresses,
             BatchLoadingConfig::DEFAULT,
         )
         .await?;
+
+        debug!("Found {} token accounts", accounts.len());
 
         let token_accounts_with_addresses_and_mints = token_account_addresses
             .iter()
@@ -410,6 +474,9 @@ impl StateEngineService {
     }
 
     async fn load_marginfi_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
+        debug!("Loading marginfi accounts");
+        let start = std::time::Instant::now();
+
         let marginfi_account_addresses = self
             .nb_rpc_client
             .get_program_accounts_with_config(
@@ -455,12 +522,19 @@ impl StateEngineService {
             .map(|(pubkey, _)| *pubkey)
             .collect();
 
+        debug!(
+            "Found {} marginfi accounts",
+            marginfi_account_addresses.len()
+        );
+
         let mut marginfi_accounts = batch_get_multiple_accounts(
-            self.nb_rpc_client.clone(),
+            self.rpc_client.clone(),
             &marginfi_account_pubkeys,
             BatchLoadingConfig::DEFAULT,
         )
         .await?;
+
+        debug!("Fetched {} marginfi accounts", marginfi_accounts.len());
 
         for (address, account) in marginfi_account_addresses
             .iter()
@@ -471,6 +545,8 @@ impl StateEngineService {
             let marginfi_account = MarginfiAccount::try_deserialize(&mut data_slice).unwrap();
             self.update_marginfi_account(&address.0, &marginfi_account)?;
         }
+
+        debug!("Done loading marginfi accounts, tool {:?}", start.elapsed());
 
         Ok(())
     }
@@ -535,7 +611,9 @@ impl StateEngineService {
 
     pub async fn start_and_run(config: StateEngineConfig) -> anyhow::Result<()> {
         debug!("start_and_run");
-        let service = Self::start(config).await?;
-        service.run().await
+        let service = Self::setup(config).await?;
+        // service.run().await
+
+        Ok(())
     }
 }

@@ -9,7 +9,7 @@ edition = "2021"
 anchor-client = { version = "0.28.0", features = ["async"] }
 anchor-spl = "0.29.0"
 anyhow = "1.0.79"
-backoff = { version = "0.4.0", features = [ "futures", "tokio" ] }
+backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bytemuck = "1.14.0"
 bytes = "1.5.0"
 dashmap = "5.5.3"
@@ -18,17 +18,26 @@ fixed = "1.24.0"
 futures = "0.3.30"
 futures-sink = "0.3.30"
 log = "0.4.21"
-marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2.git", branch = "man0s/release-process" }
-solana-account-decoder = "1.16.17"
-solana-client = "1.16.17"
-solana-program = "1.16.17"
-solana-rpc-client-api = "1.16.17"
-solana-sdk = "1.16.17"
+marginfi = { path = "../marginfi-v2/programs/marginfi", features = [
+    "mainnet-beta",
+    "client",
+    "no-entrypoint",
+] }
+rayon = "1.10.0"
+serde = "1.0.197"
+serde_toml = "0.0.1"
+solana-account-decoder = "1.16"
+solana-client = "1.16"
+solana-program = "1.16"
+solana-rpc-client-api = "1.16"
+solana-sdk = "1.16"
 spl-associated-token-account = "2.0.0"
-spl-token = "4.0.0"
+spl-token = "=4.0.0"
+structopt = { version = "0.3.26", features = ["color", "suggestions"] }
 thiserror = "1.0.56"
 tokio = { version = "1.35.1", features = ["rt"] }
+toml = "0.8.12"
 tonic = "0.10.2"
 tonic-health = "0.10.2"
-yellowstone-grpc-client = "1.12.0"
-yellowstone-grpc-proto = "1.11.0"
+yellowstone-grpc-client = "1.12"
+yellowstone-grpc-proto = "1.11"

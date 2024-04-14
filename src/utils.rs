@@ -1,7 +1,12 @@
-use std::sync::Arc;
+use std::{
+    str::FromStr,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 use anyhow::Result;
 use backoff::ExponentialBackoff;
+use rayon::{iter::ParallelIterator, slice::ParallelSlice};
+use serde::{Deserialize, Deserializer};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig};
 use solana_program::pubkey::Pubkey;
@@ -15,8 +20,8 @@ pub struct BatchLoadingConfig {
 
 impl BatchLoadingConfig {
     pub const DEFAULT: Self = Self {
-        max_batch_size: 64,
-        max_concurrent_calls: 8,
+        max_batch_size: 100,
+        max_concurrent_calls: 32,
     };
 }
 
@@ -31,7 +36,7 @@ impl BatchLoadingConfig {
 /// Additionally, logs progress information including the number of accounts being fetched,
 /// the size of each chunk, and the current progress using trace and debug logs.
 pub async fn batch_get_multiple_accounts(
-    rpc_client: Arc<RpcClient>,
+    rpc_client: Arc<solana_client::rpc_client::RpcClient>,
     addresses: &[Pubkey],
     BatchLoadingConfig {
         max_batch_size,
@@ -43,11 +48,9 @@ pub async fn batch_get_multiple_accounts(
     let total_batches = batched_addresses.len();
 
     let mut accounts = Vec::new();
-    let mut fetched_accounts = 0;
+    let fetched_accounts = Arc::new(AtomicUsize::new(0));
 
     for (batch_index, batch) in batched_addresses.enumerate() {
-        let mut batched_accounts = Vec::new();
-        let mut handles = Vec::new();
         let batch_size = batch.len();
 
         log::trace!(
@@ -57,17 +60,19 @@ pub async fn batch_get_multiple_accounts(
             batch_size
         );
 
-        for chunk in batch.chunks(max_batch_size) {
-            let rpc_client = rpc_client.clone();
-            let chunk = chunk.to_vec();
-            let chunk_size = chunk.len();
-
-            log::trace!(" - Fetching chunk of size {}", chunk_size);
-
-            let handle = backoff::future::retry(ExponentialBackoff::default(), move || {
+        let mut batched_accounts = batch
+            .par_chunks(max_batch_size)
+            .map(|chunk| -> anyhow::Result<Vec<_>> {
                 let rpc_client = rpc_client.clone();
-                let chunk = chunk.clone();
-                async move {
+                let chunk = chunk.to_vec();
+                let chunk_size = chunk.len();
+
+                log::trace!(" - Fetching chunk of size {}", chunk_size);
+
+                let chunk_res = backoff::retry(ExponentialBackoff::default(), move || {
+                    let rpc_client = rpc_client.clone();
+                    let chunk = chunk.clone();
+
                     rpc_client
                         .get_multiple_accounts_with_config(
                             &chunk,
@@ -76,35 +81,36 @@ pub async fn batch_get_multiple_accounts(
                                 ..Default::default()
                             },
                         )
-                        .await
                         .map_err(backoff::Error::transient)
-                }
-            });
+                })?
+                .value;
 
-            handles.push(handle);
-        }
+                let fetched_chunk_size = chunk_res.len();
 
-        for handle in handles {
-            let mut batched_accounts_chunk = handle.await?.value;
-            let fetched_chunk_size = batched_accounts_chunk.len();
-            fetched_accounts += fetched_chunk_size;
+                fetched_accounts
+                    .fetch_add(fetched_chunk_size, std::sync::atomic::Ordering::Relaxed);
 
-            log::trace!(
-                " - Fetched chunk with {} accounts. Progress: {}/{}",
-                fetched_chunk_size,
-                fetched_accounts,
-                total_addresses
-            );
+                log::trace!(
+                    " - Fetched chunk with {} accounts. Progress: {}/{}",
+                    fetched_chunk_size,
+                    fetched_accounts.load(std::sync::atomic::Ordering::Relaxed),
+                    total_addresses
+                );
 
-            batched_accounts.append(&mut batched_accounts_chunk);
-        }
+                Ok(chunk_res)
+            })
+            .collect::<Result<Vec<_>>>()?
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
 
         accounts.append(&mut batched_accounts);
     }
 
     log::debug!(
         "Finished fetching all accounts. Total accounts fetched: {}",
-        fetched_accounts
+        fetched_accounts.load(std::sync::atomic::Ordering::Relaxed)
     );
 
     Ok(accounts)
@@ -145,4 +151,12 @@ pub fn account_update_to_account(account_update: &SubscribeUpdateAccountInfo) ->
     account.rent_epoch = account_update.rent_epoch;
 
     Ok(account)
+}
+
+pub(crate) fn from_pubkey_string<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    Pubkey::from_str(&s).map_err(serde::de::Error::custom)
 }

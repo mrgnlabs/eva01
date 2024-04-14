@@ -2,7 +2,8 @@ use env_logger::Builder;
 use log::{debug, LevelFilter};
 use solana_sdk::pubkey::Pubkey;
 use state_engine::engine::StateEngineService;
-use std::str::FromStr;
+use std::{error::Error, str::FromStr};
+use structopt::StructOpt;
 use tokio::task;
 
 use crate::state_engine::engine::StateEngineConfig;
@@ -10,41 +11,53 @@ use crate::state_engine::engine::StateEngineConfig;
 mod state_engine;
 mod utils;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Assemble logger
-    let mut builder = Builder::new();
-    builder.filter(None, LevelFilter::Debug).init();
+#[derive(structopt::StructOpt)]
+pub struct Eva01 {
+    #[structopt(short, long)]
+    config_path: String,
+    #[structopt(subcommand)]
+    command: Eva01Command,
+}
 
-    // Gather configuration
-    let config = StateEngineConfig {
-        rpc_url: std::env::var("RPC_URL").expect("Expected RPC_URL to be set in env"),
-        yellowstone_endpoint: std::env::var("YELLOWSTONE_ENDPOINT")
-            .expect("Expected YELLOWSTONE_ENDPOINT to be set in env"),
-        yellowstone_x_token: std::env::var("YELLOWSTONE_X_TOKEN").ok(),
-        marginfi_program_id: Pubkey::from_str(
-            &std::env::var("MARGINFI_PROGRAM_ID")
-                .expect("Expected MARGINFI_PROGRAM_ID to be set in env"),
-        )
-        .unwrap(),
-        marginfi_group_address: Pubkey::from_str(
-            &std::env::var("MARGINFI_GROUP_ADDRESS")
-                .expect("Expected MARGINFI_GROUP_ADDRESS to be set in env"),
-        )
-        .unwrap(),
-        signer_pubkey: Pubkey::from_str(
-            &std::env::var("SIGNER_PUBKEY").expect("Expected SIGNER_PUBKEY to be set in env"),
-        )
-        .unwrap(),
-    };
+#[derive(structopt::StructOpt)]
+pub enum Eva01Command {
+    Run,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct Eva01Config {
+    state_engine_config: StateEngineConfig,
+}
+
+impl Eva01Config {
+    pub fn try_load_from_file(path: &str) -> Result<Self, Box<dyn Error>> {
+        let config_str = std::fs::read_to_string(path)?;
+        let config = toml::from_str(&config_str)?;
+        Ok(config)
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Assemble logger
+    Builder::from_default_env().init();
+
+    let eva01_opts = Eva01::from_args();
+    let config = Eva01Config::try_load_from_file(&eva01_opts.config_path)?;
+
+    let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
 
     debug!("config: {:#?}", config);
 
     // Assemble stateful engine service
     debug!("starting eva");
-    let data_handle = task::spawn(async { StateEngineService::start_and_run(config).await });
 
-    data_handle.await?.unwrap();
+    tokio_rt.block_on(async {
+        StateEngineService::start_and_run(config.state_engine_config.clone())
+            .await
+            .unwrap();
+    });
 
     Ok(())
 }
