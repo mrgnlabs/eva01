@@ -1,17 +1,18 @@
-use anchor_client::anchor_lang::AnchorSerialize;
-use serde::Deserialize;
-use serde::Deserializer;
+use crossbeam::channel::Receiver;
+use crossbeam::channel::Sender;
+use fixed::types::I80F48;
+use marginfi::constants::EXP_10_I80F48;
+use marginfi::state::marginfi_account::BalanceSide;
+use marginfi::state::price::PriceAdapter;
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
 use solana_sdk::pubkey;
-use std::error::Error;
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
+use std::sync::RwLock;
 
-use anchor_client::anchor_lang::AccountDeserialize;
 use anchor_client::anchor_lang::Discriminator;
 use anchor_client::Program;
-use anyhow::anyhow;
 use dashmap::{DashMap, DashSet};
 use log::{debug, error, warn};
 use marginfi::state::{
@@ -23,29 +24,59 @@ use solana_client::{
 };
 use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::Pubkey};
 use solana_sdk::{account::Account, signature::Keypair};
-use tokio::sync::{Mutex, RwLock};
 
+use crate::state_engine::geyser::GeyserService;
+use crate::utils::BankAccountWithPriceFeedEva;
 use crate::utils::{accessor, batch_get_multiple_accounts, from_pubkey_string, BatchLoadingConfig};
+
+use super::geyser::GeyserServiceConfig;
 
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
 
 pub struct MarginfiAccountWrapper {
     pub address: Pubkey,
     pub account: MarginfiAccount,
-    pub banks: Vec<Arc<RwLock<BankWrapper>>>,
+    pub banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
 }
 
 impl MarginfiAccountWrapper {
     pub fn new(
         address: Pubkey,
         account: MarginfiAccount,
-        banks: Vec<Arc<RwLock<BankWrapper>>>,
+        banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
     ) -> Self {
         Self {
             address,
             account,
             banks,
         }
+    }
+
+    pub fn has_liabs(&self) -> bool {
+        self.account
+            .lending_account
+            .balances
+            .iter()
+            .any(|a| a.active && matches!(a.get_side(), Some(BalanceSide::Liabilities)))
+    }
+
+    pub fn calc_health(&self) -> (I80F48, I80F48) {
+        let baws =
+            BankAccountWithPriceFeedEva::load(&self.account.lending_account, self.banks.clone())
+                .unwrap();
+
+        baws.iter().fold(
+            (I80F48::ZERO, I80F48::ZERO),
+            |(total_assets, total_liabs), (baw)| {
+                let (assets, liabs) = baw
+                    .calc_weighted_assets_and_liabilities_values(
+                        marginfi::state::marginfi_account::RequirementType::Maintenance,
+                    )
+                    .unwrap();
+
+                (total_assets + assets, total_liabs + liabs)
+            },
+        )
     }
 }
 
@@ -84,6 +115,23 @@ pub struct TokenAccountWrapper {
     pub mint: Pubkey,
     pub balance: u64,
     pub mint_decimals: u8,
+    pub bank: Arc<RwLock<BankWrapper>>,
+}
+
+impl TokenAccountWrapper {
+    pub fn get_value(&self) -> Result<I80F48, Box<dyn std::error::Error>> {
+        let ui_amount = I80F48::from_num(self.balance) / EXP_10_I80F48[self.mint_decimals as usize];
+
+        let price = self
+            .bank
+            .read()
+            .unwrap()
+            .oracle_adapter
+            .price_adapter
+            .get_price_of_type(marginfi::state::price::OraclePriceType::RealTime, None)?;
+
+        Ok(ui_amount * price)
+    }
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
@@ -110,6 +158,13 @@ pub struct StateEngineConfig {
 }
 
 impl StateEngineConfig {
+    pub fn get_geyser_service_config(&self) -> GeyserServiceConfig {
+        GeyserServiceConfig {
+            endpoint: self.yellowstone_endpoint.clone(),
+            x_token: self.yellowstone_x_token.clone(),
+        }
+    }
+
     pub fn default_marginfi_program_id() -> Pubkey {
         marginfi::id()
     }
@@ -133,21 +188,21 @@ pub struct StateEngineService {
     nb_rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
     rpc_client: Arc<solana_client::rpc_client::RpcClient>,
     anchor_client: anchor_client::Client<Arc<Keypair>>,
-    marginfi_accounts: DashMap<Pubkey, Arc<RwLock<MarginfiAccountWrapper>>>,
-    banks: DashMap<Pubkey, Arc<RwLock<BankWrapper>>>,
-    token_accounts: DashMap<Pubkey, Arc<RwLock<TokenAccountWrapper>>>,
+    pub marginfi_accounts: Arc<DashMap<Pubkey, Arc<RwLock<MarginfiAccountWrapper>>>>,
+    pub banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
+    pub token_accounts: DashMap<Pubkey, Arc<RwLock<TokenAccountWrapper>>>,
+    pub sol_accounts: DashMap<Pubkey, Account>,
     config: StateEngineConfig,
     accounts_to_track: Arc<RwLock<Vec<Pubkey>>>,
     oracle_to_bank_map: DashMap<Pubkey, Vec<Arc<RwLock<BankWrapper>>>>,
+    mint_to_bank_map: DashMap<Pubkey, Arc<RwLock<BankWrapper>>>,
     tracked_oracle_accounts: DashSet<Pubkey>,
     tracked_token_accounts: DashSet<Pubkey>,
-    update_tasks: Arc<Mutex<DashMap<Pubkey, tokio::task::JoinHandle<anyhow::Result<()>>>>>,
+    update_tx: Sender<()>,
 }
 
 impl StateEngineService {
-    pub async fn setup(config: StateEngineConfig) -> anyhow::Result<Arc<Self>> {
-        debug!("StateEngineService::start");
-
+    pub fn new(config: StateEngineConfig) -> anyhow::Result<(Arc<Self>, Receiver<()>)> {
         let anchor_client = anchor_client::Client::new(
             anchor_client::Cluster::Custom(config.rpc_url.clone(), "".to_string()),
             Arc::new(Keypair::new()),
@@ -160,50 +215,57 @@ impl StateEngineService {
             config.rpc_url.clone(),
         ));
 
+        let (update_tx, update_rx) = crossbeam::channel::bounded(1000);
+
         let state_engine_service = Arc::new(Self {
-            marginfi_accounts: DashMap::new(),
-            banks: DashMap::new(),
+            marginfi_accounts: Arc::new(DashMap::new()),
+            banks: Arc::new(DashMap::new()),
             token_accounts: DashMap::new(),
+            sol_accounts: DashMap::new(),
             anchor_client,
             config: config.clone(),
             nb_rpc_client,
             rpc_client,
             accounts_to_track: Arc::new(RwLock::new(Vec::new())),
             oracle_to_bank_map: DashMap::new(),
+            mint_to_bank_map: DashMap::new(),
             tracked_oracle_accounts: DashSet::new(),
             tracked_token_accounts: DashSet::new(),
-            update_tasks: Arc::new(Mutex::new(DashMap::new())),
+            update_tx,
         });
 
-        state_engine_service.load_oracles_and_banks().await?;
-        state_engine_service.load_token_accounts().await?;
+        Ok((state_engine_service, update_rx))
+    }
 
-        if !config.skip_account_loading {
-            state_engine_service.load_marginfi_accounts().await?;
+    pub async fn load(&self) -> anyhow::Result<()> {
+        debug!("StateEngineService::load");
+
+        self.load_oracles_and_banks().await?;
+        self.load_token_accounts()?;
+
+        if !self.config.skip_account_loading {
+            self.load_marginfi_accounts().await?;
         }
 
-        Ok(state_engine_service)
+        Ok(())
     }
 
     pub fn get_accounts_to_track(&self) -> Vec<Pubkey> {
-        self.tracked_oracle_accounts
+        let mut taracked_accounts = self
+            .tracked_oracle_accounts
             .iter()
             .chain(self.tracked_token_accounts.iter())
             .map(|e| *e)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        taracked_accounts.push(self.config.signer_pubkey);
+
+        debug!("Getting {} accounts to track", taracked_accounts.len());
+
+        taracked_accounts
     }
 
-    // fn load_group_banks(&self) -> Result<Vec<Bank>, StateEngineError> {
-    //     self.rpc_client.get_program_accounts_with_config(
-    //         &self.config.marginfi_program_id,
-    //         RpcProgramAccountsConfig {
-    //             filters: vec![],
-    //             ..Default::default()
-    //         },
-    //     )
-    // }
-
-    async fn load_oracles_and_banks(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn load_oracles_and_banks(&self) -> anyhow::Result<()> {
         let program: Program<Arc<Keypair>> = self
             .anchor_client
             .program(self.config.marginfi_program_id)?;
@@ -225,8 +287,7 @@ impl StateEngineService {
             self.rpc_client.clone(),
             &oracle_keys,
             BatchLoadingConfig::DEFAULT,
-        )
-        .await?;
+        )?;
 
         debug!("Found {} oracle accounts", oracle_accounts.len());
 
@@ -275,10 +336,24 @@ impl StateEngineService {
                 .and_modify(|vec| vec.push(bank_ref.clone()))
                 .or_insert_with(|| vec![bank_ref.clone()]);
 
+            self.mint_to_bank_map
+                .entry(bank.mint)
+                .or_insert_with(|| bank_ref.clone());
+
             self.tracked_oracle_accounts.insert(**oracle_address);
         }
 
         debug!("Done loading oracles and banks");
+
+        Ok(())
+    }
+
+    pub fn load_sol_accounts(&self) -> anyhow::Result<()> {
+        self.rpc_client
+            .get_account(&self.config.signer_pubkey)
+            .map(|account| {
+                self.sol_accounts.insert(self.config.signer_pubkey, account);
+            })?;
 
         Ok(())
     }
@@ -290,13 +365,16 @@ impl StateEngineService {
     ) -> anyhow::Result<()> {
         if let Some(banks_to_update) = self.oracle_to_bank_map.get(oracle_address) {
             let oracle_ai = (oracle_address, &mut oracle_account).into_account_info();
+
+            debug!("Updating oracle {}", oracle_ai.key);
+
             for bank_to_update in banks_to_update.iter() {
                 if let Ok(mut bank_to_update) = bank_to_update.try_write() {
                     bank_to_update.oracle_adapter.price_adapter =
                         OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                             &bank_to_update.bank.config,
                             &[oracle_ai.clone()],
-                            i64::MAX,
+                            0,
                             u64::MAX,
                         )?;
                 } else {
@@ -307,10 +385,13 @@ impl StateEngineService {
             warn!("Received update for unknown oracle {}", oracle_address);
         }
 
+        debug!("Done updating oracle {}", oracle_address);
+
         Ok(())
     }
 
     pub fn update_bank(&self, bank_address: &Pubkey, bank: Account) -> anyhow::Result<bool> {
+        debug!("Updating bank {}", bank_address);
         let bank = bytemuck::from_bytes::<Bank>(&bank.data.as_slice()[8..]);
 
         let new_bank = self.banks.contains_key(bank_address);
@@ -333,7 +414,7 @@ impl StateEngineService {
 
                 self.tracked_oracle_accounts.insert(oracle_address);
 
-                Arc::new(RwLock::new(BankWrapper::new(
+                let bank_entry = Arc::new(RwLock::new(BankWrapper::new(
                     *bank_address,
                     bank.clone(),
                     OracleWrapper::new(
@@ -346,19 +427,27 @@ impl StateEngineService {
                         )
                         .unwrap(),
                     ),
-                )))
+                )));
+
+                self.mint_to_bank_map
+                    .entry(bank.mint)
+                    .or_insert_with(|| bank_entry.clone());
+
+                bank_entry
             });
+
+        debug!("Done updating bank {}", bank_address);
 
         Ok(new_bank)
     }
 
-    async fn load_token_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
+    fn load_token_accounts(&self) -> anyhow::Result<()> {
         debug!("Loading token accounts");
 
         let banks = self.banks.clone();
         let mut bank_mints = Vec::new();
-        for (_, bank) in banks {
-            let bank_guard = bank.read().await;
+        for bank in banks.iter() {
+            let bank_guard = bank.read().unwrap();
             bank_mints.push(bank_guard.bank.mint);
         }
 
@@ -376,8 +465,7 @@ impl StateEngineService {
             self.rpc_client.clone(),
             &token_account_addresses,
             BatchLoadingConfig::DEFAULT,
-        )
-        .await?;
+        )?;
 
         debug!("Found {} token accounts", accounts.len());
 
@@ -401,17 +489,17 @@ impl StateEngineService {
                 .entry(**mint)
                 .and_modify(|token_account| {
                     let token_account = Arc::clone(token_account);
-                    tokio::spawn(async move {
-                        let mut token_account_guard = token_account.write().await;
-                        token_account_guard.balance = balance;
-                    });
+                    let mut token_account_guard = token_account.write().unwrap();
+                    token_account_guard.balance = balance;
                 })
                 .or_insert_with(|| {
+                    let bank = self.mint_to_bank_map.get(mint).unwrap().value().clone();
                     Arc::new(RwLock::new(TokenAccountWrapper {
                         address: **token_account_address,
                         mint: **mint,
                         balance,
                         mint_decimals: 0,
+                        bank,
                     }))
                 });
 
@@ -434,10 +522,8 @@ impl StateEngineService {
             .entry(mint)
             .and_modify(|token_account| {
                 let token_account = Arc::clone(token_account);
-                tokio::spawn(async move {
-                    let mut token_account_guard = token_account.write().await;
-                    token_account_guard.balance = balance;
-                });
+                let mut token_account_guard = token_account.write().unwrap();
+                token_account_guard.balance = balance;
             })
             .or_insert_with(|| {
                 let mint_account = self.rpc_client.get_account(&mint).unwrap();
@@ -446,14 +532,22 @@ impl StateEngineService {
                     .unwrap()
                     .decimals;
 
+                let bank = self.mint_to_bank_map.get(&mint).unwrap().value().clone();
+
                 Arc::new(RwLock::new(TokenAccountWrapper {
                     address: *token_account_address,
                     mint,
                     balance,
                     mint_decimals: decimals,
+                    bank,
                 }))
             });
 
+        Ok(())
+    }
+
+    pub fn update_sol_account(&self, account: Account) -> anyhow::Result<()> {
+        self.sol_accounts.insert(account.owner, account);
         Ok(())
     }
 
@@ -473,7 +567,11 @@ impl StateEngineService {
         self.tracked_token_accounts.contains(address)
     }
 
-    async fn load_marginfi_accounts(self: &Arc<Self>) -> anyhow::Result<()> {
+    pub fn is_tracked_sol_account(&self, address: &Pubkey) -> bool {
+        self.config.signer_pubkey == *address
+    }
+
+    async fn load_marginfi_accounts(&self) -> anyhow::Result<()> {
         debug!("Loading marginfi accounts");
         let start = std::time::Instant::now();
 
@@ -531,8 +629,7 @@ impl StateEngineService {
             self.rpc_client.clone(),
             &marginfi_account_pubkeys,
             BatchLoadingConfig::DEFAULT,
-        )
-        .await?;
+        )?;
 
         debug!("Fetched {} marginfi accounts", marginfi_accounts.len());
 
@@ -540,10 +637,8 @@ impl StateEngineService {
             .iter()
             .zip(marginfi_accounts.iter_mut())
         {
-            let account = account.as_mut().unwrap();
-            let mut data_slice = account.data.as_slice();
-            let marginfi_account = MarginfiAccount::try_deserialize(&mut data_slice).unwrap();
-            self.update_marginfi_account(&address.0, &marginfi_account)?;
+            let account = account.as_ref().unwrap();
+            self.update_marginfi_account(&address.0, &account)?;
         }
 
         debug!("Done loading marginfi accounts, tool {:?}", start.elapsed());
@@ -554,65 +649,44 @@ impl StateEngineService {
     pub fn update_marginfi_account(
         &self,
         marginfi_account_address: &Pubkey,
-        marginfi_account: &MarginfiAccount,
+        account: &Account,
     ) -> anyhow::Result<()> {
+        let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
         let marginfi_accounts = self.marginfi_accounts.clone();
 
         marginfi_accounts
             .entry(*marginfi_account_address)
             .and_modify(|marginfi_account_ref| {
-                let marginfi_account_ref = Arc::clone(marginfi_account_ref);
-                let marginfi_account_updated = marginfi_account.clone();
-                tokio::spawn(async move {
-                    let mut marginfi_account_guard = marginfi_account_ref.write().await;
-                    marginfi_account_guard.account = marginfi_account_updated;
-                });
+                let mut marginfi_account_guard = marginfi_account_ref.write().unwrap();
+                marginfi_account_guard.account = marginfi_account.clone();
             })
             .or_insert_with(|| {
                 Arc::new(RwLock::new(MarginfiAccountWrapper::new(
                     *marginfi_account_address,
                     marginfi_account.clone(),
-                    Vec::new(),
+                    self.banks.clone(),
                 )))
             });
 
         Ok(())
     }
 
-    async fn update_all_marginfi_accounts(self: Arc<Self>) -> anyhow::Result<()> {
-        let marginfi_accounts = self.marginfi_accounts.clone();
-        for account_ref in marginfi_accounts.iter() {
-            let account = account_ref.value().read().await;
-            let marginfi_account = account.account.clone(); // clone the underlying data
-            let address = account.address; // get the address from the account
-
-            let update_tasks = self.update_tasks.lock().await;
-            let self_clone = Arc::clone(&self);
-            let join_handle = tokio::spawn(async move {
-                self_clone
-                    .update_marginfi_account(&address, &marginfi_account)
-                    .map_err(|e| anyhow!("error updating marginfi account {}", e))
-            });
-            update_tasks.insert(address, join_handle);
+    pub fn trigger_update_signal(&self) {
+        match self.update_tx.send(()) {
+            Ok(_) => debug!("Sent update signal"),
+            Err(e) => error!("Failed to send update signal: {}", e),
         }
-        Ok(())
     }
 
-    pub async fn run(self: Arc<Self>) -> anyhow::Result<()> {
-        tokio::task::spawn(async move {
-            loop {
-                if let Err(e) = self.clone().update_all_marginfi_accounts().await {
-                    error!("Failed to update all marginfi accounts: {}", e);
-                }
-            }
-        });
-        Ok(())
-    }
+    pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        debug!("StateEngineService::start");
 
-    pub async fn start_and_run(config: StateEngineConfig) -> anyhow::Result<()> {
-        debug!("start_and_run");
-        let service = Self::setup(config).await?;
-        // service.run().await
+        self.load().await?;
+
+        let geyser_handle =
+            GeyserService::connect(self.config.get_geyser_service_config(), self.clone()).await?;
+
+        geyser_handle.await??;
 
         Ok(())
     }

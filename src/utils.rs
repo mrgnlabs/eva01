@@ -1,17 +1,30 @@
 use std::{
+    fmt::Display,
     str::FromStr,
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{atomic::AtomicUsize, Arc, RwLock},
 };
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
+use dashmap::DashMap;
+use fixed::types::I80F48;
+use marginfi::{
+    prelude::MarginfiResult,
+    state::{
+        marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
+        marginfi_group::{Bank, RiskTier},
+        price::{PriceAdapter, PriceBias},
+    },
+};
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use serde::{Deserialize, Deserializer};
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig};
+use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
+
+use crate::state_engine::engine::BankWrapper;
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
@@ -35,7 +48,7 @@ impl BatchLoadingConfig {
 /// await until some calls complete before initiating more, to respect the concurrency limit.
 /// Additionally, logs progress information including the number of accounts being fetched,
 /// the size of each chunk, and the current progress using trace and debug logs.
-pub async fn batch_get_multiple_accounts(
+pub fn batch_get_multiple_accounts(
     rpc_client: Arc<solana_client::rpc_client::RpcClient>,
     addresses: &[Pubkey],
     BatchLoadingConfig {
@@ -54,7 +67,7 @@ pub async fn batch_get_multiple_accounts(
         let batch_size = batch.len();
 
         log::trace!(
-            "Fetching batch {}/{} with {} addresses.",
+            "Fetching batch {} / {} with {} addresses.",
             batch_index + 1,
             total_batches,
             batch_size
@@ -91,7 +104,7 @@ pub async fn batch_get_multiple_accounts(
                     .fetch_add(fetched_chunk_size, std::sync::atomic::Ordering::Relaxed);
 
                 log::trace!(
-                    " - Fetched chunk with {} accounts. Progress: {}/{}",
+                    " - Fetched chunk with {} accounts. Progress: {} / {}",
                     fetched_chunk_size,
                     fetched_accounts.load(std::sync::atomic::Ordering::Relaxed),
                     total_addresses
@@ -141,14 +154,24 @@ pub mod accessor {
 }
 
 pub fn account_update_to_account(account_update: &SubscribeUpdateAccountInfo) -> Result<Account> {
-    let mut account = Account::new_data(
-        account_update.lamports,
-        &account_update.data,
-        &Pubkey::try_from(account_update.pubkey.clone()).expect("Invalid pubkey"),
-    )?;
+    let SubscribeUpdateAccountInfo {
+        lamports,
+        owner,
+        executable,
+        rent_epoch,
+        data,
+        ..
+    } = account_update;
 
-    account.executable = account_update.executable;
-    account.rent_epoch = account_update.rent_epoch;
+    let owner = Pubkey::try_from(owner.clone()).expect("Invalid pubkey");
+
+    let account = Account {
+        lamports: *lamports,
+        data: data.clone(),
+        owner,
+        executable: *executable,
+        rent_epoch: *rent_epoch,
+    };
 
     Ok(account)
 }
@@ -159,4 +182,151 @@ where
 {
     let s: String = Deserialize::deserialize(deserializer)?;
     Pubkey::from_str(&s).map_err(serde::de::Error::custom)
+}
+
+pub(crate) fn fixed_from_float<'de, D>(deserializer: D) -> Result<I80F48, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: f64 = Deserialize::deserialize(deserializer)?;
+
+    Ok(I80F48::from_num(s))
+}
+
+pub(crate) fn from_vec_str_to_pubkey<'de, D>(deserializer: D) -> Result<Vec<Pubkey>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Vec<String> = Deserialize::deserialize(deserializer)?;
+    s.into_iter()
+        .map(|s| Pubkey::from_str(&s).map_err(serde::de::Error::custom))
+        .collect()
+}
+
+pub struct BankAccountWithPriceFeedEva<'a> {
+    bank: Arc<RwLock<BankWrapper>>,
+    balance: &'a Balance,
+}
+
+impl<'a> BankAccountWithPriceFeedEva<'a> {
+    pub fn load(
+        lending_account: &'a LendingAccount,
+        banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
+    ) -> anyhow::Result<Vec<BankAccountWithPriceFeedEva<'a>>> {
+        let active_balances = lending_account
+            .balances
+            .iter()
+            .filter(|balance| balance.active);
+
+        active_balances
+            .enumerate()
+            .map(|(i, balance)| {
+                let bank = banks
+                    .get(&balance.bank_pk)
+                    .ok_or_else(|| anyhow::anyhow!("Bank not found"))?
+                    .clone();
+
+                Ok(BankAccountWithPriceFeedEva { bank, balance })
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
+    #[inline(always)]
+    /// Calculate the value of the assets and liabilities of the account in the form of (assets, liabilities)
+    ///
+    /// Nuances:
+    /// 1. Maintenance requirement is calculated using the real time price feed.
+    /// 2. Initial requirement is calculated using the time weighted price feed, if available.
+    /// 3. Initial requirement is discounted by the initial discount, if enabled and the usd limit is exceeded.
+    /// 4. Assets are only calculated for collateral risk tier.
+    /// 5. Oracle errors are ignored for deposits in isolated risk tier.
+    pub fn calc_weighted_assets_and_liabilities_values(
+        &self,
+        requirement_type: RequirementType,
+    ) -> anyhow::Result<(I80F48, I80F48)> {
+        match self.balance.get_side() {
+            Some(side) => {
+                let bank = &self.bank.read().unwrap().bank;
+                match side {
+                    BalanceSide::Assets => Ok((
+                        self.calc_weighted_assets(requirement_type, &bank)?,
+                        I80F48::ZERO,
+                    )),
+                    BalanceSide::Liabilities => Ok((
+                        I80F48::ZERO,
+                        self.calc_weighted_liabs(requirement_type, &bank)?,
+                    )),
+                }
+            }
+            None => Ok((I80F48::ZERO, I80F48::ZERO)),
+        }
+    }
+
+    #[inline(always)]
+    fn calc_weighted_assets(
+        &self,
+        requirement_type: RequirementType,
+        bank: &Bank,
+    ) -> anyhow::Result<I80F48> {
+        match bank.config.risk_tier {
+            RiskTier::Collateral => {
+                let price_feed = &self.bank.read().unwrap().oracle_adapter.price_adapter;
+                let mut asset_weight = bank
+                    .config
+                    .get_weight(requirement_type, BalanceSide::Assets);
+
+                let lower_price = price_feed.get_price_of_type(
+                    requirement_type.get_oracle_price_type(),
+                    Some(PriceBias::Low),
+                )?;
+
+                if matches!(requirement_type, RequirementType::Initial) {
+                    if let Some(discount) =
+                        bank.maybe_get_asset_weight_init_discount(lower_price)?
+                    {
+                        asset_weight = asset_weight
+                            .checked_mul(discount)
+                            .ok_or_else(|| anyhow!("math error"))?;
+                    }
+                }
+
+                Ok(calc_value(
+                    bank.get_asset_amount(self.balance.asset_shares.into())?,
+                    lower_price,
+                    bank.mint_decimals,
+                    Some(asset_weight),
+                )?)
+            }
+            RiskTier::Isolated => Ok(I80F48::ZERO),
+        }
+    }
+
+    #[inline(always)]
+    fn calc_weighted_liabs(
+        &self,
+        requirement_type: RequirementType,
+        bank: &Bank,
+    ) -> MarginfiResult<I80F48> {
+        let price_feed = &self.bank.read().unwrap().oracle_adapter.price_adapter;
+        let liability_weight = bank
+            .config
+            .get_weight(requirement_type, BalanceSide::Liabilities);
+
+        let higher_price = price_feed.get_price_of_type(
+            requirement_type.get_oracle_price_type(),
+            Some(PriceBias::High),
+        )?;
+
+        calc_value(
+            bank.get_liability_amount(self.balance.liability_shares.into())?,
+            higher_price,
+            bank.mint_decimals,
+            Some(liability_weight),
+        )
+    }
+
+    #[inline]
+    pub fn is_empty(&self, side: BalanceSide) -> bool {
+        self.balance.is_empty(side)
+    }
 }

@@ -12,9 +12,11 @@ anyhow = "1.0.79"
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bytemuck = "1.14.0"
 bytes = "1.5.0"
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 dashmap = "5.5.3"
 env_logger = "0.11.3"
 fixed = "1.24.0"
+fixed-macro = "1.2.0"
 futures = "0.3.30"
 futures-sink = "0.3.30"
 log = "0.4.21"
