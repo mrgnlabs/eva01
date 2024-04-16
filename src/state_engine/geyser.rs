@@ -329,7 +329,7 @@ impl GeyserService {
             GeyserServiceError::GenericError
         })?;
 
-        if let Err(e) = state_engine.update_sol_account(&account_address, account) {
+        if let Err(e) = state_engine.update_sol_account(account_address, account) {
             warn!("Error updating sol account: {:?}", e);
         } else {
             debug!("Sol account updated");

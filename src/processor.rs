@@ -1,25 +1,33 @@
 use std::{
     collections::HashSet,
-    sync::{Arc, RwLock},
+    error::Error,
+    sync::{Arc, RwLock, RwLockReadGuard},
     thread::{self, JoinHandle},
 };
 
 use crossbeam::channel::Receiver;
-use fixed::types::I80F48;
+use fixed::{traits::Fixed, types::I80F48};
 use fixed_macro::types::I80F48;
-use log::{error, info};
-use marginfi::state::marginfi_account::BalanceSide;
+use log::{debug, error, info, warn};
+use marginfi::{
+    constants::EXP_10_I80F48,
+    state::{
+        marginfi_account::BalanceSide,
+        price::{PriceAdapter, PriceBias},
+    },
+};
+use sha2::{Digest, Sha256};
 use solana_sdk::{
-    blake3::Hash,
     pubkey,
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair},
+    signer::{SeedDerivable, Signer},
 };
+use spl_token::native_mint::DECIMALS;
 
 use crate::{
-    state_engine::{
-        self,
-        engine::{MarginfiAccountWrapper, StateEngineService},
+    state_engine::engine::{
+        MarginfiAccountWrapper, MarginfiAccountWrapperError, StateEngineService,
     },
     utils::{fixed_from_float, from_pubkey_string, from_vec_str_to_pubkey},
 };
@@ -30,6 +38,10 @@ pub enum ProcessorError {
     FailedToReadAccount,
     #[error("Failed to start liquidator")]
     SetupFailed,
+    #[error("MarginfiAccountWrapperError: {0}")]
+    ProcessorError(#[from] MarginfiAccountWrapperError),
+    #[error("Error: {0}")]
+    Error(&'static str),
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -43,7 +55,7 @@ pub struct EvaLiquidatorCfg {
     )]
     pub token_account_dust_threshold: I80F48,
     #[serde(
-        default = "EvaLiquidatorCfg::default_token_account_dust_threshold",
+        default = "EvaLiquidatorCfg::default_max_sol_balance",
         deserialize_with = "fixed_from_float"
     )]
     pub max_sol_balance: I80F48,
@@ -52,6 +64,12 @@ pub struct EvaLiquidatorCfg {
         deserialize_with = "from_vec_str_to_pubkey"
     )]
     pub preferred_mints: Vec<Pubkey>,
+
+    #[serde(
+        default = "EvaLiquidatorCfg::default_swap_mint",
+        deserialize_with = "from_pubkey_string"
+    )]
+    pub swap_mint: Pubkey,
 }
 
 impl EvaLiquidatorCfg {
@@ -60,7 +78,7 @@ impl EvaLiquidatorCfg {
     }
 
     pub fn default_max_sol_balance() -> I80F48 {
-        I80F48!(0.5)
+        I80F48!(1)
     }
 
     pub fn default_preferred_mints() -> Vec<Pubkey> {
@@ -68,6 +86,10 @@ impl EvaLiquidatorCfg {
             pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
             pubkey!("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"),
         ]
+    }
+
+    pub fn default_swap_mint() -> Pubkey {
+        pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
     }
 }
 
@@ -78,6 +100,7 @@ pub struct EvaLiquidator {
     signer_keypair: Arc<Keypair>,
     cfg: EvaLiquidatorCfg,
     preferred_mints: HashSet<Pubkey>,
+    swap_mint_bank_pk: Pubkey,
 }
 
 impl EvaLiquidator {
@@ -89,25 +112,64 @@ impl EvaLiquidator {
         thread::Builder::new()
             .name("evaLiquidatorProcessor".to_string())
             .spawn(move || -> Result<(), ProcessorError> {
-                let liquidator_account = state_engine
-                    .marginfi_accounts
-                    .get(&cfg.liquidator_account)
-                    .ok_or(ProcessorError::SetupFailed)?
-                    .clone();
+                info!("Starting liquidator processor");
+                let liquidator_account = {
+                    let account_ref = state_engine.marginfi_accounts.get(&cfg.liquidator_account);
 
-                let keypair = Arc::new(
-                    read_keypair_file(&cfg.keypair_path)
-                        .map_err(|_| ProcessorError::SetupFailed)?,
+                    if account_ref.is_none() {
+                        error!("Liquidator account not found");
+                        return Err(ProcessorError::SetupFailed);
+                    }
+
+                    let account = account_ref.as_ref().unwrap().value().clone();
+
+                    drop(account_ref);
+
+                    account
+                };
+
+                debug!(
+                    "Liquidator account: {:?}",
+                    liquidator_account.read().unwrap().address
                 );
+
+                let keypair = Arc::new(read_keypair_file(&cfg.keypair_path).map_err(|_| {
+                    error!("Failed to read keypair file at {}", cfg.keypair_path);
+                    ProcessorError::SetupFailed
+                })?);
+
+                state_engine
+                    .token_account_manager
+                    .create_token_accounts(keypair.clone())
+                    .map_err(|e| {
+                        error!("Failed to create token accounts: {:?}", e);
+                        ProcessorError::SetupFailed
+                    })?;
+
+                let preferred_mints = cfg.preferred_mints.iter().cloned().collect();
+
+                let swap_mint_bank_pk = state_engine
+                    .get_bank_for_mint(&cfg.swap_mint)
+                    .ok_or(ProcessorError::Error("Failed to get bank for swap mint"))?
+                    .read()
+                    .unwrap()
+                    .address;
 
                 let processor = EvaLiquidator {
                     state_engine,
                     update_rx,
                     liquidator_account,
                     signer_keypair: keypair,
+                    cfg,
+                    preferred_mints,
+                    swap_mint_bank_pk,
                 };
 
-                processor.run();
+                if let Err(e) = processor.run() {
+                    error!("Error running processor: {:?}", e);
+                }
+
+                warn!("Processor thread exiting");
 
                 Ok(())
             })
@@ -116,6 +178,8 @@ impl EvaLiquidator {
 
     fn run(&self) -> Result<(), ProcessorError> {
         loop {
+            if self.needs_to_be_rebalanced() {}
+
             while let Ok(_) = self.update_rx.recv() {
                 match self.calc_health_for_all_accounts() {
                     Err(e) => {
@@ -135,28 +199,265 @@ impl EvaLiquidator {
     /// - User has non-stable deposits
     /// - User has any liabilities
     /// - User has excess SOL in their account
-    fn needs_to_be_rebalanced(&self) -> bool {}
+    fn needs_to_be_rebalanced(&self) -> bool {
+        debug!("Checking if liquidator needs to be rebalanced");
+        let rebalance_needed = self.has_tokens_in_token_accounts()
+            || self.has_non_preferred_deposits()
+            || self.has_liabilties();
+
+        if rebalance_needed {
+            info!("Liquidator needs to be rebalanced");
+        } else {
+            debug!("Liquidator does not need to be rebalanced");
+        }
+
+        rebalance_needed
+    }
 
     fn has_tokens_in_token_accounts(&self) -> bool {
-        self.state_engine.token_accounts.iter().any(|account| {
+        debug!("Checking if liquidator has tokens in token accounts");
+        let has_tokens_in_tas = self.state_engine.token_accounts.iter().any(|account| {
             account
                 .read()
                 .map_err(|_| ProcessorError::FailedToReadAccount)
-                .map(|account| account.get_value().unwrap() > self.cfg.token_account_dust_threshold)
+                .map(|account| {
+                    let value = account.get_value().unwrap();
+                    debug!("Token account {} value: {:?}", account.mint, value);
+                    value > self.cfg.token_account_dust_threshold
+                })
                 .unwrap_or(false)
-        })
+        });
+
+        if has_tokens_in_tas {
+            info!("Liquidator has tokens in token accounts");
+        } else {
+            debug!("Liquidator has no tokens in token accounts");
+        }
+
+        has_tokens_in_tas
     }
 
     fn has_liabilties(&self) -> bool {
-        self.liquidator_account
+        debug!("Checking if liquidator has liabilities");
+
+        let has_liabs = self
+            .liquidator_account
             .read()
             .map_err(|_| ProcessorError::FailedToReadAccount)
             .map(|account| account.has_liabs())
-            .unwrap_or(false)
+            .unwrap_or(false);
+
+        if has_liabs {
+            info!("Liquidator has liabilities");
+        } else {
+            debug!("Liquidator has no liabilities");
+        }
+
+        has_liabs
+    }
+
+    fn get_liquidator_account(
+        &self,
+    ) -> Result<RwLockReadGuard<MarginfiAccountWrapper>, ProcessorError> {
+        Ok(self
+            .liquidator_account
+            .read()
+            .map_err(|_| ProcessorError::FailedToReadAccount)?)
+    }
+
+    fn get_token_balance_for_bank(
+        &self,
+        bank_pk: Pubkey,
+    ) -> Result<Option<I80F48>, ProcessorError> {
+        let mint = self
+            .state_engine
+            .banks
+            .get(&bank_pk)
+            .and_then(|bank| bank.read().ok().map(|bank| bank.bank.mint));
+
+        if mint.is_none() {
+            warn!("No mint found for bank {}", bank_pk);
+            return Ok(None);
+        }
+
+        let mint = mint.unwrap();
+
+        let token_account = self
+            .state_engine
+            .token_account_manager
+            .get_address_for_mint(mint);
+
+        if token_account.is_none() {
+            warn!("No token account found for mint {}", mint);
+            return Ok(None);
+        }
+
+        let token_account = token_account.unwrap();
+
+        let balance = self
+            .state_engine
+            .token_accounts
+            .get(&token_account)
+            .and_then(|account| account.read().ok().map(|account| account.get_amount()));
+
+        if balance.is_none() {
+            warn!("No balance found for token account {}", token_account);
+            return Ok(None);
+        }
+
+        Ok(balance)
+    }
+
+    fn replay_liabilities(&self) -> Result<(), ProcessorError> {
+        debug!("Replaying liabilities");
+        let liabilties = self
+            .liquidator_account
+            .read()
+            .map_err(|_| ProcessorError::FailedToReadAccount)?
+            .get_liabilites()
+            .map_err(|_| ProcessorError::FailedToReadAccount)?;
+
+        if liabilties.is_empty() {
+            debug!("No liabilities to replay");
+            return Ok(());
+        }
+
+        info!("Replaying liabilities");
+
+        Ok(())
+    }
+
+    /// Repay a liability for a given bank
+    ///
+    /// - Find any bank tokens in token accounts
+    /// - Calc $ value of liab
+    /// - Find USDC in token accounts
+    /// - Calc additional USDC to withdraw
+    /// - Withdraw USDC
+    /// - Swap USDC for bank tokens
+    /// - Repay liability
+    fn repay_liability(&self, bank_pk: Pubkey) -> Result<(), ProcessorError> {
+        let balance = self
+            .get_liquidator_account()?
+            .get_balance_for_bank(&bank_pk)?;
+
+        if matches!(balance, None) || matches!(balance, Some((_, BalanceSide::Assets))) {
+            warn!("No liability found for bank {}", bank_pk);
+            return Ok(());
+        }
+
+        let (balance, _) = balance.unwrap();
+
+        debug!("Found liability of {} for bank {}", balance, bank_pk);
+
+        let token_balance = self
+            .get_token_balance_for_bank(bank_pk)?
+            .unwrap_or_default();
+
+        if !token_balance.is_zero() {
+            debug!(
+                "Found token balance of {} for bank {}",
+                token_balance, bank_pk
+            );
+        }
+
+        let liab_to_purchase = balance - token_balance;
+
+        debug!("Liability to purchase: {}", liab_to_purchase);
+
+        if !liab_to_purchase.is_zero() {
+            let liab_usd_value = self.get_value(liab_to_purchase, &bank_pk, None)?;
+
+            debug!("Liability value: ${}", liab_usd_value);
+
+            let required_swap_token = self.get_amount(liab_usd_value, &self.swap_mint_bank_pk)?;
+
+            debug!(
+                "Required swap token amount: {} for ${}",
+                required_swap_token, liab_usd_value
+            );
+
+            let swap_token_balance = self
+                .get_token_balance_for_bank(self.swap_mint_bank_pk)?
+                .unwrap_or_default();
+
+            // Log if token balance is > 0
+            if !swap_token_balance.is_zero() {
+                debug!(
+                    "Found swap token balance of {} for bank {}",
+                    swap_token_balance, self.swap_mint_bank_pk
+                );
+            }
+
+            // Token balance to withdraw
+            let token_balance_to_withdraw = required_swap_token - swap_token_balance;
+
+            // Log if token balance to withdraw is > 0
+            if !token_balance_to_withdraw.is_zero() {
+                debug!(
+                    "Token balance to withdraw: {} for bank {}",
+                    token_balance_to_withdraw, self.swap_mint_bank_pk
+                );
+            }
+
+            // Withdraw token balance
+        }
+
+        Ok(())
+    }
+
+    pub fn get_value(
+        &self,
+        amount: I80F48,
+        bank_pk: &Pubkey,
+        bias: Option<PriceBias>,
+    ) -> Result<I80F48, ProcessorError> {
+        let bank_ref = self
+            .state_engine
+            .get_bank(bank_pk)
+            .ok_or(ProcessorError::Error("Failed to get bank"))?;
+
+        let bank = bank_ref
+            .read()
+            .map_err(|_| ProcessorError::Error("Failed to get bank"))?;
+
+        let amount_ui = amount / EXP_10_I80F48[bank.bank.mint_decimals as usize];
+
+        let price = bank
+            .oracle_adapter
+            .price_adapter
+            .get_price_of_type(marginfi::state::price::OraclePriceType::RealTime, bias)
+            .map_err(|_| ProcessorError::Error("Failed to get price"))?;
+
+        Ok(amount_ui * price)
+    }
+
+    pub fn get_amount(&self, value: I80F48, bank_pk: &Pubkey) -> Result<I80F48, ProcessorError> {
+        let bank_ref = self
+            .state_engine
+            .get_bank(bank_pk)
+            .ok_or(ProcessorError::Error("Failed to get bank"))?;
+
+        let bank = bank_ref
+            .read()
+            .map_err(|_| ProcessorError::Error("Failed to get bank"))?;
+
+        let price = bank
+            .oracle_adapter
+            .price_adapter
+            .get_price_of_type(marginfi::state::price::OraclePriceType::RealTime, None)
+            .map_err(|_| ProcessorError::Error("Failed to get price"))?;
+
+        let amount_ui = value / price;
+
+        Ok(amount_ui * EXP_10_I80F48[bank.bank.mint_decimals as usize])
     }
 
     fn has_non_preferred_deposits(&self) -> bool {
-        self.liquidator_account
+        debug!("Checking if liquidator has non-preferred deposits");
+
+        let has_non_preferred_deposits = self
+            .liquidator_account
             .read()
             .map_err(|_| ProcessorError::FailedToReadAccount)
             .unwrap()
@@ -164,35 +465,31 @@ impl EvaLiquidator {
             .lending_account
             .balances
             .iter()
+            .filter(|balance| balance.active)
             .any(|balance| {
-                let bank = self
+                let mint = self
                     .state_engine
                     .banks
                     .get(&balance.bank_pk)
-                    .unwrap()
-                    .read()
+                    .and_then(|bank| bank.read().ok().map(|bank| bank.bank.mint))
                     .unwrap();
 
-                matches!(balance.get_side(), Some(BalanceSide::Assets))
-                    && self.preferred_mints.contains(&bank.bank.mint)
-            })
-    }
+                let has_non_preferred_deposit =
+                    matches!(balance.get_side(), Some(BalanceSide::Assets))
+                        && !self.preferred_mints.contains(&mint);
 
-    fn has_excess_sol(&self) -> bool {
-        let signer = self.signer_keypair.pubkey();
+                debug!("Found non-preferred {} deposits", mint);
 
-        self.state_engine
-            .sol_accounts
-            .get(&signer)
-            .map_or(false, |account| {
-                account
-                    .read()
-                    .map_err(|_| ProcessorError::FailedToReadAccount)
-                    .map(|account| {
-                        account.get_value().unwrap() > self.cfg.token_account_dust_threshold
-                    })
-                    .unwrap_or(false)
-            })
+                has_non_preferred_deposit
+            });
+
+        if has_non_preferred_deposits {
+            info!("Liquidator has non-preferred deposits");
+        } else {
+            debug!("Liquidator has no non-preferred deposits");
+        }
+
+        has_non_preferred_deposits
     }
 
     fn calc_health_for_all_accounts(&self) -> Result<(), ProcessorError> {
@@ -232,4 +529,30 @@ impl EvaLiquidator {
 
         Ok(())
     }
+}
+
+fn get_liquidator_seed(signer: Pubkey, mint: Pubkey, seed: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(signer.as_ref());
+    hasher.update(mint.as_ref());
+    hasher.update(seed);
+    hasher.finalize().try_into().unwrap()
+}
+
+fn get_keypair_for_token_account(
+    signer: Pubkey,
+    mint: Pubkey,
+    seed: &[u8],
+) -> Result<Keypair, Box<dyn Error>> {
+    let keypair_seed = get_liquidator_seed(signer, mint, seed);
+    Keypair::from_seed(&keypair_seed)
+}
+
+fn get_address_for_token_account(
+    signer: Pubkey,
+    mint: Pubkey,
+    seed: &[u8],
+) -> Result<Pubkey, Box<dyn Error>> {
+    let keypair = get_keypair_for_token_account(signer, mint, seed)?;
+    Ok(keypair.pubkey())
 }

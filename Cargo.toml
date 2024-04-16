@@ -25,9 +25,11 @@ marginfi = { path = "../marginfi-v2/programs/marginfi", features = [
     "client",
     "no-entrypoint",
 ] }
+poly1305 = "0.8.0"
 rayon = "1.10.0"
 serde = "1.0.197"
 serde_toml = "0.0.1"
+sha2 = "0.10.8"
 solana-account-decoder = "1.16"
 solana-client = "1.16"
 solana-program = "1.16"

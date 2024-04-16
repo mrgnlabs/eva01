@@ -1,13 +1,15 @@
 use crate::{processor::EvaLiquidator, state_engine::engine::StateEngineConfig};
 use env_logger::Builder;
 use log::debug;
-use solana_sdk::pubkey::Pubkey;
+use solana_sdk::{pubkey::Pubkey, signature::read_keypair_file};
 use state_engine::engine::StateEngineService;
-use std::{backtrace, error::Error};
+use std::{backtrace, error::Error, sync::Arc, thread::sleep, time::Duration};
 use structopt::StructOpt;
 
 mod processor;
+mod sender;
 mod state_engine;
+mod token_account_manager;
 mod utils;
 
 #[derive(structopt::StructOpt)]
@@ -31,7 +33,7 @@ pub struct Eva01Opts {
     config_path: String,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize)]
 struct Eva01Config {
     state_engine_config: StateEngineConfig,
     liquidator_config: processor::EvaLiquidatorCfg,
@@ -65,11 +67,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (state_engine, update_rx) = StateEngineService::new(config.state_engine_config.clone())?;
 
-    let handle = EvaLiquidator::start(state_engine.clone(), update_rx)?;
-
+    let state_eng_clone = state_engine.clone();
     tokio_rt.block_on(async move {
-        state_engine.start().await.unwrap();
+        state_eng_clone
+            .load(config.liquidator_config.liquidator_account)
+            .await
+            .unwrap();
     });
+
+    let handle = EvaLiquidator::start(state_engine.clone(), update_rx, config.liquidator_config)?;
+
+    // sleep(Duration::from_secs(1));
+
+    // tokio_rt.block_on(async move {
+    //     state_engine.start().await.unwrap();
+    // });
 
     handle.join().unwrap()?;
 

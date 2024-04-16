@@ -1,13 +1,17 @@
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 use fixed::types::I80F48;
+use fixed::types::I89F39;
+use log::info;
 use marginfi::constants::EXP_10_I80F48;
 use marginfi::state::marginfi_account::BalanceSide;
 use marginfi::state::price::PriceAdapter;
+use marginfi::state::price::PriceBias;
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
 use solana_sdk::pubkey;
+use std::error::Error;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -26,12 +30,22 @@ use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::
 use solana_sdk::{account::Account, signature::Keypair};
 
 use crate::state_engine::geyser::GeyserService;
+use crate::token_account_manager;
+use crate::token_account_manager::TokenAccountManager;
 use crate::utils::BankAccountWithPriceFeedEva;
 use crate::utils::{accessor, batch_get_multiple_accounts, from_pubkey_string, BatchLoadingConfig};
 
 use super::geyser::GeyserServiceConfig;
 
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
+
+#[derive(Debug, thiserror::Error)]
+pub enum MarginfiAccountWrapperError {
+    #[error("Bank not found")]
+    BankNotFound,
+    #[error("RwLock error")]
+    RwLockError,
+}
 
 pub struct MarginfiAccountWrapper {
     pub address: Pubkey,
@@ -58,6 +72,69 @@ impl MarginfiAccountWrapper {
             .balances
             .iter()
             .any(|a| a.active && matches!(a.get_side(), Some(BalanceSide::Liabilities)))
+    }
+
+    pub fn get_liabilites(&self) -> Result<Vec<(I80F48, Pubkey)>, Box<dyn Error>> {
+        Ok(self
+            .account
+            .lending_account
+            .balances
+            .iter()
+            .filter(|b| matches!(b.get_side(), Some(BalanceSide::Liabilities)) && b.active)
+            .filter_map(|b| {
+                Some((
+                    self.banks
+                        .get(&b.bank_pk)
+                        .unwrap()
+                        .value()
+                        .read()
+                        .map(|bank| {
+                            bank.bank
+                                .get_liability_amount(b.liability_shares.into())
+                                .ok()
+                        })
+                        .ok()??,
+                    b.bank_pk,
+                ))
+            })
+            .collect::<Vec<_>>())
+    }
+
+    pub fn get_balance_for_bank(
+        &self,
+        bank_pk: &Pubkey,
+    ) -> Result<Option<(I80F48, BalanceSide)>, MarginfiAccountWrapperError> {
+        let bank_ref = self
+            .banks
+            .get(bank_pk)
+            .ok_or(MarginfiAccountWrapperError::BankNotFound)?;
+        let bank = bank_ref
+            .value()
+            .read()
+            .map_err(|_| MarginfiAccountWrapperError::RwLockError)?;
+
+        let balance = self
+            .account
+            .lending_account
+            .balances
+            .iter()
+            .find(|b| b.bank_pk == *bank_pk)
+            .map(|b| match b.get_side()? {
+                BalanceSide::Assets => {
+                    let amount = bank.bank.get_asset_amount(b.asset_shares.into()).ok()?;
+                    Some((amount, BalanceSide::Assets))
+                }
+                BalanceSide::Liabilities => {
+                    let amount = bank
+                        .bank
+                        .get_liability_amount(b.liability_shares.into())
+                        .ok()?;
+                    Some((amount, BalanceSide::Liabilities))
+                }
+            })
+            .ok_or(MarginfiAccountWrapperError::BankNotFound)?;
+
+        Ok(balance)
     }
 
     pub fn calc_health(&self) -> (I80F48, I80F48) {
@@ -132,6 +209,10 @@ impl TokenAccountWrapper {
 
         Ok(ui_amount * price)
     }
+
+    pub fn get_amount(&self) -> I80F48 {
+        I80F48::from_num(self.balance)
+    }
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
@@ -182,6 +263,8 @@ impl StateEngineConfig {
 pub enum StateEngineError {
     #[error("Failed to load from RPC")]
     RpcError,
+    #[error("Bank not found")]
+    NotFound,
 }
 
 pub struct StateEngineService {
@@ -192,10 +275,11 @@ pub struct StateEngineService {
     pub banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
     pub token_accounts: DashMap<Pubkey, Arc<RwLock<TokenAccountWrapper>>>,
     pub sol_accounts: DashMap<Pubkey, Account>,
+    pub token_account_manager: TokenAccountManager,
     config: StateEngineConfig,
     accounts_to_track: Arc<RwLock<Vec<Pubkey>>>,
     oracle_to_bank_map: DashMap<Pubkey, Vec<Arc<RwLock<BankWrapper>>>>,
-    mint_to_bank_map: DashMap<Pubkey, Arc<RwLock<BankWrapper>>>,
+    pub mint_to_bank_map: DashMap<Pubkey, Vec<Arc<RwLock<BankWrapper>>>>,
     tracked_oracle_accounts: DashSet<Pubkey>,
     tracked_token_accounts: DashSet<Pubkey>,
     update_tx: Sender<()>,
@@ -217,6 +301,8 @@ impl StateEngineService {
 
         let (update_tx, update_rx) = crossbeam::channel::bounded(1000);
 
+        let token_account_manager = TokenAccountManager::new(rpc_client.clone())?;
+
         let state_engine_service = Arc::new(Self {
             marginfi_accounts: Arc::new(DashMap::new()),
             banks: Arc::new(DashMap::new()),
@@ -232,16 +318,30 @@ impl StateEngineService {
             tracked_oracle_accounts: DashSet::new(),
             tracked_token_accounts: DashSet::new(),
             update_tx,
+            token_account_manager,
         });
 
         Ok((state_engine_service, update_rx))
     }
 
-    pub async fn load(&self) -> anyhow::Result<()> {
+    pub fn get_bank(&self, bank_pk: &Pubkey) -> Option<Arc<RwLock<BankWrapper>>> {
+        self.banks.get(bank_pk).map(|bank| bank.value().clone())
+    }
+
+    /// TODO: Enable a liquidator to specify a preferred bank
+    pub fn get_bank_for_mint(&self, mint: &Pubkey) -> Option<Arc<RwLock<BankWrapper>>> {
+        self.mint_to_bank_map
+            .get(mint)
+            .map(|banks| banks.value().first().unwrap().clone())
+    }
+
+    pub async fn load(&self, liquidator_account: Pubkey) -> anyhow::Result<()> {
         debug!("StateEngineService::load");
 
         self.load_oracles_and_banks().await?;
         self.load_token_accounts()?;
+        self.load_sol_accounts()?;
+        self.load_liquidator_account(liquidator_account)?;
 
         if !self.config.skip_account_loading {
             self.load_marginfi_accounts().await?;
@@ -338,7 +438,8 @@ impl StateEngineService {
 
             self.mint_to_bank_map
                 .entry(bank.mint)
-                .or_insert_with(|| bank_ref.clone());
+                .and_modify(|vec| vec.push(bank_ref.clone()))
+                .or_insert_with(|| vec![bank_ref.clone()]);
 
             self.tracked_oracle_accounts.insert(**oracle_address);
         }
@@ -354,6 +455,28 @@ impl StateEngineService {
             .map(|account| {
                 self.sol_accounts.insert(self.config.signer_pubkey, account);
             })?;
+
+        Ok(())
+    }
+
+    pub fn load_liquidator_account(&self, liquidator_account: Pubkey) -> anyhow::Result<()> {
+        let account = self.rpc_client.get_account(&liquidator_account)?;
+
+        let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
+
+        self.marginfi_accounts
+            .entry(liquidator_account)
+            .and_modify(|marginfi_account_ref| {
+                let mut marginfi_account_guard = marginfi_account_ref.write().unwrap();
+                marginfi_account_guard.account = marginfi_account.clone();
+            })
+            .or_insert_with(|| {
+                Arc::new(RwLock::new(MarginfiAccountWrapper::new(
+                    liquidator_account,
+                    marginfi_account.clone(),
+                    self.banks.clone(),
+                )))
+            });
 
         Ok(())
     }
@@ -431,7 +554,8 @@ impl StateEngineService {
 
                 self.mint_to_bank_map
                     .entry(bank.mint)
-                    .or_insert_with(|| bank_entry.clone());
+                    .and_modify(|vec| vec.push(bank_entry.clone()))
+                    .or_insert_with(|| vec![bank_entry.clone()]);
 
                 bank_entry
             });
@@ -451,15 +575,11 @@ impl StateEngineService {
             bank_mints.push(bank_guard.bank.mint);
         }
 
-        let mut token_account_addresses = vec![];
+        self.token_account_manager
+            .add_mints(&bank_mints, self.config.signer_pubkey)
+            .map_err(|e| anyhow::anyhow!("Failed to add mints: {:?}", e))?;
 
-        for mint in bank_mints.iter() {
-            let ata = spl_associated_token_account::get_associated_token_address(
-                &self.config.signer_pubkey,
-                &mint,
-            );
-            token_account_addresses.push(ata);
-        }
+        let token_account_addresses = self.token_account_manager.get_token_account_addresses();
 
         let accounts = batch_get_multiple_accounts(
             self.rpc_client.clone(),
@@ -493,7 +613,15 @@ impl StateEngineService {
                     token_account_guard.balance = balance;
                 })
                 .or_insert_with(|| {
-                    let bank = self.mint_to_bank_map.get(mint).unwrap().value().clone();
+                    let bank = self
+                        .mint_to_bank_map
+                        .get(mint)
+                        .unwrap()
+                        .value()
+                        .first()
+                        .unwrap()
+                        .clone();
+
                     Arc::new(RwLock::new(TokenAccountWrapper {
                         address: **token_account_address,
                         mint: **mint,
@@ -532,7 +660,14 @@ impl StateEngineService {
                     .unwrap()
                     .decimals;
 
-                let bank = self.mint_to_bank_map.get(&mint).unwrap().value().clone();
+                let bank = self
+                    .mint_to_bank_map
+                    .get(&mint)
+                    .unwrap()
+                    .value()
+                    .first()
+                    .unwrap()
+                    .clone();
 
                 Arc::new(RwLock::new(TokenAccountWrapper {
                     address: *token_account_address,
@@ -546,8 +681,12 @@ impl StateEngineService {
         Ok(())
     }
 
-    pub fn update_sol_account(&self, account: Account) -> anyhow::Result<()> {
-        self.sol_accounts.insert(account.owner, account);
+    pub fn update_sol_account(
+        &self,
+        account_address: Pubkey,
+        account: Account,
+    ) -> anyhow::Result<()> {
+        self.sol_accounts.insert(account_address, account);
         Ok(())
     }
 
@@ -679,12 +818,10 @@ impl StateEngineService {
     }
 
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
-        debug!("StateEngineService::start");
-
-        self.load().await?;
-
         let geyser_handle =
             GeyserService::connect(self.config.get_geyser_service_config(), self.clone()).await?;
+
+        info!("StateEngineService connected to geyser");
 
         geyser_handle.await??;
 
