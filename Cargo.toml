@@ -7,7 +7,8 @@ edition = "2021"
 
 [dependencies]
 anchor-client = { version = "0.28.0", features = ["async"] }
-anchor-spl = "0.29.0"
+anchor-lang = "0.28.0"
+anchor-spl = "0.28.0"
 anyhow = "1.0.79"
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bytemuck = "1.14.0"
@@ -20,14 +21,15 @@ fixed-macro = "1.2.0"
 futures = "0.3.30"
 futures-sink = "0.3.30"
 log = "0.4.21"
-marginfi = { path = "../marginfi-v2/programs/marginfi", features = [
+marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", branch = "jp/eva-support", features = [
     "mainnet-beta",
     "client",
     "no-entrypoint",
 ] }
-poly1305 = "0.8.0"
 rayon = "1.10.0"
+reqwest = "0.12.4"
 serde = "1.0.197"
+serde_json = "1.0.116"
 serde_toml = "0.0.1"
 sha2 = "0.10.8"
 solana-account-decoder = "1.16"

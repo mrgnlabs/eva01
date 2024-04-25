@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use anchor_spl::associated_token;
 use log::{debug, error, info};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use sha2::{Digest, Sha256};
@@ -29,15 +30,16 @@ pub enum TokenAccountManagerError {
     SetupFailed(&'static str),
 }
 
+#[derive(Clone)]
 pub struct TokenAccountManager {
-    mint_to_account: RwLock<HashMap<Pubkey, Pubkey>>,
+    mint_to_account: Arc<RwLock<HashMap<Pubkey, Pubkey>>>,
     rpc_client: Arc<RpcClient>,
 }
 
 impl TokenAccountManager {
     pub fn new(rpc_client: Arc<RpcClient>) -> Result<Self, TokenAccountManagerError> {
         Ok(Self {
-            mint_to_account: RwLock::new(HashMap::new()),
+            mint_to_account: Arc::new(RwLock::new(HashMap::new())),
             rpc_client,
         })
     }
@@ -84,23 +86,22 @@ impl TokenAccountManager {
         let tas = mints
             .iter()
             .map(
-                |mint| -> Result<(Keypair, Pubkey, Pubkey), TokenAccountManagerError> {
-                    let token_account =
-                        get_keypair_for_token_account(signer.pubkey(), *mint, TOKEN_ACCOUNT_SEED)?;
-
-                    let address = token_account.pubkey();
-
-                    Ok((token_account, address, *mint))
+                |mint| -> Result<(Pubkey, Pubkey), TokenAccountManagerError> {
+                    Ok((
+                        *mint,
+                        self.get_address_for_mint(*mint).ok_or_else(|| {
+                            TokenAccountManagerError::SetupFailed(
+                                "Failed to find token account address",
+                            )
+                        })?,
+                    ))
                 },
             )
             .collect::<Result<Vec<_>, _>>()?;
 
         // Create missing token accounts
         {
-            let addresses = tas
-                .iter()
-                .map(|(_, address, _)| *address)
-                .collect::<Vec<_>>();
+            let addresses = tas.iter().map(|(_, address)| *address).collect::<Vec<_>>();
 
             let res = batch_get_multiple_accounts(
                 rpc_client.clone(),
@@ -110,53 +111,25 @@ impl TokenAccountManager {
             .map_err(|e| {
                 error!("Failed to batch get multiple accounts: {:?}", e);
                 TokenAccountManagerError::SetupFailed("Failed to find missing accounts")
-            })?;
-
-            let rent_lamps = rpc_client
-                .get_minimum_balance_for_rent_exemption(spl_token::state::Account::LEN)
-                .map_err(|e| {
-                    error!("Failed to get minimum balance for rent exemption: {:?}", e);
-                    TokenAccountManagerError::SetupFailed(
-                        "Failed to get minimum balance for rent exemption",
-                    )
-                })?;
+            })?; 
 
             let tas_to_create = res
                 .iter()
                 .zip(tas.iter())
-                .filter_map(|(res, (keypair, address, mint))| {
+                .filter_map(|(res, (mint, address))| {
                     if res.is_none() {
                         debug!("Creating token account for mint: {:?}", mint);
-                        Some((keypair, address, mint))
+                        Some((address, mint))
                     } else {
                         None
                     }
                 })
-                .map(
-                    |(keypair, address, mint)| -> Result<_, TokenAccountManagerError> {
-                        let create_account_ix = system_instruction::create_account(
-                            &signer.pubkey(),
-                            address,
-                            rent_lamps,
-                            spl_token::state::Account::LEN as u64,
-                            &spl_token::ID,
-                        );
-                        let init_token_account_ix = spl_token::instruction::initialize_account3(
-                            &spl_token::id(),
-                            address,
-                            mint,
-                            &signer.pubkey(),
-                        )
-                        .map_err(|e| {
-                            error!("Failed to create initialize_account instruction: {:?}", e);
-                            TokenAccountManagerError::SetupFailed(
-                                "Failed to create initialize_account instruction",
-                            )
-                        })?;
+                .map(|(_, mint)| -> Result<_, TokenAccountManagerError> {   
+                    let signer_pk = signer.pubkey();
+                    let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(&signer_pk, &signer_pk, mint, &spl_token::ID);
 
-                        Ok((keypair, vec![create_account_ix, init_token_account_ix]))
-                    },
-                )
+                    Ok(ix)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
 
             info!("Creating {} token accounts", tas_to_create.len());
@@ -175,16 +148,9 @@ impl TokenAccountManager {
 
                     let ixs = chunk
                         .iter()
-                        .map(|(_, ix)| ix.clone())
-                        .flatten()
+                        .map(|ix| (*ix).clone())
                         .collect::<Vec<_>>();
-                    let mut signers = vec![signer.as_ref()];
-                    signers.extend(
-                        chunk
-                            .iter()
-                            .map(|(keypair, _)| *keypair)
-                            .collect::<Vec<_>>(),
-                    );
+                    let signers = vec![signer.as_ref()];
 
                     let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
                         &ixs,
@@ -235,8 +201,9 @@ fn get_keypair_for_token_account(
 fn get_address_for_token_account(
     signer: Pubkey,
     mint: Pubkey,
-    seed: &[u8],
+    _seed: &[u8],
 ) -> Result<Pubkey, TokenAccountManagerError> {
-    let keypair = get_keypair_for_token_account(signer, mint, seed)?;
-    Ok(keypair.pubkey())
+    Ok(associated_token::get_associated_token_address(
+        &signer, &mint,
+    ))
 }

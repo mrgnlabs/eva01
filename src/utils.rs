@@ -9,10 +9,11 @@ use backoff::ExponentialBackoff;
 use dashmap::DashMap;
 use fixed::types::I80F48;
 use marginfi::{
+    bank_authority_seed, bank_seed,
     prelude::MarginfiResult,
     state::{
         marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
-        marginfi_group::{Bank, RiskTier},
+        marginfi_group::{Bank, BankVaultType, RiskTier},
         price::{PriceAdapter, PriceBias},
     },
 };
@@ -329,4 +330,20 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     pub fn is_empty(&self, side: BalanceSide) -> bool {
         self.balance.is_empty(side)
     }
+}
+
+pub fn find_bank_vault_pda(
+    bank_pk: &Pubkey,
+    vault_type: BankVaultType,
+    program_id: &Pubkey,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(bank_seed!(vault_type, bank_pk), program_id)
+}
+
+pub fn find_bank_vault_authority_pda(
+    bank_pk: &Pubkey,
+    vault_type: BankVaultType,
+    program_id: &Pubkey,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(bank_authority_seed!(vault_type, bank_pk), program_id)
 }

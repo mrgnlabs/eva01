@@ -12,10 +12,11 @@ use log::{debug, error, info, warn};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
-        marginfi_account::BalanceSide,
+        marginfi_account::{BalanceSide, RequirementType},
         price::{PriceAdapter, PriceBias},
     },
 };
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use solana_sdk::{
     pubkey,
@@ -23,11 +24,12 @@ use solana_sdk::{
     signature::{read_keypair_file, Keypair},
     signer::{SeedDerivable, Signer},
 };
-use spl_token::native_mint::DECIMALS;
 
 use crate::{
-    state_engine::engine::{
-        MarginfiAccountWrapper, MarginfiAccountWrapperError, StateEngineService,
+    marginfi_account::MarginfiAccountError,
+    state_engine::{
+        engine::StateEngineService,
+        marginfi_account::{MarginfiAccountWrapper, MarginfiAccountWrapperError},
     },
     utils::{fixed_from_float, from_pubkey_string, from_vec_str_to_pubkey},
 };
@@ -39,9 +41,13 @@ pub enum ProcessorError {
     #[error("Failed to start liquidator")]
     SetupFailed,
     #[error("MarginfiAccountWrapperError: {0}")]
-    ProcessorError(#[from] MarginfiAccountWrapperError),
+    MarginfiAccountWrapperError(#[from] MarginfiAccountWrapperError),
     #[error("Error: {0}")]
     Error(&'static str),
+    #[error("MarginfiAccountError: {0}")]
+    MarginfiAccountError(#[from] MarginfiAccountError),
+    #[error("ReqwsetError: {0}")]
+    ReqwsetError(#[from] reqwest::Error),
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -70,6 +76,10 @@ pub struct EvaLiquidatorCfg {
         deserialize_with = "from_pubkey_string"
     )]
     pub swap_mint: Pubkey,
+    #[serde(default = "EvaLiquidatorCfg::default_jup_swap_api_url")]
+    pub jup_swap_api_url: String,
+    #[serde(default = "EvaLiquidatorCfg::default_slippage_bps")]
+    pub slippage_bps: u64,
 }
 
 impl EvaLiquidatorCfg {
@@ -91,10 +101,19 @@ impl EvaLiquidatorCfg {
     pub fn default_swap_mint() -> Pubkey {
         pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
     }
+
+    pub fn default_jup_swap_api_url() -> String {
+        "https://quote-api.jup.ag/v6".to_string()
+    }
+
+    pub fn default_slippage_bps() -> u64 {
+        250
+    }
 }
 
 pub struct EvaLiquidator {
-    liquidator_account: Arc<RwLock<MarginfiAccountWrapper>>,
+    // liquidator_account: Arc<RwLock<MarginfiAccountWrapper>>,
+    liquidator_account: crate::marginfi_account::MarginfiAccount,
     state_engine: Arc<StateEngineService>,
     update_rx: Receiver<()>,
     signer_keypair: Arc<Keypair>,
@@ -155,10 +174,17 @@ impl EvaLiquidator {
                     .unwrap()
                     .address;
 
+                let rpc_client = state_engine.rpc_client.clone();
+
                 let processor = EvaLiquidator {
-                    state_engine,
+                    state_engine: state_engine.clone(),
                     update_rx,
-                    liquidator_account,
+                    liquidator_account: crate::marginfi_account::MarginfiAccount::new(
+                        liquidator_account,
+                        state_engine.clone(),
+                        keypair.clone(),
+                        rpc_client,
+                    ),
                     signer_keypair: keypair,
                     cfg,
                     preferred_mints,
@@ -198,7 +224,6 @@ impl EvaLiquidator {
     /// - User has tokens in token accounts
     /// - User has non-stable deposits
     /// - User has any liabilities
-    /// - User has excess SOL in their account
     fn needs_to_be_rebalanced(&self) -> bool {
         debug!("Checking if liquidator needs to be rebalanced");
         let rebalance_needed = self.has_tokens_in_token_accounts()
@@ -242,6 +267,7 @@ impl EvaLiquidator {
 
         let has_liabs = self
             .liquidator_account
+            .account_wrapper
             .read()
             .map_err(|_| ProcessorError::FailedToReadAccount)
             .map(|account| account.has_liabs())
@@ -261,6 +287,7 @@ impl EvaLiquidator {
     ) -> Result<RwLockReadGuard<MarginfiAccountWrapper>, ProcessorError> {
         Ok(self
             .liquidator_account
+            .account_wrapper
             .read()
             .map_err(|_| ProcessorError::FailedToReadAccount)?)
     }
@@ -312,6 +339,7 @@ impl EvaLiquidator {
         debug!("Replaying liabilities");
         let liabilties = self
             .liquidator_account
+            .account_wrapper
             .read()
             .map_err(|_| ProcessorError::FailedToReadAccount)?
             .get_liabilites()
@@ -323,6 +351,10 @@ impl EvaLiquidator {
         }
 
         info!("Replaying liabilities");
+
+        for (_, bank_pk) in liabilties {
+            self.repay_liability(bank_pk)?;
+        }
 
         Ok(())
     }
@@ -370,7 +402,8 @@ impl EvaLiquidator {
 
             debug!("Liability value: ${}", liab_usd_value);
 
-            let required_swap_token = self.get_amount(liab_usd_value, &self.swap_mint_bank_pk)?;
+            let required_swap_token =
+                self.get_amount(liab_usd_value, &self.swap_mint_bank_pk, None)?;
 
             debug!(
                 "Required swap token amount: {} for ${}",
@@ -406,6 +439,53 @@ impl EvaLiquidator {
         Ok(())
     }
 
+    fn sell_non_preferred_deposits(&self) -> Result<(), ProcessorError> {
+        debug!("Selling non-preferred deposits");
+
+        let non_preferred_deposits = self
+            .liquidator_account
+            .account_wrapper
+            .read()
+            .map_err(|_| ProcessorError::FailedToReadAccount)?
+            .get_deposits(&self.cfg.preferred_mints)
+            .map_err(|_| ProcessorError::FailedToReadAccount)?;
+
+        if non_preferred_deposits.is_empty() {
+            debug!("No non-preferred deposits to sell");
+            return Ok(());
+        }
+
+        info!("Selling non-preferred deposits");
+
+        for (_, bank_pk) in non_preferred_deposits {
+            self.withdraw_and_sell_deposit(&bank_pk)?;
+        }
+
+        Ok(())
+    }
+
+    fn withdraw_and_sell_deposit(&self, bank_pk: &Pubkey) -> Result<(), ProcessorError> {
+        let balance = self
+            .get_liquidator_account()?
+            .get_balance_for_bank(bank_pk)?;
+
+        if !matches!(&balance, Some((_, BalanceSide::Assets))) {
+            warn!("No deposit found for bank {}", bank_pk);
+            return Ok(());
+        }
+
+        let (balance, _) = balance.unwrap();
+
+        debug!("Found deposit of {} for bank {}", balance, bank_pk);
+
+        let (withdraw_amount, withdraw_all) = self.get_max_withdraw_for_bank(bank_pk)?;
+
+        self.liquidator_account
+            .withdraw(bank_pk, withdraw_amount.to_num(), Some(withdraw_all))?;
+
+        Ok(())
+    }
+
     pub fn get_value(
         &self,
         amount: I80F48,
@@ -432,7 +512,12 @@ impl EvaLiquidator {
         Ok(amount_ui * price)
     }
 
-    pub fn get_amount(&self, value: I80F48, bank_pk: &Pubkey) -> Result<I80F48, ProcessorError> {
+    pub fn get_amount(
+        &self,
+        value: I80F48,
+        bank_pk: &Pubkey,
+        price_bias: Option<PriceBias>,
+    ) -> Result<I80F48, ProcessorError> {
         let bank_ref = self
             .state_engine
             .get_bank(bank_pk)
@@ -445,7 +530,10 @@ impl EvaLiquidator {
         let price = bank
             .oracle_adapter
             .price_adapter
-            .get_price_of_type(marginfi::state::price::OraclePriceType::RealTime, None)
+            .get_price_of_type(
+                marginfi::state::price::OraclePriceType::RealTime,
+                price_bias,
+            )
             .map_err(|_| ProcessorError::Error("Failed to get price"))?;
 
         let amount_ui = value / price;
@@ -458,6 +546,7 @@ impl EvaLiquidator {
 
         let has_non_preferred_deposits = self
             .liquidator_account
+            .account_wrapper
             .read()
             .map_err(|_| ProcessorError::FailedToReadAccount)
             .unwrap()
@@ -515,7 +604,7 @@ impl EvaLiquidator {
             return Ok(());
         }
 
-        let (assets, liabs) = account.calc_health();
+        let (assets, liabs) = account.calc_health(RequirementType::Maintenance);
 
         if liabs > assets {
             info!(
@@ -525,6 +614,89 @@ impl EvaLiquidator {
                 assets,
                 liabs
             );
+        }
+
+        Ok(())
+    }
+
+    pub fn get_free_collateral(&self) -> Result<I80F48, ProcessorError> {
+        let account = self.get_liquidator_account()?;
+        let (assets, liabs) = account.calc_health(RequirementType::Initial);
+
+        if assets > liabs {
+            Ok(assets - liabs)
+        } else {
+            Ok(I80F48!(0))
+        }
+    }
+
+    pub fn get_max_withdraw_for_bank(
+        &self,
+        bank_pk: &Pubkey,
+    ) -> Result<(I80F48, bool), ProcessorError> {
+        let free_collateral = self.get_free_collateral()?;
+        let balance = self
+            .get_liquidator_account()?
+            .get_balance_for_bank(bank_pk)?;
+
+        Ok(match balance {
+            Some((balance, BalanceSide::Assets)) => {
+                let value =
+                    self.get_value(balance, &self.swap_mint_bank_pk, Some(PriceBias::Low))?;
+                let max_withdraw = value.min(free_collateral);
+
+                (
+                    self.get_amount(max_withdraw, bank_pk, Some(PriceBias::Low))?,
+                    value <= free_collateral,
+                )
+            }
+            _ => (I80F48!(0), false),
+        })
+    }
+
+    async fn swap(
+        &self,
+        amount: u64,
+        src_bank: Pubkey,
+        dst_bank: Pubkey,
+    ) -> Result<(), ProcessorError> {
+        let src_mint = {
+            let bank_ref = self
+                .state_engine
+                .banks
+                .get(&src_bank)
+                .ok_or(ProcessorError::Error("Failed to get bank"))?;
+
+            let bank_w = bank_ref
+                .read()
+                .map_err(|_| ProcessorError::Error("Failed to get bank"))?;
+
+            bank_w.bank.mint
+        };
+
+        let dst_mint = {
+            let bank_ref = self
+                .state_engine
+                .banks
+                .get(&dst_bank)
+                .ok_or(ProcessorError::Error("Failed to get bank"))?;
+
+            let bank_w = bank_ref
+                .read()
+                .map_err(|_| ProcessorError::Error("Failed to get bank"))?;
+
+            bank_w.bank.mint
+        };
+
+        let request_url = format!(
+            "{}/quote?inputMint={}&outputMint={}&amount={}&slippageBps={}",
+            self.cfg.jup_swap_api_url, src_mint, dst_mint, amount, self.cfg.slippage_bps
+        );
+
+        let res = reqwest::get(request_url).await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
         }
 
         Ok(())

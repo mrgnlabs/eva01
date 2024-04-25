@@ -6,6 +6,8 @@ use state_engine::engine::StateEngineService;
 use std::{backtrace, error::Error, sync::Arc, thread::sleep, time::Duration};
 use structopt::StructOpt;
 
+mod marginfi_account;
+mod marginfi_ixs;
 mod processor;
 mod sender;
 mod state_engine;

@@ -1,17 +1,13 @@
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 use fixed::types::I80F48;
-use fixed::types::I89F39;
 use log::info;
 use marginfi::constants::EXP_10_I80F48;
-use marginfi::state::marginfi_account::BalanceSide;
 use marginfi::state::price::PriceAdapter;
-use marginfi::state::price::PriceBias;
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
 use solana_sdk::pubkey;
-use std::error::Error;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -30,132 +26,13 @@ use solana_program::{account_info::IntoAccountInfo, program_pack::Pack, pubkey::
 use solana_sdk::{account::Account, signature::Keypair};
 
 use crate::state_engine::geyser::GeyserService;
-use crate::token_account_manager;
 use crate::token_account_manager::TokenAccountManager;
-use crate::utils::BankAccountWithPriceFeedEva;
 use crate::utils::{accessor, batch_get_multiple_accounts, from_pubkey_string, BatchLoadingConfig};
 
 use super::geyser::GeyserServiceConfig;
+use super::marginfi_account::MarginfiAccountWrapper;
 
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
-
-#[derive(Debug, thiserror::Error)]
-pub enum MarginfiAccountWrapperError {
-    #[error("Bank not found")]
-    BankNotFound,
-    #[error("RwLock error")]
-    RwLockError,
-}
-
-pub struct MarginfiAccountWrapper {
-    pub address: Pubkey,
-    pub account: MarginfiAccount,
-    pub banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
-}
-
-impl MarginfiAccountWrapper {
-    pub fn new(
-        address: Pubkey,
-        account: MarginfiAccount,
-        banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
-    ) -> Self {
-        Self {
-            address,
-            account,
-            banks,
-        }
-    }
-
-    pub fn has_liabs(&self) -> bool {
-        self.account
-            .lending_account
-            .balances
-            .iter()
-            .any(|a| a.active && matches!(a.get_side(), Some(BalanceSide::Liabilities)))
-    }
-
-    pub fn get_liabilites(&self) -> Result<Vec<(I80F48, Pubkey)>, Box<dyn Error>> {
-        Ok(self
-            .account
-            .lending_account
-            .balances
-            .iter()
-            .filter(|b| matches!(b.get_side(), Some(BalanceSide::Liabilities)) && b.active)
-            .filter_map(|b| {
-                Some((
-                    self.banks
-                        .get(&b.bank_pk)
-                        .unwrap()
-                        .value()
-                        .read()
-                        .map(|bank| {
-                            bank.bank
-                                .get_liability_amount(b.liability_shares.into())
-                                .ok()
-                        })
-                        .ok()??,
-                    b.bank_pk,
-                ))
-            })
-            .collect::<Vec<_>>())
-    }
-
-    pub fn get_balance_for_bank(
-        &self,
-        bank_pk: &Pubkey,
-    ) -> Result<Option<(I80F48, BalanceSide)>, MarginfiAccountWrapperError> {
-        let bank_ref = self
-            .banks
-            .get(bank_pk)
-            .ok_or(MarginfiAccountWrapperError::BankNotFound)?;
-        let bank = bank_ref
-            .value()
-            .read()
-            .map_err(|_| MarginfiAccountWrapperError::RwLockError)?;
-
-        let balance = self
-            .account
-            .lending_account
-            .balances
-            .iter()
-            .find(|b| b.bank_pk == *bank_pk)
-            .map(|b| match b.get_side()? {
-                BalanceSide::Assets => {
-                    let amount = bank.bank.get_asset_amount(b.asset_shares.into()).ok()?;
-                    Some((amount, BalanceSide::Assets))
-                }
-                BalanceSide::Liabilities => {
-                    let amount = bank
-                        .bank
-                        .get_liability_amount(b.liability_shares.into())
-                        .ok()?;
-                    Some((amount, BalanceSide::Liabilities))
-                }
-            })
-            .ok_or(MarginfiAccountWrapperError::BankNotFound)?;
-
-        Ok(balance)
-    }
-
-    pub fn calc_health(&self) -> (I80F48, I80F48) {
-        let baws =
-            BankAccountWithPriceFeedEva::load(&self.account.lending_account, self.banks.clone())
-                .unwrap();
-
-        baws.iter().fold(
-            (I80F48::ZERO, I80F48::ZERO),
-            |(total_assets, total_liabs), (baw)| {
-                let (assets, liabs) = baw
-                    .calc_weighted_assets_and_liabilities_values(
-                        marginfi::state::marginfi_account::RequirementType::Maintenance,
-                    )
-                    .unwrap();
-
-                (total_assets + assets, total_liabs + liabs)
-            },
-        )
-    }
-}
 
 pub struct OracleWrapper {
     pub address: Pubkey,
@@ -269,7 +146,7 @@ pub enum StateEngineError {
 
 pub struct StateEngineService {
     nb_rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
-    rpc_client: Arc<solana_client::rpc_client::RpcClient>,
+    pub rpc_client: Arc<solana_client::rpc_client::RpcClient>,
     anchor_client: anchor_client::Client<Arc<Keypair>>,
     pub marginfi_accounts: Arc<DashMap<Pubkey, Arc<RwLock<MarginfiAccountWrapper>>>>,
     pub banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
