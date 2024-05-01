@@ -33,7 +33,7 @@ use solana_sdk::{
 };
 
 use crate::{
-    marginfi_account::MarginfiAccountError,
+    marginfi_account::{MarginfiAccountError, TxConfig},
     sender::{aggressive_send_tx, SenderCfg},
     state_engine::{
         engine::StateEngineService,
@@ -94,7 +94,15 @@ pub struct EvaLiquidatorCfg {
     #[serde(default = "EvaLiquidatorCfg::default_slippage_bps")]
     pub slippage_bps: u16,
     #[serde(default = "EvaLiquidatorCfg::default_compute_unit_price_micro_lamports")]
-    pub compute_unit_price_micro_lamports: u64,
+    pub compute_unit_price_micro_lamports: Option<u64>,
+    /// Minimum profit on a liquidation to be considered, denominated in USD
+    ///
+    /// Example:
+    /// 0.01 is $0.01
+    ///
+    /// Default: 0.1
+    #[serde(default = "EvaLiquidatorCfg::default_min_profit")]
+    pub min_profit: f64,
 }
 
 impl EvaLiquidatorCfg {
@@ -107,10 +115,7 @@ impl EvaLiquidatorCfg {
     }
 
     pub fn default_preferred_mints() -> Vec<Pubkey> {
-        vec![
-            pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
-            pubkey!("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"),
-        ]
+        vec![pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")]
     }
 
     pub fn default_swap_mint() -> Pubkey {
@@ -125,8 +130,18 @@ impl EvaLiquidatorCfg {
         250
     }
 
-    pub fn default_compute_unit_price_micro_lamports() -> u64 {
-        10_000
+    pub fn default_compute_unit_price_micro_lamports() -> Option<u64> {
+        Some(10_000)
+    }
+
+    pub fn default_min_profit() -> f64 {
+        0.1
+    }
+
+    pub fn get_tx_config(&self) -> TxConfig {
+        TxConfig {
+            compute_unit_price_micro_lamports: self.compute_unit_price_micro_lamports,
+        }
     }
 }
 
@@ -136,7 +151,7 @@ pub struct EvaLiquidator {
     state_engine: Arc<StateEngineService>,
     update_rx: Receiver<()>,
     signer_keypair: Arc<Keypair>,
-    cfg: EvaLiquidatorCfg,
+    config: EvaLiquidatorCfg,
     preferred_mints: HashSet<Pubkey>,
     swap_mint_bank_pk: Pubkey,
 }
@@ -205,7 +220,7 @@ impl EvaLiquidator {
                         rpc_client,
                     ),
                     signer_keypair: keypair,
-                    cfg,
+                    config: cfg,
                     preferred_mints,
                     swap_mint_bank_pk,
                 };
@@ -264,7 +279,7 @@ impl EvaLiquidator {
             if retries > 5 {
                 error!("Failed to rebalance accounts after 5 retries, exiting...");
                 self.state_engine
-                    .load_initial_state(self.cfg.liquidator_account)
+                    .load_initial_state(self.config.liquidator_account)
                     .await?;
                 return Err(ProcessorError::Error("Failed to rebalance accounts"));
             }
@@ -316,7 +331,7 @@ impl EvaLiquidator {
                 .map(|account| {
                     let value = account.get_value().unwrap();
                     debug!("Token account {} value: {:?}", account.mint, value);
-                    value > self.cfg.token_account_dust_threshold
+                    value > self.config.token_account_dust_threshold
                 })
                 .unwrap_or(false)
         });
@@ -352,8 +367,11 @@ impl EvaLiquidator {
 
         if let Some(balance) = balance {
             if !balance.is_zero() {
-                self.liquidator_account
-                    .deposit(self.swap_mint_bank_pk, balance.to_num())?;
+                self.liquidator_account.deposit(
+                    self.swap_mint_bank_pk,
+                    balance.to_num(),
+                    self.config.get_tx_config(),
+                )?;
             }
         }
 
@@ -383,7 +401,7 @@ impl EvaLiquidator {
 
         trace!("Token balance value: ${}", value);
 
-        if value < self.cfg.token_account_dust_threshold {
+        if value < self.config.token_account_dust_threshold {
             trace!("Token balance value is below dust threshold");
             return Ok(());
         }
@@ -415,8 +433,11 @@ impl EvaLiquidator {
             balance, self.swap_mint_bank_pk
         );
 
-        self.liquidator_account
-            .deposit(self.swap_mint_bank_pk, balance.to_num())?;
+        self.liquidator_account.deposit(
+            self.swap_mint_bank_pk,
+            balance.to_num(),
+            self.config.get_tx_config(),
+        )?;
 
         Ok(())
     }
@@ -598,6 +619,7 @@ impl EvaLiquidator {
                     &self.swap_mint_bank_pk,
                     withdraw_amount.to_num(),
                     Some(withdraw_all),
+                    self.config.get_tx_config(),
                 )?;
 
                 withdraw_amount
@@ -620,8 +642,12 @@ impl EvaLiquidator {
 
             let repay_all = token_balance >= liab_balance;
 
-            self.liquidator_account
-                .repay(bank_pk, token_balance.to_num(), Some(repay_all))?;
+            self.liquidator_account.repay(
+                bank_pk,
+                token_balance.to_num(),
+                Some(repay_all),
+                self.config.get_tx_config(),
+            )?;
         }
 
         Ok(())
@@ -635,7 +661,7 @@ impl EvaLiquidator {
             .account_wrapper
             .read()
             .map_err(|_| ProcessorError::FailedToReadAccount)?
-            .get_deposits(&self.cfg.preferred_mints)
+            .get_deposits(&self.config.preferred_mints)
             .map_err(|_| ProcessorError::FailedToReadAccount)?;
 
         if non_preferred_deposits.is_empty() {
@@ -670,8 +696,12 @@ impl EvaLiquidator {
 
         let amount = withdraw_amount.to_num::<u64>();
 
-        self.liquidator_account
-            .withdraw(bank_pk, amount, Some(withdraw_all))?;
+        self.liquidator_account.withdraw(
+            bank_pk,
+            amount,
+            Some(withdraw_all),
+            self.config.get_tx_config(),
+        )?;
 
         self.swap(amount, bank_pk, &self.swap_mint_bank_pk).await?;
 
@@ -922,6 +952,7 @@ impl EvaLiquidator {
             asset_bank_pk,
             liab_bank_pk,
             slippage_adjusted_asset_amount.to_num(),
+            self.config.get_tx_config(),
         )?;
 
         Ok(())
@@ -1103,7 +1134,7 @@ impl EvaLiquidator {
 
         info!("Swapping {} from {} to {}", amount, src_mint, dst_mint);
 
-        let jup_swap_client = JupiterSwapApiClient::new(self.cfg.jup_swap_api_url.clone());
+        let jup_swap_client = JupiterSwapApiClient::new(self.config.jup_swap_api_url.clone());
 
         debug!("Requesting quote for swap");
         let quote_response = jup_swap_client
@@ -1111,7 +1142,7 @@ impl EvaLiquidator {
                 input_mint: src_mint,
                 output_mint: dst_mint,
                 amount,
-                slippage_bps: self.cfg.slippage_bps,
+                slippage_bps: self.config.slippage_bps,
                 ..Default::default()
             })
             .await
@@ -1129,11 +1160,10 @@ impl EvaLiquidator {
                 quote_response,
                 config: TransactionConfig {
                     wrap_and_unwrap_sol: false,
-                    compute_unit_price_micro_lamports: Some(
-                        ComputeUnitPriceMicroLamports::MicroLamports(
-                            self.cfg.compute_unit_price_micro_lamports,
-                        ),
-                    ),
+                    compute_unit_price_micro_lamports: self
+                        .config
+                        .compute_unit_price_micro_lamports
+                        .map(|v| ComputeUnitPriceMicroLamports::MicroLamports(v)),
                     ..Default::default()
                 },
             })

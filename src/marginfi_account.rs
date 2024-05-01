@@ -24,6 +24,11 @@ pub enum MarginfiAccountError {
     RpcClientError(#[from] solana_client::client_error::ClientError),
 }
 
+#[derive(Clone)]
+pub struct TxConfig {
+    pub compute_unit_price_micro_lamports: Option<u64>,
+}
+
 pub struct MarginfiAccount {
     pub account_wrapper: Arc<RwLock<MarginfiAccountWrapper>>,
     state_engine: Arc<StateEngineService>,
@@ -56,7 +61,12 @@ impl MarginfiAccount {
         }
     }
 
-    pub fn deposit(&self, bank_pk: Pubkey, amount: u64) -> Result<(), MarginfiAccountError> {
+    pub fn deposit(
+        &self,
+        bank_pk: Pubkey,
+        amount: u64,
+        send_cfg: TxConfig,
+    ) -> Result<(), MarginfiAccountError> {
         info!("Depositing {} into bank {}", amount, bank_pk);
         let bank_ref = self.state_engine.get_bank(&bank_pk).unwrap();
         let bank = bank_ref.read().map_err(|_| MarginfiAccountError::RWError)?;
@@ -88,10 +98,17 @@ impl MarginfiAccount {
         );
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
-        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(10_000);
+
+        let mut ixs = vec![deposit_ix];
+
+        if let Some(price) = send_cfg.compute_unit_price_micro_lamports {
+            let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(price);
+
+            ixs.push(compute_budget_price_ix);
+        }
 
         let tx = Transaction::new_signed_with_payer(
-            &[compute_budget_price_ix, deposit_ix],
+            &ixs,
             Some(&signer_pk),
             &[self.signer_keypair.as_ref()],
             recent_blockhash,
@@ -115,6 +132,7 @@ impl MarginfiAccount {
         bank_pk: Pubkey,
         amount: u64,
         repay_all: Option<bool>,
+        send_cfg: TxConfig,
     ) -> anyhow::Result<()> {
         info!(
             "Repaying {} to bank {}, repay_all: {:?}",
@@ -152,8 +170,17 @@ impl MarginfiAccount {
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
 
         let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(10_000);
+
+        let mut ixs = vec![repay_ix];
+
+        if let Some(price) = send_cfg.compute_unit_price_micro_lamports {
+            let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(price);
+
+            ixs.push(compute_budget_price_ix);
+        }
+
         let tx = Transaction::new_signed_with_payer(
-            &[compute_budget_price_ix, repay_ix],
+            &ixs,
             Some(&signer_pk),
             &[self.signer_keypair.as_ref()],
             recent_blockhash,
@@ -174,6 +201,7 @@ impl MarginfiAccount {
         bank_pk: &Pubkey,
         amount: u64,
         withdraw_all: Option<bool>,
+        send_cfg: TxConfig,
     ) -> Result<(), MarginfiAccountError> {
         info!(
             "Withdrawing {} from bank {}, withdraw_all: {:?}",
@@ -226,12 +254,19 @@ impl MarginfiAccount {
             amount,
             withdraw_all,
         );
+        let mut ixs = vec![repay_ix];
+
+        if let Some(price) = send_cfg.compute_unit_price_micro_lamports {
+            let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(price);
+
+            ixs.push(compute_budget_price_ix);
+        }
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
         let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(10_000);
 
         let tx = Transaction::new_signed_with_payer(
-            &[compute_budget_price_ix, repay_ix],
+            &ixs,
             Some(&signer_pk),
             &[self.signer_keypair.as_ref()],
             recent_blockhash,
@@ -256,6 +291,7 @@ impl MarginfiAccount {
         asset_bank_pk: Pubkey,
         liab_bank_pk: Pubkey,
         asset_amount: u64,
+        send_cfg: TxConfig,
     ) -> Result<(), MarginfiAccountError> {
         let asset_bank_ref = self.state_engine.get_bank(&asset_bank_pk).unwrap();
         let asset_bank = asset_bank_ref
@@ -323,11 +359,18 @@ impl MarginfiAccount {
         drop(asset_bank);
         drop(liab_bank);
 
-        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
-        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(10_000);
+        let compute_budget_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+
+        let mut ixs = vec![liquidate_ix, compute_budget_limit_ix];
+
+        if let Some(price) = send_cfg.compute_unit_price_micro_lamports {
+            let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(price);
+
+            ixs.push(compute_budget_price_ix);
+        }
 
         let tx = Transaction::new_signed_with_payer(
-            &[compute_budget_ix, compute_budget_price_ix, liquidate_ix],
+            &ixs,
             Some(&signer_pk),
             &[self.signer_keypair.as_ref()],
             self.rpc_client.get_latest_blockhash()?,
