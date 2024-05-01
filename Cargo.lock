@@ -1629,6 +1629,7 @@ dependencies = [
  "anchor-spl",
  "anyhow",
  "backoff",
+ "bincode",
  "bytemuck",
  "bytes",
  "crossbeam",
@@ -1638,8 +1639,10 @@ dependencies = [
  "fixed-macro",
  "futures",
  "futures-sink",
+ "jupiter-swap-api-client",
  "log",
  "marginfi",
+ "num-traits",
  "rayon",
  "reqwest 0.12.4",
  "serde",
@@ -2235,6 +2238,19 @@ dependencies = [
 
 [[package]]
 name = "hyper-tls"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6183ddfa99b85da61a140bea0efc93fdf56ceaa041b37d553518030827f9905"
+dependencies = [
+ "bytes",
+ "hyper 0.14.28",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+]
+
+[[package]]
+name = "hyper-tls"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
@@ -2427,6 +2443,21 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+]
+
+[[package]]
+name = "jupiter-swap-api-client"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1507ed0dc0916bbebdd3e17063e180022834dce1d982a25fcb6df75411281463"
+dependencies = [
+ "anyhow",
+ "base64 0.13.1",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "serde_qs",
+ "solana-sdk",
 ]
 
 [[package]]
@@ -3537,10 +3568,12 @@ dependencies = [
  "http-body 0.4.6",
  "hyper 0.14.28",
  "hyper-rustls",
+ "hyper-tls 0.5.0",
  "ipnet",
  "js-sys",
  "log",
  "mime",
+ "native-tls",
  "once_cell",
  "percent-encoding",
  "pin-project-lite",
@@ -3552,6 +3585,7 @@ dependencies = [
  "sync_wrapper",
  "system-configuration",
  "tokio",
+ "tokio-native-tls",
  "tokio-rustls 0.24.1",
  "tokio-util",
  "tower-service",
@@ -3579,7 +3613,7 @@ dependencies = [
  "http-body 1.0.0",
  "http-body-util",
  "hyper 1.3.1",
- "hyper-tls",
+ "hyper-tls 0.6.0",
  "hyper-util",
  "ipnet",
  "js-sys",
@@ -3940,6 +3974,17 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "serde_qs"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0431a35568651e363364210c91983c1da5eb29404d9f0928b67d4ebcfa7d330c"
+dependencies = [
+ "percent-encoding",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

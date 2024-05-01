@@ -3,6 +3,7 @@ use anchor_lang::InstructionData;
 use anchor_lang::Key;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{token, token_2022::spl_token_2022::solana_zk_token_sdk::instruction::withdraw};
+use log::trace;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
@@ -86,6 +87,11 @@ pub fn make_withdraw_ix(
         token_program,
     }
     .to_account_metas(Some(true));
+
+    trace!(
+        "make_withdraw_ix: observation_accounts: {:?}",
+        observation_accounts
+    );
 
     accounts.extend(
         observation_accounts

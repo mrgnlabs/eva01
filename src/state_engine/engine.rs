@@ -2,8 +2,15 @@ use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use log::info;
+use log::trace;
 use marginfi::constants::EXP_10_I80F48;
+use marginfi::state::marginfi_account::calc_amount;
+use marginfi::state::marginfi_account::calc_value;
+use marginfi::state::marginfi_account::BalanceSide;
+use marginfi::state::marginfi_account::RequirementType;
+use marginfi::state::price::OraclePriceType;
 use marginfi::state::price::PriceAdapter;
+use marginfi::state::price::PriceBias;
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
@@ -62,6 +69,92 @@ impl BankWrapper {
             oracle_adapter: oracle_adapter_wrapper,
         }
     }
+
+    fn get_pricing_params(
+        &self,
+        side: BalanceSide,
+        requirement_type: RequirementType,
+    ) -> (I80F48, Option<PriceBias>, OraclePriceType) {
+        match (side, requirement_type) {
+            (BalanceSide::Assets, RequirementType::Initial) => (
+                self.bank.config.asset_weight_init.into(),
+                Some(PriceBias::Low),
+                OraclePriceType::TimeWeighted,
+            ),
+            (BalanceSide::Assets, RequirementType::Maintenance) => (
+                self.bank.config.asset_weight_maint.into(),
+                Some(PriceBias::Low),
+                OraclePriceType::RealTime,
+            ),
+            (BalanceSide::Liabilities, RequirementType::Initial) => (
+                self.bank.config.liability_weight_init.into(),
+                Some(PriceBias::High),
+                OraclePriceType::TimeWeighted,
+            ),
+            (BalanceSide::Liabilities, RequirementType::Maintenance) => (
+                self.bank.config.liability_weight_maint.into(),
+                Some(PriceBias::High),
+                OraclePriceType::RealTime,
+            ),
+            _ => (I80F48::ONE, None, OraclePriceType::RealTime),
+        }
+    }
+
+    pub fn calc_amount(
+        &self,
+        value: I80F48,
+        side: BalanceSide,
+        requirement_type: RequirementType,
+    ) -> anyhow::Result<I80F48> {
+        let (_, price_bias, oracle_type) = self.get_pricing_params(side, requirement_type);
+
+        let price = self
+            .oracle_adapter
+            .price_adapter
+            .get_price_of_type(oracle_type, price_bias)
+            .unwrap();
+
+        Ok(calc_amount(value, price, self.bank.mint_decimals)?)
+    }
+
+    pub fn calc_value(
+        &self,
+        amount: I80F48,
+        side: BalanceSide,
+        requirement_type: RequirementType,
+    ) -> anyhow::Result<I80F48> {
+        let (_, price_bias, oracle_type) = self.get_pricing_params(side, requirement_type);
+
+        let price = self
+            .oracle_adapter
+            .price_adapter
+            .get_price_of_type(oracle_type, price_bias)
+            .unwrap();
+
+        Ok(calc_value(amount, price, self.bank.mint_decimals, None)?)
+    }
+
+    pub fn calc_weighted_value(
+        &self,
+        amount: I80F48,
+        side: BalanceSide,
+        requirement_type: RequirementType,
+    ) -> anyhow::Result<I80F48> {
+        let (weight, price_bias, oracle_type) = self.get_pricing_params(side, requirement_type);
+
+        let price = self
+            .oracle_adapter
+            .price_adapter
+            .get_price_of_type(oracle_type, price_bias)
+            .unwrap();
+
+        Ok(calc_value(
+            amount,
+            price,
+            self.bank.mint_decimals,
+            Some(weight),
+        )?)
+    }
 }
 
 pub struct TokenAccountWrapper {
@@ -74,8 +167,14 @@ pub struct TokenAccountWrapper {
 
 impl TokenAccountWrapper {
     pub fn get_value(&self) -> Result<I80F48, Box<dyn std::error::Error>> {
-        let ui_amount = I80F48::from_num(self.balance) / EXP_10_I80F48[self.mint_decimals as usize];
+        let ui_amount = {
+            let amount = I80F48::from_num(self.balance);
+            let decimal_scale = EXP_10_I80F48[self.mint_decimals as usize];
 
+            amount
+                .checked_div(decimal_scale)
+                .ok_or("Failed to divide")?
+        };
         let price = self
             .bank
             .read()
@@ -83,6 +182,15 @@ impl TokenAccountWrapper {
             .oracle_adapter
             .price_adapter
             .get_price_of_type(marginfi::state::price::OraclePriceType::RealTime, None)?;
+
+        trace!(
+            "Token account {} (mint: {}) balance: {} @ ${:.5} - ${:.5}",
+            self.address,
+            self.mint,
+            ui_amount,
+            price,
+            ui_amount * price
+        );
 
         Ok(ui_amount * price)
     }
@@ -150,7 +258,7 @@ pub struct StateEngineService {
     anchor_client: anchor_client::Client<Arc<Keypair>>,
     pub marginfi_accounts: Arc<DashMap<Pubkey, Arc<RwLock<MarginfiAccountWrapper>>>>,
     pub banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
-    pub token_accounts: DashMap<Pubkey, Arc<RwLock<TokenAccountWrapper>>>,
+    pub token_accounts: Arc<DashMap<Pubkey, Arc<RwLock<TokenAccountWrapper>>>>,
     pub sol_accounts: DashMap<Pubkey, Account>,
     pub token_account_manager: TokenAccountManager,
     config: StateEngineConfig,
@@ -183,7 +291,7 @@ impl StateEngineService {
         let state_engine_service = Arc::new(Self {
             marginfi_accounts: Arc::new(DashMap::new()),
             banks: Arc::new(DashMap::new()),
-            token_accounts: DashMap::new(),
+            token_accounts: Arc::new(DashMap::new()),
             sol_accounts: DashMap::new(),
             anchor_client,
             config: config.clone(),
@@ -214,6 +322,7 @@ impl StateEngineService {
 
     pub async fn load(&self, liquidator_account: Pubkey) -> anyhow::Result<()> {
         debug!("StateEngineService::load");
+        info!("Loading state engine service");
 
         self.load_oracles_and_banks().await?;
         self.load_token_accounts()?;
@@ -445,18 +554,22 @@ impl StateEngineService {
     fn load_token_accounts(&self) -> anyhow::Result<()> {
         debug!("Loading token accounts");
 
-        let banks = self.banks.clone();
-        let mut bank_mints = Vec::new();
-        for bank in banks.iter() {
-            let bank_guard = bank.read().unwrap();
-            bank_mints.push(bank_guard.bank.mint);
+        {
+            let banks = self.banks.clone();
+            let mut bank_mints = Vec::new();
+            for bank in banks.iter() {
+                let bank_guard = bank.read().unwrap();
+                bank_mints.push(bank_guard.bank.mint);
+            }
+
+            self.token_account_manager
+                .add_mints(&bank_mints, self.config.signer_pubkey)
+                .map_err(|e| anyhow::anyhow!("Failed to add mints: {:?}", e))?;
         }
 
-        self.token_account_manager
-            .add_mints(&bank_mints, self.config.signer_pubkey)
-            .map_err(|e| anyhow::anyhow!("Failed to add mints: {:?}", e))?;
-
-        let token_account_addresses = self.token_account_manager.get_token_account_addresses();
+        let (mints, token_account_addresses) = self
+            .token_account_manager
+            .get_mints_and_token_account_addresses();
 
         let accounts = batch_get_multiple_accounts(
             self.rpc_client.clone(),
@@ -468,7 +581,7 @@ impl StateEngineService {
 
         let token_accounts_with_addresses_and_mints = token_account_addresses
             .iter()
-            .zip(bank_mints.iter())
+            .zip(mints.iter())
             .zip(accounts)
             .collect::<Vec<_>>();
 
@@ -499,13 +612,17 @@ impl StateEngineService {
                         .unwrap()
                         .clone();
 
-                    Arc::new(RwLock::new(TokenAccountWrapper {
+                    let mint_decimals = bank.read().unwrap().bank.mint_decimals;
+
+                    let taw = TokenAccountWrapper {
                         address: **token_account_address,
                         mint: **mint,
                         balance,
-                        mint_decimals: 0,
+                        mint_decimals,
                         bank,
-                    }))
+                    };
+
+                    Arc::new(RwLock::new(taw))
                 });
 
             self.tracked_token_accounts.insert(**token_account_address);

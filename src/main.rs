@@ -1,6 +1,6 @@
 use crate::{processor::EvaLiquidator, state_engine::engine::StateEngineConfig};
 use env_logger::Builder;
-use log::debug;
+use log::{debug, info};
 use solana_sdk::{pubkey::Pubkey, signature::read_keypair_file};
 use state_engine::engine::StateEngineService;
 use std::{backtrace, error::Error, sync::Arc, thread::sleep, time::Duration};
@@ -52,6 +52,7 @@ impl Eva01Config {
 fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger
     Builder::from_default_env().init();
+    println!("Starting Eva01");
 
     set_panic_hook();
 
@@ -62,10 +63,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .enable_all()
         .build()?;
 
-    debug!("config: {:#?}", config);
+    info!("config: {:#?}", config);
 
     // Assemble stateful engine service
-    debug!("starting eva");
+    info!("starting eva");
 
     let (state_engine, update_rx) = StateEngineService::new(config.state_engine_config.clone())?;
 
@@ -81,9 +82,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // sleep(Duration::from_secs(1));
 
-    // tokio_rt.block_on(async move {
-    //     state_engine.start().await.unwrap();
-    // });
+    tokio_rt.block_on(async move {
+        state_engine.start().await.unwrap();
+    });
 
     handle.join().unwrap()?;
 

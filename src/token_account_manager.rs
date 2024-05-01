@@ -60,13 +60,19 @@ impl TokenAccountManager {
         })
     }
 
-    pub fn get_token_account_addresses(&self) -> Vec<Pubkey> {
-        self.mint_to_account
+    pub fn get_mints_and_token_account_addresses(&self) -> (Vec<Pubkey>, Vec<Pubkey>) {
+        let mints = self
+            .mint_to_account
             .read()
             .unwrap()
-            .values()
+            .keys()
             .copied()
-            .collect()
+            .collect::<Vec<_>>();
+
+        let addresses = mints.iter().map(|mint| *self.mint_to_account.read().unwrap().get(mint).unwrap()).collect::<Vec<_>>();
+
+
+        (mints, addresses)
     }
 
     pub fn create_token_accounts(
@@ -159,7 +165,7 @@ impl TokenAccountManager {
                         recent_blockhash,
                     );
 
-                    let sig = aggressive_send_tx(rpc, tx, SenderCfg::DEFAULT).map_err(|e| {
+                    let sig = aggressive_send_tx(rpc, &tx, SenderCfg::DEFAULT).map_err(|e| {
                         error!("Failed to send transaction: {:?}", e);
                         TokenAccountManagerError::SetupFailed("Failed to send transaction")
                     })?;

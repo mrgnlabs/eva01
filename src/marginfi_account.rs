@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use log::info;
+use log::{debug, error, info};
 use marginfi::state::marginfi_group::BankVaultType;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, transaction::Transaction};
@@ -94,7 +94,7 @@ impl MarginfiAccount {
         );
 
         let sig =
-            aggressive_send_tx(self.rpc_client.clone(), tx, SenderCfg::DEFAULT).map_err(|e| {
+            aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT).map_err(|e| {
                 info!("Failed to deposit: {:?}", e);
                 MarginfiAccountError::ActionFailed("Failed to deposit")
             })?;
@@ -147,7 +147,7 @@ impl MarginfiAccount {
             recent_blockhash,
         );
 
-        let sig = aggressive_send_tx(self.rpc_client.clone(), tx, SenderCfg::DEFAULT).unwrap();
+        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT).unwrap();
 
         info!("Repay successful, tx signature: {:?}", sig);
 
@@ -160,6 +160,10 @@ impl MarginfiAccount {
         amount: u64,
         withdraw_all: Option<bool>,
     ) -> Result<(), MarginfiAccountError> {
+        debug!(
+            "Withdrawing {} from bank {}, withdraw_all: {:?}",
+            amount, bank_pk, withdraw_all
+        );
         let bank_ref = self.state_engine.get_bank(bank_pk).unwrap();
         let bank = bank_ref.read().map_err(|_| MarginfiAccountError::RWError)?;
 
@@ -217,7 +221,7 @@ impl MarginfiAccount {
             recent_blockhash,
         );
 
-        let sig = aggressive_send_tx(self.rpc_client.clone(), tx, SenderCfg::DEFAULT).unwrap();
+        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT).unwrap();
 
         info!("Repay successful, tx signature: {:?}", sig);
 
@@ -254,12 +258,12 @@ impl MarginfiAccount {
         let signer_pk = self.signer_keypair.pubkey();
 
         let (bank_liquidity_vault_authority, _) = crate::utils::find_bank_vault_authority_pda(
-            &asset_bank_pk,
+            &liab_bank_pk,
             BankVaultType::Liquidity,
             &self.program_id,
         );
 
-        let bank_liquidity_vault = asset_bank.bank.liquidity_vault;
+        let bank_liquidity_vault = liab_bank.bank.liquidity_vault;
         let bank_insurance_vault = liab_bank.bank.insurance_vault;
 
         let token_program = self.token_program;
@@ -300,8 +304,8 @@ impl MarginfiAccount {
         );
 
         let sig =
-            aggressive_send_tx(self.rpc_client.clone(), tx, SenderCfg::DEFAULT).map_err(|e| {
-                info!("Failed to liquidate: {:?}", e);
+            aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT).map_err(|e| {
+                error!("Failed to liquidate: {:?}", e);
                 MarginfiAccountError::ActionFailed("Failed to liquidate")
             })?;
 
