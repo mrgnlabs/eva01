@@ -103,6 +103,8 @@ pub struct EvaLiquidatorCfg {
     /// Default: 0.1
     #[serde(default = "EvaLiquidatorCfg::default_min_profit")]
     pub min_profit: f64,
+    /// Maximum liquidation value in USD
+    pub max_liquidation_value: Option<f64>,
 }
 
 impl EvaLiquidatorCfg {
@@ -815,17 +817,17 @@ impl EvaLiquidator {
                     return None;
                 }
 
-                let liq_value = account
+                let (max_liquidation_amount, profit) = account
                     .read()
                     .unwrap()
                     .compute_max_liquidatable_asset_amount()
                     .ok()?;
 
-                if liq_value.0.is_zero() {
+                if max_liquidation_amount.is_zero() || profit < self.config.min_profit {
                     return None;
                 }
 
-                Some((account.clone(), liq_value))
+                Some((account.clone(), (max_liquidation_amount, profit)))
             })
             .collect::<Vec<_>>();
 
@@ -861,6 +863,8 @@ impl EvaLiquidator {
             self.liquidate_account(account.clone())?;
 
             return Ok(true);
+        } else {
+            debug!("No accounts to liquidate");
         }
 
         Ok(false)
@@ -916,11 +920,15 @@ impl EvaLiquidator {
         );
 
         // Max USD amount the liquidator can cover
-        let liquidator_capacity = liab_bank.calc_value(
+        let mut liquidator_capacity = liab_bank.calc_value(
             max_liab_coverage_amount,
             BalanceSide::Liabilities,
             RequirementType::Initial,
         )?;
+
+        if let Some(max_liquidation_value) = self.config.max_liquidation_value {
+            liquidator_capacity = min(liquidator_capacity, I80F48::from_num(max_liquidation_value));
+        }
 
         debug!("Liquidator capacity: ${}", liquidator_capacity);
 
