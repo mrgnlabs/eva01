@@ -1,4 +1,5 @@
 use std::mem::size_of;
+use std::time::Instant;
 use std::{collections::HashMap, sync::Arc};
 
 use anchor_spl::token_2022::spl_token_2022::state;
@@ -13,6 +14,7 @@ use log::{debug, trace};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use marginfi::state::marginfi_group::Bank;
 use solana_program::pubkey::Pubkey;
+use tokio::spawn;
 use tokio::task::JoinHandle;
 use tonic::service::Interceptor;
 use yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError};
@@ -116,7 +118,10 @@ impl GeyserService {
                 let state_engine = state_engine.clone();
 
                 let handle = tokio::spawn(async move {
-                    Self::subscribe_and_run(geyser_client, state_engine).await
+                    Self::subscribe_and_run(geyser_client, state_engine).await?;
+                    error!("Geyser service ended");
+
+                    Ok(())
                 });
 
                 Ok::<_, backoff::Error<GeyserServiceError>>(handle)
@@ -128,18 +133,55 @@ impl GeyserService {
     }
 
     async fn subscribe_and_run(
-        mut geyser_client: GeyserGrpcClient<impl Interceptor>,
+        mut geyser_client: GeyserGrpcClient<impl Interceptor + 'static>,
         state_engine: Arc<StateEngineService>,
     ) -> Result<(), GeyserServiceError> {
         debug!("Subscribing to geyser");
         let sub_req = Self::build_geyser_subscribe_request(&state_engine);
         let (mut subscribe_tx, mut subscribe_rx) = geyser_client.subscribe().await?;
 
-        // TODO: Add health check ping
+        subscribe_tx.send(sub_req.clone()).await.map_err(|e| {
+            error!("Error sending message to geyser: {:?}", e);
+            GeyserServiceError::GenericError
+        })?;
 
-        subscribe_tx.send(sub_req).await?;
+        let state_engine_clone = state_engine.clone();
+
+        let handle = tokio::task::spawn(async move {
+            let mut ping_id = 1;
+
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+                debug!("Sending ping to geyser server");
+
+                if let Err(e) = subscribe_tx
+                    .send(SubscribeRequest {
+                        ping: Some(SubscribeRequestPing { id: ping_id }),
+                        ..Default::default()
+                    })
+                    .await
+                {
+                    error!("Error sending message to geyser: {:?}", e);
+                }
+
+                ping_id += 1;
+            }
+
+            error!("Ping loop ended");
+        });
 
         while let Some(msg) = subscribe_rx.next().await {
+            let start = Instant::now();
+            // if last_heartbeat.elapsed() > std::time::Duration::from_secs(5) {
+            //     debug!("Sending heartbeat to geyser");
+            //     let sub_req = Self::build_geyser_subscribe_request(&state_engine);
+            //     let _ = subscribe_tx.send(sub_req).await.map_err(|e| {
+            //         error!("Error sending message to geyser: {:?}", e);
+            //     });
+            //     last_heartbeat = Instant::now();
+            // }
+
             let update = match msg {
                 Ok(msg) => Self::process_message(&state_engine, msg)?,
                 Err(e) => {
@@ -148,16 +190,19 @@ impl GeyserService {
                 }
             };
 
-            if update {
-                debug!("Resubscribing to geyser");
-                let sub_req = Self::build_geyser_subscribe_request(&state_engine);
+            // if update {
+            //     let sub_req = Self::build_geyser_subscribe_request(&state_engine);
+            //     if let Err(e) = subscribe_tx.send(sub_req.clone()).await {
+            //         error!("Error sending message to geyser: {:?}", e);
+            //     }
+            // }
 
-                subscribe_tx.send(sub_req).await.map_err(|e| {
-                    error!("Error sending message to geyser: {:?}", e);
-                    GeyserServiceError::GenericError
-                })?
-            }
+            trace!("Processed message in {:?}", start.elapsed());
         }
+
+        handle.await;
+
+        error!("Geyser subscription ended");
 
         Ok(())
     }
@@ -203,7 +248,7 @@ impl GeyserService {
                             }
 
                             if state_engine.is_tracked_sol_account(&address) {
-                                Self::process_token_account_update(state_engine, &account)?;
+                                // Self::process_token_account_update(state_engine, &account)?;
                                 processed = true;
                             }
                         }
@@ -214,10 +259,11 @@ impl GeyserService {
                             account
                         );
                     } else {
-                        state_engine.trigger_update_signal();
+                        // state_engine.trigger_update_signal();
                     }
                 }
                 subscribe_update::UpdateOneof::Ping(_) => return Ok(false),
+                subscribe_update::UpdateOneof::Pong(_) => return Ok(false),
                 _ => warn!("Received unknown update {:?} from geyser", update_oneof),
             }
         }
@@ -237,6 +283,8 @@ impl GeyserService {
             error!("Error parsing marginfi account: {:?}", e);
             GeyserServiceError::GenericError
         })?;
+
+        debug!("Processing marginfi account update: {:?}", account_address);
 
         let mut update_request = None;
 
@@ -295,14 +343,16 @@ impl GeyserService {
         debug!("Processing token account update");
 
         let account_address = Pubkey::try_from(account_update.pubkey.clone()).map_err(|e| {
-            error!("Error parsing marginfi account address: {:?}", e);
+            error!("Error parsing token account address: {:?}", e);
             GeyserServiceError::GenericError
         })?;
 
         let account = account_update_to_account(account_update).map_err(|e| {
-            error!("Error parsing marginfi account: {:?}", e);
+            error!("Error parsing token account: {:?}", e);
             GeyserServiceError::GenericError
         })?;
+
+        trace!("Token account update: {:?}", account_address);
 
         if let Err(e) = state_engine.update_token_account(&account_address, account) {
             warn!("Error updating token account: {:?}", e);
@@ -367,6 +417,8 @@ impl GeyserService {
         );
 
         request.accounts = req;
+
+        debug!("Sending SubscribeRequest: {:#?}", request);
 
         request
     }

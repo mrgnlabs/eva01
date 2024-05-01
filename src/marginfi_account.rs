@@ -3,7 +3,10 @@ use std::sync::{Arc, RwLock};
 use log::{debug, error, info};
 use marginfi::state::marginfi_group::BankVaultType;
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_sdk::{
+    compute_budget::ComputeBudgetInstruction, pubkey::Pubkey, signature::Keypair, signer::Signer,
+    transaction::Transaction,
+};
 
 use crate::{
     marginfi_ixs::*,
@@ -85,13 +88,16 @@ impl MarginfiAccount {
         );
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(10_000);
 
         let tx = Transaction::new_signed_with_payer(
-            &[deposit_ix],
+            &[compute_budget_price_ix, deposit_ix],
             Some(&signer_pk),
             &[self.signer_keypair.as_ref()],
             recent_blockhash,
         );
+
+        drop(bank);
 
         let sig =
             aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT).map_err(|e| {
@@ -110,6 +116,10 @@ impl MarginfiAccount {
         amount: u64,
         repay_all: Option<bool>,
     ) -> anyhow::Result<()> {
+        info!(
+            "Repaying {} to bank {}, repay_all: {:?}",
+            amount, bank_pk, repay_all
+        );
         let bank_ref = self.state_engine.get_bank(&bank_pk).unwrap();
         let bank = bank_ref.read().map_err(|_| MarginfiAccountError::RWError)?;
 
@@ -140,14 +150,19 @@ impl MarginfiAccount {
         );
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+
+        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(10_000);
         let tx = Transaction::new_signed_with_payer(
-            &[repay_ix],
+            &[compute_budget_price_ix, repay_ix],
             Some(&signer_pk),
             &[self.signer_keypair.as_ref()],
             recent_blockhash,
         );
 
-        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT).unwrap();
+        drop(bank);
+
+        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT)
+            .map_err(|e| MarginfiAccountError::ActionFailed("Failed to repay"))?;
 
         info!("Repay successful, tx signature: {:?}", sig);
 
@@ -160,7 +175,7 @@ impl MarginfiAccount {
         amount: u64,
         withdraw_all: Option<bool>,
     ) -> Result<(), MarginfiAccountError> {
-        debug!(
+        info!(
             "Withdrawing {} from bank {}, withdraw_all: {:?}",
             amount, bank_pk, withdraw_all
         );
@@ -213,15 +228,22 @@ impl MarginfiAccount {
         );
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(10_000);
 
         let tx = Transaction::new_signed_with_payer(
-            &[repay_ix],
+            &[compute_budget_price_ix, repay_ix],
             Some(&signer_pk),
             &[self.signer_keypair.as_ref()],
             recent_blockhash,
         );
 
-        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT).unwrap();
+        drop(bank);
+
+        let sig =
+            aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT).map_err(|e| {
+                error!("Failed to withdraw: {:?}", e);
+                MarginfiAccountError::ActionFailed("Failed to withdraw")
+            })?;
 
         info!("Repay successful, tx signature: {:?}", sig);
 
@@ -268,16 +290,16 @@ impl MarginfiAccount {
 
         let token_program = self.token_program;
 
-        let liquidatee_observation_accounts = liquidate_account
-            .read()
-            .map_err(|_| MarginfiAccountError::RWError)?
-            .get_observation_accounts(&[asset_bank_pk], &[]);
-
         let liquidator_observation_accounts = self
             .account_wrapper
             .read()
             .map_err(|_| MarginfiAccountError::RWError)?
-            .get_observation_accounts(&[liab_bank_pk], &[]);
+            .get_observation_accounts(&[liab_bank_pk, asset_bank_pk], &[]);
+
+        let liquidatee_observation_accounts = liquidate_account
+            .read()
+            .map_err(|_| MarginfiAccountError::RWError)?
+            .get_observation_accounts(&[], &[]);
 
         let liquidate_ix = make_liquidate_ix(
             self.program_id,
@@ -291,13 +313,21 @@ impl MarginfiAccount {
             bank_liquidity_vault,
             bank_insurance_vault,
             token_program,
-            liquidatee_observation_accounts,
             liquidator_observation_accounts,
+            liquidatee_observation_accounts,
+            asset_bank.bank.config.oracle_keys[0],
+            liab_bank.bank.config.oracle_keys[0],
             asset_amount,
         );
 
+        drop(asset_bank);
+        drop(liab_bank);
+
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(10_000);
+
         let tx = Transaction::new_signed_with_payer(
-            &[liquidate_ix],
+            &[compute_budget_ix, compute_budget_price_ix, liquidate_ix],
             Some(&signer_pk),
             &[self.signer_keypair.as_ref()],
             self.rpc_client.get_latest_blockhash()?,

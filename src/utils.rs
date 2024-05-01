@@ -9,13 +9,9 @@ use dashmap::DashMap;
 use fixed::types::I80F48;
 use marginfi::{
     bank_authority_seed, bank_seed,
-    constants::EXP_10,
     prelude::MarginfiResult,
     state::{
-        marginfi_account::{
-            calc_value, Balance, BalanceSide, BankAccountWithPriceFeed, LendingAccount,
-            RequirementType,
-        },
+        marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
         marginfi_group::{Bank, BankVaultType, RiskTier},
         price::{PriceAdapter, PriceBias},
     },
@@ -28,7 +24,7 @@ use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
-use crate::state_engine::{engine::BankWrapper, marginfi_account::MarginfiAccountWrapper};
+use crate::state_engine::engine::BankWrapper;
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
@@ -38,7 +34,7 @@ pub struct BatchLoadingConfig {
 impl BatchLoadingConfig {
     pub const DEFAULT: Self = Self {
         max_batch_size: 100,
-        max_concurrent_calls: 32,
+        max_concurrent_calls: 64,
     };
 }
 
@@ -186,6 +182,24 @@ where
 {
     let s: String = Deserialize::deserialize(deserializer)?;
     Pubkey::from_str(&s).map_err(serde::de::Error::custom)
+}
+
+pub(crate) fn from_option_vec_pubkey_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<Pubkey>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Option<Vec<String>> = Deserialize::deserialize(deserializer)?;
+
+    match s {
+        Some(a) => Ok(Some(
+            a.into_iter()
+                .map(|s| Pubkey::from_str(&s).map_err(serde::de::Error::custom))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        None => Ok(None),
+    }
 }
 
 pub(crate) fn fixed_from_float<'de, D>(deserializer: D) -> Result<I80F48, D::Error>
@@ -443,12 +457,4 @@ pub fn calc_weighted_liabs(
         bank.mint_decimals,
         Some(liability_weight),
     )?)
-}
-
-pub fn native_to_ui_amount(amount: u64, decimals: usize) -> f64 {
-    amount as f64 / EXP_10[decimals] as f64
-}
-
-pub fn ui_to_native_amount(amount: f64, decimals: usize) -> u64 {
-    (amount * EXP_10[decimals] as f64) as u64
 }

@@ -1,6 +1,6 @@
 use crate::{processor::EvaLiquidator, state_engine::engine::StateEngineConfig};
 use env_logger::Builder;
-use log::{debug, info};
+use log::{debug, info, warn};
 use solana_sdk::{pubkey::Pubkey, signature::read_keypair_file};
 use state_engine::engine::StateEngineService;
 use std::{backtrace, error::Error, sync::Arc, thread::sleep, time::Duration};
@@ -71,35 +71,52 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (state_engine, update_rx) = StateEngineService::new(config.state_engine_config.clone())?;
 
     let state_eng_clone = state_engine.clone();
+
     tokio_rt.block_on(async move {
         state_eng_clone
-            .load(config.liquidator_config.liquidator_account)
+            .load_initial_state(config.liquidator_config.liquidator_account)
             .await
             .unwrap();
     });
 
-    let handle = EvaLiquidator::start(state_engine.clone(), update_rx, config.liquidator_config)?;
+    let state_eng_clone = state_engine.clone();
 
-    // sleep(Duration::from_secs(1));
-
-    tokio_rt.block_on(async move {
-        state_engine.start().await.unwrap();
+    let state_eng_handle = tokio_rt.spawn(async move {
+        state_eng_clone.start().await.unwrap();
     });
 
-    handle.join().unwrap()?;
+    let handle = EvaLiquidator::start(
+        state_engine.clone(),
+        update_rx,
+        config.liquidator_config.clone(),
+    )?;
+
+    let state_eng_clone = state_engine.clone();
+
+    tokio_rt.block_on(async move {
+        state_eng_clone.load_accounts().await.unwrap();
+    });
+
+    tokio_rt.block_on(async move {
+        state_eng_handle.await.unwrap();
+    });
+
+    handle.join().unwrap();
+
+    warn!("eva exited");
 
     Ok(())
 }
 
 /// Set panic hook to stop if any sub thread panics
 fn set_panic_hook() {
-    std::panic::set_hook(Box::new(|panic_info| {
-        // Print the panic information
-        eprintln!("Panic occurred: {:?}", panic_info);
+    // std::panic::set_hook(Box::new(|panic_info| {
+    //     // Print the panic information
+    //     eprintln!("Panic occurred: {:?}", panic_info);
 
-        // Perform any necessary cleanup or logging here
+    //     // Perform any necessary cleanup or logging here
 
-        // Terminate the program
-        std::process::exit(1);
-    }));
+    //     // Terminate the program
+    //     std::process::exit(1);
+    // }));
 }

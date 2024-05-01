@@ -305,7 +305,11 @@ impl MarginfiAccountWrapper {
             .map(|b| b.bank_pk)
             .collect::<Vec<_>>();
 
-        ordered_active_banks.extend(banks_to_include.iter());
+        for bank_pk in banks_to_include {
+            if !ordered_active_banks.contains(bank_pk) {
+                ordered_active_banks.push(*bank_pk);
+            }
+        }
 
         trace!("Ordered active banks: {:?}", ordered_active_banks);
 

@@ -101,17 +101,7 @@ pub fn make_withdraw_ix(
 
     Instruction {
         program_id: marginfi_program_id,
-        accounts: marginfi::accounts::LendingAccountWithdraw {
-            marginfi_group,
-            marginfi_account,
-            signer,
-            bank,
-            destination_token_account,
-            bank_liquidity_vault_authority,
-            bank_liquidity_vault,
-            token_program,
-        }
-        .to_account_metas(Some(true)),
+        accounts,
         data: marginfi::instruction::LendingAccountWithdraw {
             amount,
             withdraw_all,
@@ -132,8 +122,10 @@ pub fn make_liquidate_ix(
     bank_liquidity_vault: Pubkey,
     bank_insurance_vault: Pubkey,
     token_program: Pubkey,
-    liquidatee_observation_accounts: Vec<Pubkey>,
     liquidator_observation_accounts: Vec<Pubkey>,
+    liquidatee_observation_accounts: Vec<Pubkey>,
+    asset_bank_oracle: Pubkey,
+    liab_bank_oracle: Pubkey,
     asset_amount: u64,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountLiquidate {
@@ -150,14 +142,19 @@ pub fn make_liquidate_ix(
     }
     .to_account_metas(Some(true));
 
+    accounts.extend([
+        AccountMeta::new_readonly(asset_bank_oracle, false),
+        AccountMeta::new_readonly(liab_bank_oracle, false),
+    ]);
+
     accounts.extend(
-        liquidatee_observation_accounts
+        liquidator_observation_accounts
             .iter()
             .map(|a| AccountMeta::new_readonly(a.key(), false)),
     );
 
     accounts.extend(
-        liquidator_observation_accounts
+        liquidatee_observation_accounts
             .iter()
             .map(|a| AccountMeta::new_readonly(a.key(), false)),
     );

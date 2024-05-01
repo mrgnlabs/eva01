@@ -14,6 +14,7 @@ use marginfi::state::price::PriceBias;
 use solana_account_decoder::UiAccountEncoding;
 use solana_account_decoder::UiDataSliceConfig;
 use solana_sdk::bs58;
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -34,7 +35,10 @@ use solana_sdk::{account::Account, signature::Keypair};
 
 use crate::state_engine::geyser::GeyserService;
 use crate::token_account_manager::TokenAccountManager;
-use crate::utils::{accessor, batch_get_multiple_accounts, from_pubkey_string, BatchLoadingConfig};
+use crate::utils::{
+    accessor, batch_get_multiple_accounts, from_option_vec_pubkey_string, from_pubkey_string,
+    BatchLoadingConfig,
+};
 
 use super::geyser::GeyserServiceConfig;
 use super::marginfi_account::MarginfiAccountWrapper;
@@ -221,6 +225,11 @@ pub struct StateEngineConfig {
     #[serde(default = "StateEngineConfig::default_skip_account_loading")]
     /// Skip loading of marginfi accounts on startup
     pub skip_account_loading: bool,
+    #[serde(
+        deserialize_with = "from_option_vec_pubkey_string",
+        default = "StateEngineConfig::default_account_whitelist"
+    )]
+    pub account_whitelist: Option<Vec<Pubkey>>,
 }
 
 impl StateEngineConfig {
@@ -241,6 +250,10 @@ impl StateEngineConfig {
 
     pub fn default_skip_account_loading() -> bool {
         false
+    }
+
+    pub fn default_account_whitelist() -> Option<Vec<Pubkey>> {
+        None
     }
 }
 
@@ -320,18 +333,41 @@ impl StateEngineService {
             .map(|banks| banks.value().first().unwrap().clone())
     }
 
-    pub async fn load(&self, liquidator_account: Pubkey) -> anyhow::Result<()> {
+    pub async fn load_initial_state(&self, liquidator_account: Pubkey) -> anyhow::Result<()> {
         debug!("StateEngineService::load");
-        info!("Loading state engine service");
+        info!("Loading initial state");
 
         self.load_oracles_and_banks().await?;
         self.load_token_accounts()?;
         self.load_sol_accounts()?;
         self.load_liquidator_account(liquidator_account)?;
 
+        Ok(())
+    }
+
+    pub async fn load_accounts(&self) -> anyhow::Result<()> {
         if !self.config.skip_account_loading {
             self.load_marginfi_accounts().await?;
         }
+
+        Ok(())
+    }
+
+    pub async fn refresh_token_account(&self, bank_pk: &Pubkey) -> anyhow::Result<()> {
+        let mint = self.get_bank(bank_pk).unwrap().read().unwrap().bank.mint;
+        let token_account_addresses = self
+            .token_account_manager
+            .get_address_for_mint(mint)
+            .ok_or_else(|| anyhow::anyhow!("No token account found for mint {}", mint))?;
+
+        let account = self
+            .rpc_client
+            .get_account_with_commitment(&token_account_addresses, CommitmentConfig::confirmed())
+            .map_err(|e| anyhow::anyhow!("Failed to get account: {:?}", e))?
+            .value
+            .ok_or_else(|| anyhow::anyhow!("Token account not found"))?;
+
+        self.update_token_account(&token_account_addresses, account)?;
 
         Ok(())
     }
@@ -704,59 +740,67 @@ impl StateEngineService {
         self.config.signer_pubkey == *address
     }
 
+    async fn load_marginfi_account_addresses(&self) -> anyhow::Result<Vec<Pubkey>> {
+        match &self.config.account_whitelist {
+            Some(account_list) => Ok(account_list.clone()),
+            None => {
+                let marginfi_account_addresses = self
+                    .nb_rpc_client
+                    .get_program_accounts_with_config(
+                        &self.config.marginfi_program_id,
+                        RpcProgramAccountsConfig {
+                            account_config: RpcAccountInfoConfig {
+                                encoding: Some(UiAccountEncoding::Base64),
+                                data_slice: Some(UiDataSliceConfig {
+                                    offset: 0,
+                                    length: 0,
+                                }),
+                                ..Default::default()
+                            },
+                            filters: Some(vec![
+                                #[allow(deprecated)]
+                                RpcFilterType::Memcmp(Memcmp {
+                                    offset: 8,
+                                    #[allow(deprecated)]
+                                    bytes: MemcmpEncodedBytes::Base58(
+                                        self.config.marginfi_group_address.to_string(),
+                                    ),
+                                    #[allow(deprecated)]
+                                    encoding: None,
+                                }),
+                                #[allow(deprecated)]
+                                RpcFilterType::Memcmp(Memcmp {
+                                    offset: 0,
+                                    #[allow(deprecated)]
+                                    bytes: MemcmpEncodedBytes::Base58(
+                                        bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
+                                    ),
+                                    #[allow(deprecated)]
+                                    encoding: None,
+                                }),
+                            ]),
+                            with_context: Some(false),
+                        },
+                    )
+                    .await?;
+
+                let marginfi_account_pubkeys: Vec<Pubkey> = marginfi_account_addresses
+                    .iter()
+                    .map(|(pubkey, _)| *pubkey)
+                    .collect();
+
+                Ok(marginfi_account_pubkeys)
+            }
+        }
+    }
+
     async fn load_marginfi_accounts(&self) -> anyhow::Result<()> {
-        debug!("Loading marginfi accounts");
+        info!("Loading marginfi accounts");
         let start = std::time::Instant::now();
 
-        let marginfi_account_addresses = self
-            .nb_rpc_client
-            .get_program_accounts_with_config(
-                &self.config.marginfi_program_id,
-                RpcProgramAccountsConfig {
-                    account_config: RpcAccountInfoConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        data_slice: Some(UiDataSliceConfig {
-                            offset: 0,
-                            length: 0,
-                        }),
-                        ..Default::default()
-                    },
-                    filters: Some(vec![
-                        #[allow(deprecated)]
-                        RpcFilterType::Memcmp(Memcmp {
-                            offset: 8,
-                            #[allow(deprecated)]
-                            bytes: MemcmpEncodedBytes::Base58(
-                                self.config.marginfi_group_address.to_string(),
-                            ),
-                            #[allow(deprecated)]
-                            encoding: None,
-                        }),
-                        #[allow(deprecated)]
-                        RpcFilterType::Memcmp(Memcmp {
-                            offset: 0,
-                            #[allow(deprecated)]
-                            bytes: MemcmpEncodedBytes::Base58(
-                                bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
-                            ),
-                            #[allow(deprecated)]
-                            encoding: None,
-                        }),
-                    ]),
-                    with_context: Some(false),
-                },
-            )
-            .await?;
+        let marginfi_account_pubkeys = self.load_marginfi_account_addresses().await?;
 
-        let marginfi_account_pubkeys: Vec<Pubkey> = marginfi_account_addresses
-            .iter()
-            .map(|(pubkey, _)| *pubkey)
-            .collect();
-
-        debug!(
-            "Found {} marginfi accounts",
-            marginfi_account_addresses.len()
-        );
+        debug!("Found {} marginfi accounts", marginfi_account_pubkeys.len());
 
         let mut marginfi_accounts = batch_get_multiple_accounts(
             self.rpc_client.clone(),
@@ -766,12 +810,12 @@ impl StateEngineService {
 
         debug!("Fetched {} marginfi accounts", marginfi_accounts.len());
 
-        for (address, account) in marginfi_account_addresses
+        for (address, account) in marginfi_account_pubkeys
             .iter()
             .zip(marginfi_accounts.iter_mut())
         {
             let account = account.as_ref().unwrap();
-            self.update_marginfi_account(&address.0, &account)?;
+            self.update_marginfi_account(address, account)?;
         }
 
         debug!("Done loading marginfi accounts, tool {:?}", start.elapsed());
@@ -786,6 +830,8 @@ impl StateEngineService {
     ) -> anyhow::Result<()> {
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
         let marginfi_accounts = self.marginfi_accounts.clone();
+
+        debug!("Updating marginfi account {}", marginfi_account_address);
 
         marginfi_accounts
             .entry(*marginfi_account_address)
@@ -805,7 +851,7 @@ impl StateEngineService {
     }
 
     pub fn trigger_update_signal(&self) {
-        match self.update_tx.send(()) {
+        match self.update_tx.try_send(()) {
             Ok(_) => debug!("Sent update signal"),
             Err(e) => error!("Failed to send update signal: {}", e),
         }

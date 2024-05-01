@@ -31,7 +31,6 @@ use solana_sdk::{
     signer::{SeedDerivable, Signer},
     transaction::VersionedTransaction,
 };
-use spl_associated_token_account::tools::account;
 
 use crate::{
     marginfi_account::MarginfiAccountError,
@@ -42,7 +41,7 @@ use crate::{
     },
     utils::{
         calc_weighted_assets, calc_weighted_liabs, fixed_from_float, from_pubkey_string,
-        from_vec_str_to_pubkey, native_to_ui_amount, BankAccountWithPriceFeedEva,
+        from_vec_str_to_pubkey,
     },
 };
 
@@ -213,7 +212,7 @@ impl EvaLiquidator {
 
                 if let Err(e) = tokio::runtime::Runtime::new()
                     .unwrap()
-                    .block_on(processor.run())
+                    .block_on(processor.run_outer())
                 {
                     error!("Error running processor: {:?}", e);
                 }
@@ -225,23 +224,65 @@ impl EvaLiquidator {
             .map_err(|_| ProcessorError::SetupFailed)
     }
 
-    async fn run(&self) -> Result<(), ProcessorError> {
+    async fn run_outer(&self) -> Result<(), ProcessorError> {
         loop {
-            if self.needs_to_be_rebalanced() {
-                self.sell_non_preferred_deposits().await?;
-                self.handle_tokens_in_token_accounts().await?;
-                self.deposit_preferred_tokens()?;
-            }
-
-            while let Ok(_) = self.update_rx.recv() {
-                match self.calc_health_for_all_accounts() {
-                    Err(e) => {
-                        error!("Error processing accounts: {:?}", e);
-                    }
-                    _ => {}
-                };
+            match self.run().await {
+                Ok(_) => {
+                    warn!("Processor exited, restarting...");
+                }
+                Err(e) => {
+                    error!("Error running processor: {:?}, restarting...", e);
+                }
             }
         }
+    }
+
+    async fn run(&self) -> Result<(), ProcessorError> {
+        loop {
+            while self.needs_to_be_rebalanced() {
+                self.rebalance_with_recovery().await?;
+            }
+
+            match self.evaluate_all_accounts() {
+                Err(e) => {
+                    error!("Error processing accounts: {:?}", e);
+                }
+                _ => {}
+            };
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+
+        Ok(())
+    }
+
+    async fn rebalance_with_recovery(&self) -> Result<(), ProcessorError> {
+        let mut retries = 0;
+        while self.rebalance_accounts().await.is_err() {
+            retries += 1;
+
+            if retries > 5 {
+                error!("Failed to rebalance accounts after 5 retries, exiting...");
+                self.state_engine
+                    .load_initial_state(self.cfg.liquidator_account)
+                    .await?;
+                return Err(ProcessorError::Error("Failed to rebalance accounts"));
+            }
+
+            error!("Error rebalancing accounts, retrying...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+
+        debug!("Rebalanced accounts");
+
+        Ok(())
+    }
+
+    async fn rebalance_accounts(&self) -> Result<(), ProcessorError> {
+        self.sell_non_preferred_deposits().await?;
+        self.replay_liabilities().await?;
+        self.handle_tokens_in_token_accounts().await?;
+        self.deposit_preferred_tokens().await?;
 
         Ok(())
     }
@@ -290,6 +331,7 @@ impl EvaLiquidator {
     }
 
     async fn handle_tokens_in_token_accounts(&self) -> Result<(), ProcessorError> {
+        debug!("Handling tokens in token accounts");
         let bank_addresses = self
             .state_engine
             .banks
@@ -302,22 +344,35 @@ impl EvaLiquidator {
             self.handle_token_in_token_account(&bank_pk).await?;
         }
 
+        self.state_engine
+            .refresh_token_account(&self.swap_mint_bank_pk)
+            .await?;
+
+        let balance = self.get_token_balance_for_bank(&self.swap_mint_bank_pk)?;
+
+        if let Some(balance) = balance {
+            if !balance.is_zero() {
+                self.liquidator_account
+                    .deposit(self.swap_mint_bank_pk, balance.to_num())?;
+            }
+        }
+
         Ok(())
     }
 
     async fn handle_token_in_token_account(&self, bank_pk: &Pubkey) -> Result<(), ProcessorError> {
-        debug!("Handle token in token account for bank {}", bank_pk);
+        trace!("Handle token in token account for bank {}", bank_pk);
 
         let amount = self.get_token_balance_for_bank(bank_pk)?;
 
         if amount.is_none() {
-            debug!("No token balance found for bank {}", bank_pk);
+            warn!("No token balance found for bank {}", bank_pk);
             return Ok(());
         }
 
         let amount = amount.unwrap();
 
-        debug!("Found token balance of {} for bank {}", amount, bank_pk);
+        trace!("Found token balance of {} for bank {}", amount, bank_pk);
 
         let value = self.get_value(
             amount,
@@ -326,10 +381,10 @@ impl EvaLiquidator {
             BalanceSide::Assets,
         )?;
 
-        debug!("Token balance value: ${}", value);
+        trace!("Token balance value: ${}", value);
 
         if value < self.cfg.token_account_dust_threshold {
-            debug!("Token balance value is below dust threshold");
+            trace!("Token balance value is below dust threshold");
             return Ok(());
         }
 
@@ -339,7 +394,8 @@ impl EvaLiquidator {
         Ok(())
     }
 
-    fn deposit_preferred_tokens(&self) -> Result<(), ProcessorError> {
+    async fn deposit_preferred_tokens(&self) -> Result<(), ProcessorError> {
+        debug!("Depositing preferred tokens");
         let balance = self.get_token_balance_for_bank(&self.swap_mint_bank_pk)?;
 
         if balance.is_none() {
@@ -419,14 +475,14 @@ impl EvaLiquidator {
             .and_then(|account| account.read().ok().map(|account| account.get_amount()));
 
         if balance.is_none() {
-            debug!("No token balance found for mint {}", mint);
+            warn!("No token balance found for mint {}", mint);
             return Ok(None);
         }
 
         Ok(balance)
     }
 
-    fn replay_liabilities(&self) -> Result<(), ProcessorError> {
+    async fn replay_liabilities(&self) -> Result<(), ProcessorError> {
         debug!("Replaying liabilities");
         let liabilties = self
             .liquidator_account
@@ -444,7 +500,7 @@ impl EvaLiquidator {
         info!("Replaying liabilities");
 
         for (_, bank_pk) in liabilties {
-            self.repay_liability(bank_pk)?;
+            self.repay_liability(bank_pk).await?;
         }
 
         Ok(())
@@ -459,7 +515,7 @@ impl EvaLiquidator {
     /// - Withdraw USDC
     /// - Swap USDC for bank tokens
     /// - Repay liability
-    fn repay_liability(&self, bank_pk: Pubkey) -> Result<(), ProcessorError> {
+    async fn repay_liability(&self, bank_pk: Pubkey) -> Result<(), ProcessorError> {
         let balance = self
             .get_liquidator_account()?
             .get_balance_for_bank(&bank_pk)?;
@@ -469,9 +525,9 @@ impl EvaLiquidator {
             return Ok(());
         }
 
-        let (balance, _) = balance.unwrap();
+        let (liab_balance, _) = balance.unwrap();
 
-        debug!("Found liability of {} for bank {}", balance, bank_pk);
+        debug!("Found liability of {} for bank {}", liab_balance, bank_pk);
 
         let token_balance = self
             .get_token_balance_for_bank(&bank_pk)?
@@ -484,7 +540,7 @@ impl EvaLiquidator {
             );
         }
 
-        let liab_to_purchase = balance - token_balance;
+        let liab_to_purchase = liab_balance - token_balance;
 
         debug!("Liability to purchase: {}", liab_to_purchase);
 
@@ -510,6 +566,11 @@ impl EvaLiquidator {
                 .get_token_balance_for_bank(&self.swap_mint_bank_pk)?
                 .unwrap_or_default();
 
+            debug!(
+                "Found swap token balance of {} for bank {}",
+                swap_token_balance, self.swap_mint_bank_pk
+            );
+
             // Log if token balance is > 0
             if !swap_token_balance.is_zero() {
                 debug!(
@@ -521,15 +582,46 @@ impl EvaLiquidator {
             // Token balance to withdraw
             let token_balance_to_withdraw = required_swap_token - swap_token_balance;
 
-            // Log if token balance to withdraw is > 0
-            if !token_balance_to_withdraw.is_zero() {
+            // Withdraw token balance
+            let withdrawn_amount = if token_balance_to_withdraw.is_positive() {
                 debug!(
                     "Token balance to withdraw: {} for bank {}",
                     token_balance_to_withdraw, self.swap_mint_bank_pk
                 );
+
+                let (max_withdraw_amount, withdraw_all) =
+                    self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk)?;
+
+                let withdraw_amount = min(max_withdraw_amount, token_balance_to_withdraw);
+
+                self.liquidator_account.withdraw(
+                    &self.swap_mint_bank_pk,
+                    withdraw_amount.to_num(),
+                    Some(withdraw_all),
+                )?;
+
+                withdraw_amount
+            } else {
+                I80F48::ZERO
+            };
+
+            let amount_to_swap = min(liab_balance + withdrawn_amount, required_swap_token);
+
+            if amount_to_swap.is_positive() {
+                self.swap(amount_to_swap.to_num(), &self.swap_mint_bank_pk, &bank_pk)
+                    .await?;
+
+                self.state_engine.refresh_token_account(&bank_pk).await?;
             }
 
-            // Withdraw token balance
+            let token_balance = self
+                .get_token_balance_for_bank(&bank_pk)?
+                .unwrap_or_default();
+
+            let repay_all = token_balance >= liab_balance;
+
+            self.liquidator_account
+                .repay(bank_pk, token_balance.to_num(), Some(repay_all))?;
         }
 
         Ok(())
@@ -576,26 +668,12 @@ impl EvaLiquidator {
 
         let (withdraw_amount, withdraw_all) = self.get_max_withdraw_for_bank(bank_pk)?;
 
+        let amount = withdraw_amount.to_num::<u64>();
+
         self.liquidator_account
-            .withdraw(bank_pk, withdraw_amount.to_num(), Some(withdraw_all))?;
+            .withdraw(bank_pk, amount, Some(withdraw_all))?;
 
-        let token_amount = self
-            .get_token_balance_for_bank(bank_pk)?
-            .unwrap_or_default();
-
-        self.swap(token_amount.to_num(), bank_pk, &self.swap_mint_bank_pk)
-            .await?;
-
-        let token_balance = self
-            .get_token_balance_for_bank(&self.swap_mint_bank_pk)?
-            .unwrap_or_default();
-
-        if !token_balance.is_zero() {
-            self.liquidator_account
-                .deposit(self.swap_mint_bank_pk, token_balance.to_num())?;
-        } else {
-            warn!("No token balance found for bank {}", self.swap_mint_bank_pk);
-        }
+        self.swap(amount, bank_pk, &self.swap_mint_bank_pk).await?;
 
         Ok(())
     }
@@ -693,15 +771,8 @@ impl EvaLiquidator {
         has_non_preferred_deposits
     }
 
-    fn calc_health_for_all_accounts(&self) -> Result<(), ProcessorError> {
+    fn evaluate_all_accounts(&self) -> Result<bool, ProcessorError> {
         let start = std::time::Instant::now();
-        // self.state_engine.marginfi_accounts.iter().try_for_each(
-        //     |account| -> Result<(), ProcessorError> {
-        //         self.process_account(&account)?;
-
-        //         Ok(())
-        //     },
-        // )?;
 
         let mut accounts = self
             .state_engine
@@ -743,6 +814,8 @@ impl EvaLiquidator {
                 );
             });
 
+        let unhealty_top_10 = accounts.iter().rev().take(10).collect::<Vec<_>>();
+
         let end = start.elapsed();
 
         debug!(
@@ -751,13 +824,16 @@ impl EvaLiquidator {
             end
         );
 
-        let first = accounts.first();
+        let first = unhealty_top_10.first();
 
         if let Some((account, _)) = first {
+            info!("Liquidating account {}", account.read().unwrap().address);
             self.liquidate_account(account.clone())?;
+
+            return Ok(true);
         }
 
-        Ok(())
+        Ok(false)
     }
 
     fn liquidate_account(
@@ -806,12 +882,7 @@ impl EvaLiquidator {
 
         debug!(
             "Max liquidatable amount: {} of {} for {}",
-            native_to_ui_amount(
-                max_asset_liquidation_amount.to_num(),
-                asset_bank.bank.mint_decimals as usize,
-            ),
-            asset_bank.bank.mint,
-            liab_bank.bank.mint
+            max_asset_liquidation_amount, asset_bank.bank.mint, liab_bank.bank.mint
         );
 
         // Max USD amount the liquidator can cover
@@ -838,12 +909,7 @@ impl EvaLiquidator {
 
         info!(
             "Liquidating {} of {} for {}",
-            native_to_ui_amount(
-                slippage_adjusted_asset_amount.to_num(),
-                asset_bank.bank.mint_decimals as usize
-            ),
-            asset_bank.bank.mint,
-            liab_bank.bank.mint
+            slippage_adjusted_asset_amount, asset_bank.bank.mint, liab_bank.bank.mint
         );
 
         drop(liab_bank);
@@ -1035,7 +1101,7 @@ impl EvaLiquidator {
             bank_w.bank.mint
         };
 
-        debug!("Swapping {} from {} to {}", amount, src_mint, dst_mint);
+        info!("Swapping {} from {} to {}", amount, src_mint, dst_mint);
 
         let jup_swap_client = JupiterSwapApiClient::new(self.cfg.jup_swap_api_url.clone());
 
