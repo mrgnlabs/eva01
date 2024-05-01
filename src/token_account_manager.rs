@@ -9,11 +9,9 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIter
 use sha2::{Digest, Sha256};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
-    program_pack::Pack,
     pubkey::Pubkey,
     signature::Keypair,
     signer::{SeedDerivable, Signer},
-    system_instruction,
 };
 
 use crate::{
@@ -69,8 +67,10 @@ impl TokenAccountManager {
             .copied()
             .collect::<Vec<_>>();
 
-        let addresses = mints.iter().map(|mint| *self.mint_to_account.read().unwrap().get(mint).unwrap()).collect::<Vec<_>>();
-
+        let addresses = mints
+            .iter()
+            .map(|mint| *self.mint_to_account.read().unwrap().get(mint).unwrap())
+            .collect::<Vec<_>>();
 
         (mints, addresses)
     }
@@ -117,7 +117,7 @@ impl TokenAccountManager {
             .map_err(|e| {
                 error!("Failed to batch get multiple accounts: {:?}", e);
                 TokenAccountManagerError::SetupFailed("Failed to find missing accounts")
-            })?; 
+            })?;
 
             let tas_to_create = res
                 .iter()
@@ -130,7 +130,7 @@ impl TokenAccountManager {
                         None
                     }
                 })
-                .map(|(_, mint)| -> Result<_, TokenAccountManagerError> {   
+                .map(|(_, mint)| -> Result<_, TokenAccountManagerError> {
                     let signer_pk = signer.pubkey();
                     let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(&signer_pk, &signer_pk, mint, &spl_token::ID);
 
@@ -152,10 +152,7 @@ impl TokenAccountManager {
                     let recent_blockhash = recent_blockhash.clone();
                     let rpc = rpc_client.clone();
 
-                    let ixs = chunk
-                        .iter()
-                        .map(|ix| (*ix).clone())
-                        .collect::<Vec<_>>();
+                    let ixs = chunk.iter().map(|ix| (*ix).clone()).collect::<Vec<_>>();
                     let signers = vec![signer.as_ref()];
 
                     let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(

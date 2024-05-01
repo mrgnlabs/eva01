@@ -1,9 +1,9 @@
 use crate::{processor::EvaLiquidator, state_engine::engine::StateEngineConfig};
 use env_logger::Builder;
-use log::{debug, info, warn};
-use solana_sdk::{pubkey::Pubkey, signature::read_keypair_file};
+use log::{info, warn};
+use solana_sdk::pubkey::Pubkey;
 use state_engine::engine::StateEngineService;
-use std::{backtrace, error::Error, sync::Arc, thread::sleep, time::Duration};
+use std::error::Error;
 use structopt::StructOpt;
 
 mod marginfi_account;

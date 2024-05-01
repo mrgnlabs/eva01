@@ -1,14 +1,13 @@
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{error::Error, sync::Arc};
 
-use log::{error, info, trace};
+use log::{error, info};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
-use solana_client::rpc_config::{RpcSimulateTransactionConfig, RpcTransactionConfig};
+use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::transaction::VersionedTransaction;
-use solana_sdk::{signature::Signature, transaction::Transaction};
+
+use solana_sdk::signature::Signature;
 
 #[derive(Debug, Deserialize)]
 pub struct SenderCfg {

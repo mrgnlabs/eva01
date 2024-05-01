@@ -2,7 +2,6 @@ use std::mem::size_of;
 use std::time::Instant;
 use std::{collections::HashMap, sync::Arc};
 
-use anchor_spl::token_2022::spl_token_2022::state;
 use backoff::{retry, ExponentialBackoff};
 use futures::channel::mpsc::SendError;
 use futures::SinkExt;
@@ -14,7 +13,7 @@ use log::{debug, trace};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use marginfi::state::marginfi_group::Bank;
 use solana_program::pubkey::Pubkey;
-use tokio::spawn;
+
 use tokio::task::JoinHandle;
 use tonic::service::Interceptor;
 use yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError};
@@ -145,7 +144,7 @@ impl GeyserService {
             GeyserServiceError::GenericError
         })?;
 
-        let state_engine_clone = state_engine.clone();
+        let _state_engine_clone = state_engine.clone();
 
         let handle = tokio::task::spawn(async move {
             let mut ping_id = 1;
@@ -182,7 +181,7 @@ impl GeyserService {
             //     last_heartbeat = Instant::now();
             // }
 
-            let update = match msg {
+            let _update = match msg {
                 Ok(msg) => Self::process_message(&state_engine, msg)?,
                 Err(e) => {
                     error!("Error receiving message from geyser: {:?}", e);
@@ -229,7 +228,7 @@ impl GeyserService {
                             if account_owner_pk == state_engine.get_marginfi_program_id() {
                                 let maybe_update =
                                     Self::process_marginfi_account_update(state_engine, &account)?;
-                                if let Some(update) = maybe_update {
+                                if let Some(_update) = maybe_update {
                                     geyser_update_request = true;
                                 }
                                 processed = true;

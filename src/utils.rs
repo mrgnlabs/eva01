@@ -3,7 +3,7 @@ use std::{
     sync::{atomic::AtomicUsize, Arc, RwLock},
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
 use dashmap::DashMap;
 use fixed::types::I80F48;
@@ -238,7 +238,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
 
         active_balances
             .enumerate()
-            .map(|(i, balance)| {
+            .map(|(_i, balance)| {
                 let bank = banks
                     .get(&balance.bank_pk)
                     .ok_or_else(|| anyhow::anyhow!("Bank not found"))?

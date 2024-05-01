@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use log::{debug, error, info};
+use log::{error, info};
 use marginfi::state::marginfi_group::BankVaultType;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -162,7 +162,7 @@ impl MarginfiAccount {
         drop(bank);
 
         let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT)
-            .map_err(|e| MarginfiAccountError::ActionFailed("Failed to repay"))?;
+            .map_err(|_e| MarginfiAccountError::ActionFailed("Failed to repay"))?;
 
         info!("Repay successful, tx signature: {:?}", sig);
 
