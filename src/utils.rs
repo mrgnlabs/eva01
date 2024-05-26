@@ -1,11 +1,11 @@
 use std::{
+    collections::HashMap,
     str::FromStr,
     sync::{atomic::AtomicUsize, Arc, RwLock},
 };
 
 use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
-use dashmap::DashMap;
 use fixed::types::I80F48;
 use marginfi::{
     bank_authority_seed, bank_seed,
@@ -24,7 +24,7 @@ use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
-use crate::state_engine::engine::BankWrapper;
+use crate::wrappers::bank::BankWrapper;
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
@@ -222,15 +222,15 @@ where
 }
 
 pub struct BankAccountWithPriceFeedEva<'a> {
-    bank: Arc<RwLock<BankWrapper>>,
+    bank: BankWrapper,
     balance: &'a Balance,
 }
 
 impl<'a> BankAccountWithPriceFeedEva<'a> {
     pub fn load(
         lending_account: &'a LendingAccount,
-        banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
-    ) -> anyhow::Result<Vec<BankAccountWithPriceFeedEva<'a>>> {
+        banks: HashMap<Pubkey, BankWrapper>,
+    ) -> anyhow::Result<Vec<BankAccountWithPriceFeedEva>> {
         let active_balances = lending_account
             .balances
             .iter()
@@ -238,7 +238,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
 
         active_balances
             .enumerate()
-            .map(|(_i, balance)| {
+            .map(move |(_, balance)| {
                 let bank = banks
                     .get(&balance.bank_pk)
                     .ok_or_else(|| anyhow::anyhow!("Bank not found"))?
@@ -247,30 +247,6 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
                 Ok(BankAccountWithPriceFeedEva { bank, balance })
             })
             .collect::<Result<Vec<_>>>()
-    }
-
-    pub fn load_single(
-        lending_account: &'a LendingAccount,
-        banks: Arc<DashMap<Pubkey, Arc<RwLock<BankWrapper>>>>,
-        bank_pk: &Pubkey,
-    ) -> anyhow::Result<Option<BankAccountWithPriceFeedEva<'a>>> {
-        let balance = lending_account
-            .balances
-            .iter()
-            .find(|balance| balance.active && balance.bank_pk == *bank_pk);
-
-        if balance.is_none() {
-            return Ok(None);
-        }
-
-        let balance = balance.unwrap();
-
-        let bank = banks
-            .get(&balance.bank_pk)
-            .ok_or_else(|| anyhow::anyhow!("Bank not found"))?
-            .clone();
-
-        Ok(Some(BankAccountWithPriceFeedEva { bank, balance }))
     }
 
     #[inline(always)]
@@ -287,19 +263,16 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
         requirement_type: RequirementType,
     ) -> anyhow::Result<(I80F48, I80F48)> {
         match self.balance.get_side() {
-            Some(side) => {
-                let bank = &self.bank.read().unwrap().bank;
-                match side {
-                    BalanceSide::Assets => Ok((
-                        self.calc_weighted_assets(requirement_type, &bank)?,
-                        I80F48::ZERO,
-                    )),
-                    BalanceSide::Liabilities => Ok((
-                        I80F48::ZERO,
-                        self.calc_weighted_liabs(requirement_type, &bank)?,
-                    )),
-                }
-            }
+            Some(side) => match side {
+                BalanceSide::Assets => Ok((
+                    self.calc_weighted_assets(requirement_type, &self.bank.bank)?,
+                    I80F48::ZERO,
+                )),
+                BalanceSide::Liabilities => Ok((
+                    I80F48::ZERO,
+                    self.calc_weighted_liabs(requirement_type, &self.bank.bank)?,
+                )),
+            },
             None => Ok((I80F48::ZERO, I80F48::ZERO)),
         }
     }
@@ -312,7 +285,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     ) -> anyhow::Result<I80F48> {
         match bank.config.risk_tier {
             RiskTier::Collateral => {
-                let price_feed = &self.bank.read().unwrap().oracle_adapter.price_adapter;
+                let price_feed = &self.bank.oracle_adapter.price_adapter;
                 let mut asset_weight = bank
                     .config
                     .get_weight(requirement_type, BalanceSide::Assets);
@@ -349,7 +322,8 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
         requirement_type: RequirementType,
         bank: &Bank,
     ) -> MarginfiResult<I80F48> {
-        let price_feed = &self.bank.read().unwrap().oracle_adapter.price_adapter;
+        let price_feed = &self.bank.oracle_adapter.price_adapter;
+
         let liability_weight = bank
             .config
             .get_weight(requirement_type, BalanceSide::Liabilities);
@@ -365,11 +339,6 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
             bank.mint_decimals,
             Some(liability_weight),
         )
-    }
-
-    #[inline]
-    pub fn is_empty(&self, side: BalanceSide) -> bool {
-        self.balance.is_empty(side)
     }
 }
 
@@ -387,6 +356,45 @@ pub fn find_bank_vault_authority_pda(
     program_id: &Pubkey,
 ) -> (Pubkey, u8) {
     Pubkey::find_program_address(bank_authority_seed!(vault_type, bank_pk), program_id)
+}
+
+pub fn calc_weighted_assets_new(
+    bank: &BankWrapper,
+    amount: I80F48,
+    requirement_type: RequirementType,
+) -> anyhow::Result<I80F48> {
+    let price_feed = &bank.oracle_adapter.price_adapter;
+    let mut asset_weight = bank
+        .bank
+        .config
+        .get_weight(requirement_type, BalanceSide::Assets);
+
+    let price_bias = if matches!(requirement_type, RequirementType::Equity) {
+        None
+    } else {
+        Some(PriceBias::Low)
+    };
+
+    let lower_price =
+        price_feed.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+
+    if matches!(requirement_type, RequirementType::Initial) {
+        if let Some(discount) = bank
+            .bank
+            .maybe_get_asset_weight_init_discount(lower_price)?
+        {
+            asset_weight = asset_weight
+                .checked_mul(discount)
+                .ok_or_else(|| anyhow!("math error"))?;
+        }
+    }
+
+    Ok(calc_value(
+        amount,
+        lower_price,
+        bank.bank.mint_decimals,
+        Some(asset_weight),
+    )?)
 }
 
 pub fn calc_weighted_assets(
@@ -426,6 +434,36 @@ pub fn calc_weighted_assets(
         lower_price,
         bank_wrapper_ref.bank.mint_decimals,
         Some(asset_weight),
+    )?)
+}
+
+#[inline(always)]
+pub fn calc_weighted_liabs_new(
+    bank: &BankWrapper,
+    amount: I80F48,
+    requirement_type: RequirementType,
+) -> anyhow::Result<I80F48> {
+    let liability_weight = bank
+        .bank
+        .config
+        .get_weight(requirement_type, BalanceSide::Liabilities);
+
+    let price_bias = if matches!(requirement_type, RequirementType::Equity) {
+        None
+    } else {
+        Some(PriceBias::High)
+    };
+
+    let higher_price = bank
+        .oracle_adapter
+        .price_adapter
+        .get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+
+    Ok(calc_value(
+        amount,
+        higher_price,
+        bank.bank.mint_decimals,
+        Some(liability_weight),
     )?)
 }
 

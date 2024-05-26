@@ -15,7 +15,6 @@ bincode = "1.3.3"
 bytemuck = "1.14.0"
 bytes = "1.5.0"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
-dashmap = "5.5.3"
 env_logger = "0.11.3"
 fixed = "1.24.0"
 fixed-macro = "1.2.0"
@@ -30,10 +29,8 @@ marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", branch = "jp/eva-s
 ] }
 num-traits = "0.2.18"
 rayon = "1.10.0"
-reqwest = "0.12.4"
 serde = "1.0.197"
 serde_json = "1.0.116"
-serde_toml = "0.0.1"
 sha2 = "0.10.8"
 solana-account-decoder = "1.16"
 solana-client = "1.16"
@@ -44,7 +41,7 @@ spl-associated-token-account = "2.0.0"
 spl-token = "=4.0.0"
 structopt = { version = "0.3.26", features = ["color", "suggestions"] }
 thiserror = "1.0.56"
-tokio = { version = "1.35.1", features = ["rt"] }
+tokio = { version = "1.35.1", features = ["rt", "macros"] }
 toml = "0.8.12"
 tonic = "0.10.2"
 tonic-health = "0.10.2"
