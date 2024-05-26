@@ -129,45 +129,32 @@ impl Liquidator {
         let max_duration = std::time::Duration::from_secs(5);
         loop {
             let start = std::time::Instant::now();
-            while let Ok(msg) = self.receiver.recv() {
+            while let Ok(mut msg) = self.receiver.recv() {
                 match msg.account_type {
                     AccountType::OracleAccount => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
-                            match account_update_to_account(&msg.account) {
-                                Ok(mut oracle_account) => {
-                                    let oracle_ai =
-                                        (&msg.address, &mut oracle_account).into_account_info();
-                                    let bank_to_update: &mut BankWrapper =
-                                        self.banks.get_mut(bank_to_update_pk).unwrap();
-                                    bank_to_update.oracle_adapter.price_adapter =
-                                        OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                                            &bank_to_update.bank.config,
-                                            &[oracle_ai.clone()],
-                                            0,
-                                            u64::MAX,
-                                        )
-                                        .unwrap();
-                                }
-                                Err(e) => {
-                                    error!("Error processing geyser message: {:?}", e);
-                                }
-                            }
+                            let oracle_ai = (&msg.address, &mut msg.account).into_account_info();
+                            let bank_to_update: &mut BankWrapper =
+                                self.banks.get_mut(bank_to_update_pk).unwrap();
+                            bank_to_update.oracle_adapter.price_adapter =
+                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                    &bank_to_update.bank.config,
+                                    &[oracle_ai.clone()],
+                                    0,
+                                    u64::MAX,
+                                )
+                                .unwrap();
                         }
                     }
-                    AccountType::MarginfiAccount => match account_update_to_account(&msg.account) {
-                        Ok(account) => {
-                            let account_to_update =
-                                self.marginfi_accounts.get_mut(&msg.address).unwrap();
+                    AccountType::MarginfiAccount => {
+                        // TODO: Create if not existent
+                        let account_to_update =
+                            self.marginfi_accounts.get_mut(&msg.address).unwrap();
 
-                            //TODO: if the account isn't find it should create it, and not continue
-
-                            account_to_update.account =
-                                *bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-                        }
-                        Err(e) => {
-                            error!("Error processing geyser message: {:?}", e);
-                        }
-                    },
+                        account_to_update.account =
+                            *bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
+                    }
+                    _ => {}
                 };
 
                 if start.elapsed() > max_duration {
@@ -206,7 +193,7 @@ impl Liquidator {
                 }
 
                 let liq_acc = LiquidatableAccount::new(
-                    account.clone(),
+                    account,
                     asset_bank_pk,
                     liab_bank_pk,
                     max_liquidation_amount,
@@ -218,7 +205,7 @@ impl Liquidator {
             .collect::<Vec<_>>();
 
         for account in accounts {
-            self.liquidate_account(account);
+            let _ = self.liquidate_account(account);
         }
 
         info!("Took: {:?} to process all acounts!", start.elapsed());

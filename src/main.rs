@@ -10,9 +10,9 @@ use solana_sdk::{pubkey, pubkey::Pubkey};
 use std::error::Error;
 use structopt::StructOpt;
 
+mod geyser;
 mod marginfi_ixs;
 mod sender;
-//mod state_engine;
 mod token_account_manager;
 
 /// Liquidator is responsible to liquidate MarginfiAccounts
@@ -141,13 +141,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config = Eva01Config::try_load_from_file(&eva01_opts.opts.config_path)?;
     info!("Starting eva");
 
-    // Create a channel that is used to communicate between Geyser and Liquidator/Rebalancer
-    let (tx, rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
+    let (liquidator_tx, liquidator_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
+    let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
 
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         config.liquidator_config.clone(),
-        rx.clone(),
+        liquidator_rx.clone(),
     );
     let _ = liquidator.load_data().await;
 
@@ -155,7 +155,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.general_config.get_geyser_service_config(),
         liquidator.get_accounts_to_track(),
         config.general_config.marginfi_program_id.clone(),
-        tx,
+        liquidator_tx,
+        rebalancer_tx,
     )
     .await?;
     tokio::task::spawn(async {
@@ -164,17 +165,4 @@ async fn main() -> Result<(), Box<dyn Error>> {
     liquidator.start().await;
 
     Ok(())
-}
-
-/// Set panic hook to stop if any sub thread panics
-fn set_panic_hook() {
-    // std::panic::set_hook(Box::new(|panic_info| {
-    //     // Print the panic information
-    //     eprintln!("Panic occurred: {:?}", panic_info);
-
-    //     // Perform any necessary cleanup or logging here
-
-    //     // Terminate the program
-    //     std::process::exit(1);
-    // }));
 }

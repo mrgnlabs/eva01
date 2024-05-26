@@ -1,6 +1,6 @@
 use backoff::{retry, ExponentialBackoff};
 use futures::{SinkExt, StreamExt};
-use log::{debug, error};
+use log::{debug, error, info};
 use solana_program::pubkey::Pubkey;
 use std::collections::HashMap;
 use tokio::task::JoinHandle;
@@ -9,12 +9,8 @@ use yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError};
 use yellowstone_grpc_proto::prelude::*;
 use crossbeam::channel::Sender;
 use futures::channel::mpsc::SendError;
-
-#[derive(Clone, Debug)]
-pub enum AccountType {
-    OracleAccount,
-    MarginfiAccount
-}
+use solana_sdk::account::Account;
+use crate::utils::account_update_to_account;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GeyserServiceError {
@@ -28,13 +24,25 @@ pub enum GeyserServiceError {
     SendError(#[from] SendError),
 }
 
-
-
-#[derive(Debug)]
+/// Struct that is used to communicate between geyser and other services 
+/// in the Eva
+#[derive(Debug, Clone)]
 pub struct GeyserUpdate {
     pub account_type: AccountType,
     pub address: Pubkey,
-    pub account: SubscribeUpdateAccountInfo
+    pub account: Account
+}
+
+/// Types of subscribed account, easier to distribute
+/// OracleAccount -> Rebalancer and liquidator
+/// MarginfiAccount -> Rebalaner and liquidator (Should be moved, so the only account
+///                    sended to rebalancer is the liquidator account)
+/// TokenAccount -> Rebalancer
+#[derive(Clone, Debug)]
+pub enum AccountType {
+    OracleAccount,
+    MarginfiAccount,
+    TokenAccount
 }
 
 pub struct GeyserServiceConfig {
@@ -42,15 +50,19 @@ pub struct GeyserServiceConfig {
     pub x_token: Option<String>,
 }
 
+/// Geyser service is responsible for receiving and distrubute the 
+/// messages to the needed services. It already separates the messages by
+/// liquidator or rebalancer to minizime the possible quantity of messages in
+/// cache in the respective services.
 pub struct GeyserService {}
 
 impl GeyserService {
-
     pub async fn connect(
         config: GeyserServiceConfig,
         tracked_accounts: HashMap<Pubkey, AccountType>,
         marginfi_program_id: Pubkey,
-        sender: Sender<GeyserUpdate>
+        liquidator_sender: Sender<GeyserUpdate>,
+        rebalancer_sender: Sender<GeyserUpdate>    
     ) -> Result<JoinHandle<Result<(), GeyserServiceError>>, GeyserServiceError> {
         let handle = retry(
             ExponentialBackoff::default(),
@@ -63,10 +75,11 @@ impl GeyserService {
                
 
                 let tracked_accounts_cl = tracked_accounts.clone();
-                let marginfi_program_id_cl = marginfi_program_id.clone();
-                let sender = sender.clone();
+                let liquidator_sender = liquidator_sender.clone();
+                let rebalancer_sender = rebalancer_sender.clone();
                 let handle = tokio::spawn(async move {
-                    Self::subscribe_and_run(tracked_accounts_cl, marginfi_program_id_cl, geyser_client, sender).await?;
+                    Self::subscribe_and_run(tracked_accounts_cl, marginfi_program_id, geyser_client, liquidator_sender, rebalancer_sender).await?;
+
                     Ok(())
                 });
 
@@ -78,11 +91,13 @@ impl GeyserService {
         Ok(handle)
     }
 
+    #[allow(clippy::all)] 
     async fn subscribe_and_run(
         tracked_accounts: HashMap<Pubkey, AccountType>, 
         marginfi_program_id: Pubkey,
         mut geyser_client: GeyserGrpcClient<impl Interceptor + 'static>,
-        sender: Sender<GeyserUpdate>
+        liquidator_sender: Sender<GeyserUpdate>,
+        rebalancer_sender: Sender<GeyserUpdate>
     ) -> anyhow::Result<()> {
 
         let tracked_accounts_vec: Vec<Pubkey> = tracked_accounts.keys().cloned().collect();
@@ -110,7 +125,7 @@ impl GeyserService {
                     })
                     .await
                 {
-                    error!("ERror sending message to geyser: {:?}", e);
+                    error!("Error sending message to geyser: {:?}", e);
                 }
                 ping_id += 1;
             }
@@ -122,35 +137,53 @@ impl GeyserService {
                         if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
                             if let Some(account) = &account.account {
                                 if let Ok(address) = Pubkey::try_from(account.pubkey.clone()) {
-                                    if let Ok(account_owner_pk) = Pubkey::try_from(account.owner.clone()) {
-                                        if account_owner_pk == marginfi_program_id {
-                                            let _ = sender.send(GeyserUpdate { 
-                                                account_type: AccountType::MarginfiAccount, 
-                                                address, 
-                                                account: account.clone() });
+                                    if let Ok(account) = account_update_to_account(account) {
+                                        if let Ok(account_owner_pk) = Pubkey::try_from(account.owner.clone()) {
+                                            if account_owner_pk == marginfi_program_id {
+                                                let update = GeyserUpdate {
+                                                    account_type: AccountType::MarginfiAccount,
+                                                    address,
+                                                    account: account.clone()
+                                                };
+                                                let _ = liquidator_sender.send(update.clone());
+                                                let _ = rebalancer_sender.send(update.clone());
+                                            }
                                         }
-                                    }
-                                    if let Some(account_type) = tracked_accounts.get(&address) {
-                                        let _ = sender.send(GeyserUpdate {
-                                            account_type: account_type.clone(),
-                                            address,
-                                            account: account.clone()
-                                        });
+                                        if let Some(account_type) = tracked_accounts.get(&address) {
+                                            let update = GeyserUpdate {
+                                                account_type: account_type.clone(),
+                                                address,
+                                                account: account.clone()
+                                            };
+
+                                            match account_type {
+                                                AccountType::OracleAccount => {
+                                                    let _ = liquidator_sender.send(update.clone());
+                                                    let _ = rebalancer_sender.send(update.clone());
+                                                },
+                                                AccountType::TokenAccount => {
+                                                    let _ = rebalancer_sender.send(update.clone());
+                                                },
+                                                _ => {}
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }, Err(e) => {
-                    error!("Error receiving message from geyser: {:?}", e);
+                },
+                Err(e) => {
+                    error!("Error receiving message from geyser {:?}", e);
                 }
+                
             }
         }
         let _ = ping_service_handle.await;
 
         error!("Geyser subscription ended!");
 
-        todo!();
+        Ok(())
     }
 
 

@@ -9,6 +9,7 @@ pub struct TxConfig {
     pub compute_unit_price_micro_lamports: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct MarginfiAccountWrapper {
     pub address: Pubkey,
     pub account: MarginfiAccount,
