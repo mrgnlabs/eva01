@@ -147,12 +147,16 @@ impl Liquidator {
                         }
                     }
                     AccountType::MarginfiAccount => {
-                        // TODO: Create if not existent
-                        let account_to_update =
-                            self.marginfi_accounts.get_mut(&msg.address).unwrap();
-
-                        account_to_update.account =
-                            *bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
+                        let marginfi_account =
+                            bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
+                        self.marginfi_accounts
+                            .entry(msg.address)
+                            .and_modify(|mrgn_account| {
+                                mrgn_account.account = *marginfi_account;
+                            })
+                            .or_insert_with(|| {
+                                MarginfiAccountWrapper::new(msg.address, *marginfi_account)
+                            });
                     }
                     _ => {}
                 };
@@ -199,7 +203,6 @@ impl Liquidator {
                     max_liquidation_amount,
                     profit,
                 );
-                info!("{:?}", liq_acc.account.address);
                 Some(liq_acc)
             })
             .collect::<Vec<_>>();
@@ -208,7 +211,11 @@ impl Liquidator {
             let _ = self.liquidate_account(account);
         }
 
-        info!("Took: {:?} to process all acounts!", start.elapsed());
+        info!(
+            "Took: {:?} to process {:?} acounts!",
+            start.elapsed(),
+            self.marginfi_accounts.len()
+        );
         Ok(())
     }
 
@@ -637,8 +644,8 @@ impl Liquidator {
         tracked_accounts
     }
 
-    pub fn get_banks(&self) -> HashMap<Pubkey, BankWrapper> {
-        self.banks.clone()
+    pub fn get_banks_and_map(&self) -> (HashMap<Pubkey, BankWrapper>, HashMap<Pubkey, Pubkey>) {
+        (self.banks.clone(), self.oracle_to_bank.clone())
     }
 
     fn get_value_of_shares(
@@ -665,12 +672,6 @@ impl Liquidator {
 
         values
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum LiquidatorError {
-    #[error("Failed to read account")]
-    FailedToReadAccount,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

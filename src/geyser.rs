@@ -2,7 +2,7 @@ use backoff::{retry, ExponentialBackoff};
 use futures::{SinkExt, StreamExt};
 use log::{debug, error, info};
 use solana_program::pubkey::Pubkey;
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::size_of};
 use tokio::task::JoinHandle;
 use tonic::service::Interceptor;
 use yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError};
@@ -11,6 +11,9 @@ use crossbeam::channel::Sender;
 use futures::channel::mpsc::SendError;
 use solana_sdk::account::Account;
 use crate::utils::account_update_to_account;
+use marginfi::state::marginfi_account::MarginfiAccount;
+
+const MARGIN_ACCOUNT_SIZE: usize = size_of::<MarginfiAccount>() + 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GeyserServiceError {
@@ -135,11 +138,11 @@ impl GeyserService {
                 Ok(msg) => {
                     if let Some(update_oneof) = msg.update_oneof {
                         if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
-                            if let Some(account) = &account.account {
-                                if let Ok(address) = Pubkey::try_from(account.pubkey.clone()) {
-                                    if let Ok(account) = account_update_to_account(account) {
-                                        if let Ok(account_owner_pk) = Pubkey::try_from(account.owner.clone()) {
-                                            if account_owner_pk == marginfi_program_id {
+                            if let Some(update_account) = &account.account {
+                                if let Ok(address) = Pubkey::try_from(update_account.pubkey.clone()) {
+                                    if let Ok(account) = account_update_to_account(update_account) {
+                                        if let Ok(account_owner_pk) = Pubkey::try_from(account.owner.clone())  {
+                                            if account_owner_pk == marginfi_program_id  && update_account.data.len() == MARGIN_ACCOUNT_SIZE{
                                                 let update = GeyserUpdate {
                                                     account_type: AccountType::MarginfiAccount,
                                                     address,

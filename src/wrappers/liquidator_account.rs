@@ -19,7 +19,7 @@ use std::{collections::HashMap, sync::Arc};
 /// Wraps the liquidator account into a dedicated strecture
 pub struct LiquidatorAccount {
     pub account_wrapper: MarginfiAccountWrapper,
-    signer_keypair: Arc<Keypair>,
+    pub signer_keypair: Arc<Keypair>,
     rpc_client: Arc<RpcClient>,
     program_id: Pubkey,
     token_program: Pubkey,

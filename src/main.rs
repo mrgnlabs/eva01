@@ -1,6 +1,7 @@
 use crate::{
     geyser::{GeyserService, GeyserServiceConfig, GeyserUpdate},
     liquidator::{Liquidator, LiquidatorCfg},
+    rebalancer::{Rebalancer, RebalancerCfg},
     utils::{from_option_vec_pubkey_string, from_pubkey_string},
     wrappers::marginfi_account::TxConfig,
 };
@@ -58,6 +59,7 @@ pub struct Eva01Opts {
 struct Eva01Config {
     general_config: GeneralConfig,
     liquidator_config: LiquidatorCfg,
+    rebalancer_config: RebalancerCfg,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
@@ -149,7 +151,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.liquidator_config.clone(),
         liquidator_rx.clone(),
     );
+
+    let mut rebalancer = Rebalancer::new(
+        config.general_config.clone(),
+        config.rebalancer_config.clone(),
+        rebalancer_rx.clone(),
+    )?;
+
     let _ = liquidator.load_data().await;
+
+    let _ = rebalancer.load_data(liquidator.get_banks_and_map());
 
     let geyser_handle = GeyserService::connect(
         config.general_config.get_geyser_service_config(),
@@ -159,9 +170,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         rebalancer_tx,
     )
     .await?;
+
     tokio::task::spawn(async {
         geyser_handle.await;
     });
+
+    tokio::task::spawn(async move {
+        rebalancer.start().await;
+    });
+
     liquidator.start().await;
 
     Ok(())

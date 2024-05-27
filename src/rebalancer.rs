@@ -1,5 +1,5 @@
 use crate::{
-    geyser::GeyserUpdate,
+    geyser::{AccountType, GeyserUpdate},
     sender::{aggressive_send_tx, SenderCfg},
     token_account_manager::TokenAccountManager,
     utils::{
@@ -7,8 +7,10 @@ use crate::{
         fixed_from_float, from_pubkey_string, from_vec_str_to_pubkey, BankAccountWithPriceFeedEva,
     },
     wrappers::{
-        bank::BankWrapper, liquidator_account::LiquidatorAccount,
-        marginfi_account::MarginfiAccountWrapper, token_account::TokenAccountWrapper,
+        bank::BankWrapper,
+        liquidator_account::{self, LiquidatorAccount},
+        marginfi_account::MarginfiAccountWrapper,
+        token_account::TokenAccountWrapper,
     },
     GeneralConfig,
 };
@@ -22,18 +24,20 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
+use log::info;
 use marginfi::{
     constants::EXP_10_I80F48,
+    instructions::marginfi_account,
     state::{
-        marginfi_account::{BalanceSide, RequirementType},
-        price::{PriceAdapter, PriceBias},
+        marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
+        price::{OraclePriceFeedAdapter, PriceAdapter, PriceBias},
     },
 };
 use solana_client::rpc_client::RpcClient;
 use solana_program::{pubkey, pubkey::Pubkey};
 use solana_sdk::{
-    commitment_config::CommitmentConfig, signature::read_keypair_file,
-    transaction::VersionedTransaction,
+    account_info::IntoAccountInfo, commitment_config::CommitmentConfig,
+    signature::read_keypair_file, transaction::VersionedTransaction,
 };
 use std::{
     cmp::min,
@@ -43,7 +47,7 @@ use std::{
 
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
-struct Rebalancer {
+pub struct Rebalancer {
     config: RebalancerCfg,
     general_config: GeneralConfig,
     liquidator_account: LiquidatorAccount,
@@ -52,6 +56,7 @@ struct Rebalancer {
     token_account_manager: TokenAccountManager,
     rpc_client: Arc<RpcClient>,
     mint_to_bank: HashMap<Pubkey, Pubkey>,
+    oracle_to_bank: HashMap<Pubkey, Pubkey>,
     preferred_mints: HashSet<Pubkey>,
     swap_mint_bank_pk: Option<Pubkey>,
     receiver: Receiver<GeyserUpdate>,
@@ -59,8 +64,8 @@ struct Rebalancer {
 
 impl Rebalancer {
     pub fn new(
-        config: RebalancerCfg,
         general_config: GeneralConfig,
+        config: RebalancerCfg,
         receiver: Receiver<GeyserUpdate>,
     ) -> anyhow::Result<Self> {
         let rpc_client = Arc::new(RpcClient::new(general_config.rpc_url.clone()));
@@ -86,23 +91,32 @@ impl Rebalancer {
             token_account_manager,
             rpc_client,
             mint_to_bank: HashMap::new(),
+            oracle_to_bank: HashMap::new(),
             preferred_mints,
             swap_mint_bank_pk: None,
             receiver,
         })
     }
 
-    pub fn load(&mut self, banks: HashMap<Pubkey, BankWrapper>) -> anyhow::Result<()> {
-        self.banks = banks;
+    pub fn load_data(
+        &mut self,
+        banks_and_map: (HashMap<Pubkey, BankWrapper>, HashMap<Pubkey, Pubkey>),
+    ) -> anyhow::Result<()> {
+        self.banks = banks_and_map.0;
+        self.oracle_to_bank = banks_and_map.1;
         let mut bank_mints = Vec::new();
 
         for bank in self.banks.values() {
             bank_mints.push(bank.bank.mint);
             self.mint_to_bank.insert(bank.bank.mint, bank.address);
+            //self.oracle_to_bank.insert(bank.bank)
         }
 
         self.token_account_manager
             .add_mints(&bank_mints, self.general_config.signer_pubkey)?;
+
+        self.token_account_manager
+            .create_token_accounts(self.liquidator_account.signer_keypair.clone())?;
 
         let (mints, token_account_addresses) = self
             .token_account_manager
@@ -113,6 +127,8 @@ impl Rebalancer {
             &token_account_addresses,
             crate::utils::BatchLoadingConfig::DEFAULT,
         )?;
+
+        info!("Loaded {:?} token accounts!", accounts.len());
 
         let token_accounts_with_addresses_and_mints = token_account_addresses
             .iter()
@@ -142,7 +158,7 @@ impl Rebalancer {
                     mint: **mint,
                     balance,
                     mint_decimals,
-                    bank_address: bank.bank.mint,
+                    bank_address: bank.address,
                 },
             );
         }
@@ -158,24 +174,76 @@ impl Rebalancer {
         let max_duration = std::time::Duration::from_secs(5);
         loop {
             let start = std::time::Instant::now();
-            while let Ok(_msg) = self.receiver.recv() {
-                if start.elapsed() > max_duration {
-                    while self.needs_to_be_relanced() {
-                        let _ = self.rebalance_accounts().await;
-                        break;
+            while let Ok(mut msg) = self.receiver.recv() {
+                match msg.account_type {
+                    AccountType::OracleAccount => {
+                        if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
+                            let oracle_ai = (&msg.address, &mut msg.account).into_account_info();
+                            let bank_to_update: &mut BankWrapper =
+                                self.banks.get_mut(bank_to_update_pk).unwrap();
+
+                            bank_to_update.oracle_adapter.price_adapter =
+                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                    &bank_to_update.bank.config,
+                                    &[oracle_ai.clone()],
+                                    0,
+                                    u64::MAX,
+                                )
+                                .unwrap();
+                        }
                     }
+                    AccountType::MarginfiAccount => {
+                        if msg.address == self.general_config.liquidator_account {
+                            let marginfi_account =
+                                bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
+
+                            self.liquidator_account.account_wrapper.account = *marginfi_account;
+                        }
+                    }
+                    AccountType::TokenAccount => {
+                        let mint = accessor::mint(&msg.account.data);
+                        let balance = accessor::amount(&msg.account.data);
+
+                        let token_to_update = self.token_accounts.get_mut(&mint).unwrap();
+
+                        token_to_update.balance = balance;
+                    }
+                }
+
+                if start.elapsed() > max_duration && self.needs_to_be_relanced() {
+                    let _ = self.rebalance_accounts().await;
+                    break;
                 }
             }
         }
     }
 
+    fn needs_to_be_relanced(&self) -> bool {
+        let rebalance_needed = self.has_tokens_in_token_accounts()
+            || self.has_non_preferred_deposits()
+            || self.has_liabilities();
+
+        rebalance_needed
+    }
+
     async fn rebalance_accounts(&mut self) -> anyhow::Result<()> {
+        info!("Rebalancing liqquidator account");
         self.sell_non_preferred_deposits().await?;
         self.repay_liabilities().await?;
         self.handle_tokens_in_token_accounts().await?;
         self.deposit_preferred_tokens().await?;
 
         Ok(())
+    }
+
+    pub fn get_accounts_to_track(&self) -> HashMap<Pubkey, AccountType> {
+        let mut tracked_accounts: HashMap<Pubkey, AccountType> = HashMap::new();
+
+        for token_account in self.token_accounts.values() {
+            tracked_accounts.insert(token_account.address, AccountType::TokenAccount);
+        }
+
+        tracked_accounts
     }
 
     pub fn get_bank_for_mint(&self, mint: &Pubkey) -> Option<&BankWrapper> {
@@ -318,14 +386,6 @@ impl Rebalancer {
         }
 
         Ok(())
-    }
-
-    fn needs_to_be_relanced(&self) -> bool {
-        let rebalance_needed = self.has_tokens_in_token_accounts()
-            || self.has_non_preferred_deposits()
-            || self.has_liabilities();
-
-        rebalance_needed
     }
 
     async fn deposit_preferred_tokens(&self) -> anyhow::Result<()> {
