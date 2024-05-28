@@ -14,6 +14,7 @@ backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bincode = "1.3.3"
 bytemuck = "1.14.0"
 bytes = "1.5.0"
+clap = { version = "4.5.4", features = ["derive"] }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 env_logger = "0.11.3"
 fixed = "1.24.0"
@@ -39,7 +40,6 @@ solana-rpc-client-api = "1.16"
 solana-sdk = "1.16"
 spl-associated-token-account = "2.0.0"
 spl-token = "=4.0.0"
-structopt = { version = "0.3.26", features = ["color", "suggestions"] }
 thiserror = "1.0.56"
 tokio = { version = "1.35.1", features = ["rt", "macros"] }
 toml = "0.8.12"
