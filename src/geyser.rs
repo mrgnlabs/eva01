@@ -1,6 +1,6 @@
 use backoff::{retry, ExponentialBackoff};
 use futures::{SinkExt, StreamExt};
-use log::{debug, error, info};
+use log::{debug, error};
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashMap, mem::size_of};
 use tokio::task::JoinHandle;

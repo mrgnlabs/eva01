@@ -7,10 +7,8 @@ use crate::{
         fixed_from_float, from_pubkey_string, from_vec_str_to_pubkey, BankAccountWithPriceFeedEva,
     },
     wrappers::{
-        bank::BankWrapper,
-        liquidator_account::{self, LiquidatorAccount},
-        marginfi_account::MarginfiAccountWrapper,
-        token_account::TokenAccountWrapper,
+        bank::BankWrapper, liquidator_account::LiquidatorAccount,
+        marginfi_account::MarginfiAccountWrapper, token_account::TokenAccountWrapper,
     },
     GeneralConfig,
 };
@@ -27,7 +25,6 @@ use jupiter_swap_api_client::{
 use log::info;
 use marginfi::{
     constants::EXP_10_I80F48,
-    instructions::marginfi_account,
     state::{
         marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
         price::{OraclePriceFeedAdapter, PriceAdapter, PriceBias},
@@ -109,7 +106,6 @@ impl Rebalancer {
         for bank in self.banks.values() {
             bank_mints.push(bank.bank.mint);
             self.mint_to_bank.insert(bank.bank.mint, bank.address);
-            //self.oracle_to_bank.insert(bank.bank)
         }
 
         self.token_account_manager
@@ -165,13 +161,14 @@ impl Rebalancer {
 
         self.swap_mint_bank_pk = self
             .get_bank_for_mint(&self.config.swap_mint)
-            .and_then(|bank| Some(bank.bank.mint.clone()));
+            .and_then(|bank| Some(bank.address.clone()));
 
         Ok(())
     }
 
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(5);
+        info!("Rebalancer started");
+        let max_duration = std::time::Duration::from_secs(15);
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.receiver.recv() {
@@ -210,24 +207,23 @@ impl Rebalancer {
                     }
                 }
 
-                if start.elapsed() > max_duration && self.needs_to_be_relanced() {
-                    let _ = self.rebalance_accounts().await;
-                    break;
+                if start.elapsed() > max_duration {
+                    if self.needs_to_be_relanced() {
+                        let _ = self.rebalance_accounts().await;
+                        break;
+                    }
                 }
             }
         }
     }
 
     fn needs_to_be_relanced(&self) -> bool {
-        let rebalance_needed = self.has_tokens_in_token_accounts()
+        self.has_tokens_in_token_accounts()
             || self.has_non_preferred_deposits()
-            || self.has_liabilities();
-
-        rebalance_needed
+            || self.has_liabilities()
     }
 
     async fn rebalance_accounts(&mut self) -> anyhow::Result<()> {
-        info!("Rebalancing liqquidator account");
         self.sell_non_preferred_deposits().await?;
         self.repay_liabilities().await?;
         self.handle_tokens_in_token_accounts().await?;
@@ -473,17 +469,18 @@ impl Rebalancer {
             .await?;
 
         let bank = self.banks.get(&self.swap_mint_bank_pk.unwrap()).unwrap();
+
         let balance = self
-            .liquidator_account
-            .account_wrapper
-            .get_balance_for_bank(&self.swap_mint_bank_pk.unwrap(), bank)?;
+            .token_accounts
+            .get(&bank.bank.mint)
+            .and_then(|account| Some(account.get_amount()));
 
         if let Some(balance) = balance {
-            if !balance.0.is_zero() {
+            if !balance.is_zero() {
                 self.liquidator_account.deposit(
                     bank,
                     self.swap_mint_bank_pk.unwrap(),
-                    balance.0.to_num(),
+                    balance.to_num(),
                     self.general_config.get_tx_config(),
                 )?;
             }

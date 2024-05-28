@@ -1,9 +1,6 @@
 use crate::{
     geyser::{AccountType, GeyserUpdate},
-    utils::{
-        account_update_to_account, batch_get_multiple_accounts, BankAccountWithPriceFeedEva,
-        BatchLoadingConfig,
-    },
+    utils::{batch_get_multiple_accounts, BankAccountWithPriceFeedEva, BatchLoadingConfig},
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapper,
@@ -15,7 +12,7 @@ use anchor_lang::Discriminator;
 use crossbeam::channel::Receiver;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, error, info};
+use log::{debug, info};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
@@ -207,6 +204,7 @@ impl Liquidator {
             })
             .collect::<Vec<_>>();
 
+        //let _ = self.liquidate_account(accounts[0].clone());
         for account in accounts {
             let _ = self.liquidate_account(account);
         }

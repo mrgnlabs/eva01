@@ -11,9 +11,16 @@ use solana_sdk::{pubkey, pubkey::Pubkey};
 use std::error::Error;
 use structopt::StructOpt;
 
+/// Geyser service
 mod geyser;
+
+/// IX's for marginfi
 mod marginfi_ixs;
+
+/// Responsible for sending transactions for the blockchain
 mod sender;
+
+/// Manages token accounts under liquidator account
 mod token_account_manager;
 
 /// Liquidator is responsible to liquidate MarginfiAccounts
@@ -133,7 +140,6 @@ impl Eva01Config {
     }
 }
 
-// TODO: Remove this tokio::main and respective feature on Cargo.toml
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger
@@ -172,11 +178,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await?;
 
     tokio::task::spawn(async {
-        geyser_handle.await;
+        let _ = geyser_handle.await;
     });
 
     tokio::task::spawn(async move {
-        rebalancer.start().await;
+        let _ = rebalancer.start().await;
     });
 
     liquidator.start().await;
