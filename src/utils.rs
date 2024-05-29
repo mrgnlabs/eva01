@@ -17,7 +17,7 @@ use marginfi::{
     },
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
-use serde::{Deserialize, Deserializer};
+use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serializer};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_program::pubkey::Pubkey;
@@ -209,6 +209,54 @@ where
     let s: f64 = Deserialize::deserialize(deserializer)?;
 
     Ok(I80F48::from_num(s))
+}
+
+pub(crate) fn fixed_to_float<'se, S>(i: &I80F48, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_f64(i.to_num::<f64>())
+}
+
+pub(crate) fn pubkey_to_str<'se, S>(p: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&p.to_string())
+}
+
+// TODO: The next functions can be done better
+
+pub(crate) fn vec_pubkey_to_str<'se, S>(ps: &Vec<Pubkey>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut seq = serializer.serialize_seq(Some(ps.len()))?;
+
+    for pubkey in ps {
+        seq.serialize_element(&pubkey.to_string())?;
+    }
+
+    seq.end()
+}
+
+pub(crate) fn vec_pubkey_to_option_vec_str<'se, S>(
+    v: &Option<Vec<Pubkey>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match v {
+        Some(pubkeys) => {
+            let mut seq = serializer.serialize_seq(Some(pubkeys.len()))?;
+            for pubkey in pubkeys {
+                seq.serialize_element(&pubkey.to_string())?;
+            }
+            seq.end()
+        }
+        None => serializer.serialize_none(),
+    }
 }
 
 pub(crate) fn from_vec_str_to_pubkey<'de, D>(deserializer: D) -> Result<Vec<Pubkey>, D::Error>

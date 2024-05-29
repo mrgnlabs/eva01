@@ -1,11 +1,11 @@
 use crate::{
+    config::{GeneralConfig, LiquidatorCfg},
     geyser::{AccountType, GeyserUpdate},
     utils::{batch_get_multiple_accounts, BankAccountWithPriceFeedEva, BatchLoadingConfig},
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapper,
     },
-    GeneralConfig,
 };
 use anchor_client::Program;
 use anchor_lang::Discriminator;
@@ -669,25 +669,5 @@ impl Liquidator {
         }
 
         values
-    }
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct LiquidatorCfg {
-    /// Minimun profit on a liquidation to be considered, denominated in USD
-    ///
-    /// Example:
-    /// 0.01 is $0.01
-    ///
-    /// Default: 0.1
-    #[serde(default = "LiquidatorCfg::default_min_profit")]
-    pub min_profit: f64,
-    /// Maximun liquidation value in USD
-    pub max_liquidation_value: Option<f64>,
-}
-
-impl LiquidatorCfg {
-    pub fn default_min_profit() -> f64 {
-        0.1
     }
 }

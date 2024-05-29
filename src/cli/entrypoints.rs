@@ -1,8 +1,8 @@
 use crate::{
+    config::Eva01Config,
     geyser::{GeyserService, GeyserUpdate},
     liquidator::Liquidator,
     rebalancer::Rebalancer,
-    Eva01Config,
 };
 use log::info;
 
@@ -51,5 +51,10 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     liquidator.start().await;
 
+    Ok(())
+}
+
+pub async fn wizard_setup() -> anyhow::Result<()> {
+    crate::cli::setup::setup().await;
     Ok(())
 }

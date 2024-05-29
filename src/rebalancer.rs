@@ -1,4 +1,5 @@
 use crate::{
+    config::{GeneralConfig, RebalancerCfg},
     geyser::{AccountType, GeyserUpdate},
     sender::{aggressive_send_tx, SenderCfg},
     token_account_manager::TokenAccountManager,
@@ -10,7 +11,6 @@ use crate::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper, token_account::TokenAccountWrapper,
     },
-    GeneralConfig,
 };
 use anyhow::anyhow;
 use crossbeam::channel::Receiver;
@@ -725,56 +725,5 @@ impl Rebalancer {
         let amount_ui = value / price;
 
         Ok(amount_ui * EXP_10_I80F48[bank.bank.mint_decimals as usize])
-    }
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct RebalancerCfg {
-    #[serde(
-        default = "RebalancerCfg::default_token_account_dust_threshold",
-        deserialize_with = "fixed_from_float"
-    )]
-    pub token_account_dust_threshold: I80F48,
-    #[serde(
-        default = "RebalancerCfg::default_preferred_mints",
-        deserialize_with = "from_vec_str_to_pubkey"
-    )]
-    pub preferred_mints: Vec<Pubkey>,
-    #[serde(
-        default = "RebalancerCfg::default_swap_mint",
-        deserialize_with = "from_pubkey_string"
-    )]
-    pub swap_mint: Pubkey,
-    #[serde(default = "RebalancerCfg::default_jup_swap_api_url")]
-    pub jup_swap_api_url: String,
-    #[serde(default = "RebalancerCfg::default_compute_unit_price_micro_lamports")]
-    pub compute_unit_price_micro_lamports: Option<u64>,
-    #[serde(default = "RebalancerCfg::default_slippage_bps")]
-    pub slippage_bps: u16,
-}
-
-impl RebalancerCfg {
-    pub fn default_token_account_dust_threshold() -> I80F48 {
-        I80F48!(0.01)
-    }
-
-    pub fn default_swap_mint() -> Pubkey {
-        pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
-    }
-
-    pub fn default_preferred_mints() -> Vec<Pubkey> {
-        vec![pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")]
-    }
-
-    pub fn default_jup_swap_api_url() -> String {
-        "https://quote-api.jup.ag/v6".to_string()
-    }
-
-    pub fn default_slippage_bps() -> u16 {
-        250
-    }
-
-    pub fn default_compute_unit_price_micro_lamports() -> Option<u64> {
-        Some(10_000)
     }
 }

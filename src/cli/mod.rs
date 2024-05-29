@@ -1,13 +1,14 @@
-use crate::Eva01Config;
-use anyhow::anyhow;
+use crate::config::Eva01Config;
 use clap::Parser;
-use log::info;
 
 /// Main Clap app for the CLI
 pub mod app;
 
 /// Entrypoints for the Eva
 pub mod entrypoints;
+
+/// A wizard like setup menu for creating the liquidator configuration
+pub mod setup;
 
 /// Main entrypoint for the Eva
 pub async fn main_entry() {
@@ -19,7 +20,7 @@ pub async fn main_entry() {
             entrypoints::run_liquidator(config).await;
         }
         app::Commands::Setup => {
-            info!("Setup");
+            entrypoints::wizard_setup().await;
         }
     }
 }
