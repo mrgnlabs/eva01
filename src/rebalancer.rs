@@ -1,7 +1,7 @@
 use crate::{
     config::{GeneralConfig, RebalancerCfg},
     geyser::{AccountType, GeyserUpdate},
-    sender::{aggressive_send_tx, SenderCfg},
+    sender::{SenderCfg, TransactionSender},
     token_account_manager::TokenAccountManager,
     utils::{
         accessor, batch_get_multiple_accounts, calc_weighted_assets_new, calc_weighted_liabs_new,
@@ -594,7 +594,7 @@ impl Rebalancer {
         let tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
             .map_err(|_| anyhow!("Failed to deserialize"))?;
 
-        aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT)
+        TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT)
             .map_err(|_| anyhow!("Failed to send swap transaction"))?;
 
         Ok(())

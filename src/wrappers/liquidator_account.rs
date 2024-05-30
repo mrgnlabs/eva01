@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
-    sender::{aggressive_send_tx, SenderCfg},
+    sender::{SenderCfg, TransactionSender},
 };
 use log::info;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
@@ -118,7 +118,8 @@ impl LiquidatorAccount {
             &[self.signer_keypair.as_ref()],
             self.rpc_client.get_latest_blockhash()?,
         );
-        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
+        let sig =
+            TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
 
         info!("Liquidation successful, tx signature: {:?}", sig);
         Ok(())
@@ -184,7 +185,8 @@ impl LiquidatorAccount {
             recent_blockhash,
         );
 
-        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
+        let sig =
+            TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
 
         info!("Withdraw successful, tx signature: {:?}", sig);
 
@@ -233,7 +235,8 @@ impl LiquidatorAccount {
             recent_blockhash,
         );
 
-        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
+        let sig =
+            TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
 
         info!("Withdraw successful, tx signature: {:?}", sig);
         Ok(())
@@ -279,7 +282,8 @@ impl LiquidatorAccount {
             recent_blockhash,
         );
 
-        let sig = aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
+        let sig =
+            TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
         info!("Deposit successful, tx signature: {:?}", sig);
 
         Ok(())

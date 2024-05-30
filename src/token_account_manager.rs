@@ -15,7 +15,7 @@ use solana_sdk::{
 };
 
 use crate::{
-    sender::{aggressive_send_tx, SenderCfg},
+    sender::{SenderCfg, TransactionSender},
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
 };
 
@@ -162,7 +162,8 @@ impl TokenAccountManager {
                         recent_blockhash,
                     );
 
-                    let sig = aggressive_send_tx(rpc, &tx, SenderCfg::DEFAULT).map_err(|e| {
+                    let sig = TransactionSender::aggressive_send_tx(rpc, &tx, SenderCfg::DEFAULT)
+                        .map_err(|e| {
                         error!("Failed to send transaction: {:?}", e);
                         TokenAccountManagerError::SetupFailed("Failed to send transaction")
                     })?;
