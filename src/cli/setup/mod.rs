@@ -12,6 +12,10 @@ use solana_sdk::{
 };
 use std::io::Write;
 use std::path::PathBuf;
+
+/// Helper for initializing Marginfi Account
+pub mod initialize;
+
 /// 1º -> Ask for path where the config file will be stored
 ///
 /// 2º -> Ask for a solana RPC endpoint url

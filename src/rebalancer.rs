@@ -207,11 +207,9 @@ impl Rebalancer {
                     }
                 }
 
-                if start.elapsed() > max_duration {
-                    if self.needs_to_be_relanced() {
-                        let _ = self.rebalance_accounts().await;
-                        break;
-                    }
+                if start.elapsed() > max_duration && self.needs_to_be_relanced() {
+                    let _ = self.rebalance_accounts().await;
+                    break;
                 }
             }
         }

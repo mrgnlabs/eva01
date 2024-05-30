@@ -39,12 +39,31 @@ impl SenderCfg {
     }
 }
 
+pub fn passive_send_tx(
+    rpc: Arc<RpcClient>,
+    transaction: &impl SerializableTransaction,
+) -> Result<Signature, Box<dyn Error>> {
+    let signature = *transaction.get_signature();
+
+    info!("Sending transaction: {}", signature.to_string());
+
+    rpc.send_transaction(transaction)?;
+
+    let blockhash = transaction.get_recent_blockhash();
+
+    rpc.confirm_transaction_with_spinner(&signature, blockhash, CommitmentConfig::confirmed())?;
+
+    info!("Confirmed transaction: {}", signature.to_string());
+
+    Ok(signature)
+}
+
 pub fn aggressive_send_tx(
     rpc: Arc<RpcClient>,
     transaction: &impl SerializableTransaction,
     cfg: SenderCfg,
 ) -> Result<Signature, Box<dyn Error>> {
-    let signature = transaction.get_signature().clone();
+    let signature = *transaction.get_signature();
 
     info!("Sending transaction: {}", signature.to_string());
 
@@ -63,7 +82,7 @@ pub fn aggressive_send_tx(
         }
     }
 
-    (0..cfg.spam_times).into_iter().try_for_each(|_| {
+    (0..cfg.spam_times).try_for_each(|_| {
         rpc.send_transaction(transaction)?;
         Ok::<_, Box<dyn Error>>(())
     })?;
