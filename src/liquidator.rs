@@ -115,7 +115,7 @@ impl Liquidator {
     /// Loads necessary data to the liquidator
     pub async fn load_data(&mut self) -> anyhow::Result<()> {
         let rpc_client = Arc::new(RpcClient::new(self.general_config.rpc_url.clone()));
-        //let _ = self.load_marginfi_accounts(rpc_client.clone()).await;
+        let _ = self.load_marginfi_accounts(rpc_client.clone()).await;
         let _ = self.load_oracles_and_banks(rpc_client.clone()).await;
         Ok(())
     }
