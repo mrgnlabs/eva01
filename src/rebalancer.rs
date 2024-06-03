@@ -5,7 +5,7 @@ use crate::{
     token_account_manager::TokenAccountManager,
     utils::{
         accessor, batch_get_multiple_accounts, calc_weighted_assets_new, calc_weighted_liabs_new,
-        fixed_from_float, from_pubkey_string, from_vec_str_to_pubkey, BankAccountWithPriceFeedEva,
+        BankAccountWithPriceFeedEva,
     },
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,

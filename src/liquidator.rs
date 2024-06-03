@@ -115,7 +115,7 @@ impl Liquidator {
     /// Loads necessary data to the liquidator
     pub async fn load_data(&mut self) -> anyhow::Result<()> {
         let rpc_client = Arc::new(RpcClient::new(self.general_config.rpc_url.clone()));
-        let _ = self.load_marginfi_accounts(rpc_client.clone()).await;
+        //let _ = self.load_marginfi_accounts(rpc_client.clone()).await;
         let _ = self.load_oracles_and_banks(rpc_client.clone()).await;
         Ok(())
     }
@@ -123,7 +123,7 @@ impl Liquidator {
     /// Liquidator starts, receiving messages and process them,
     /// a "timeout" is awaiting for accounts to be evaluated
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(5);
+        let max_duration = std::time::Duration::from_secs(10);
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.receiver.recv() {
@@ -204,7 +204,6 @@ impl Liquidator {
             })
             .collect::<Vec<_>>();
 
-        //let _ = self.liquidate_account(accounts[0].clone());
         for account in accounts {
             let _ = self.liquidate_account(account);
         }

@@ -10,10 +10,7 @@ use log::info;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{
-    compute_budget::ComputeBudgetInstruction, signature::Keypair, signer::Signer,
-    transaction::Transaction,
-};
+use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use std::{collections::HashMap, sync::Arc};
 
 /// Wraps the liquidator account into a dedicated strecture
@@ -102,24 +99,14 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
-        let compute_budget_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
-
-        let mut ixs = vec![liquidate_ix, compute_budget_limit_ix];
-
-        if let Some(price) = send_cfg.compute_unit_price_micro_lamports {
-            let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(price);
-
-            ixs.push(compute_budget_price_ix);
-        }
-
-        let tx = Transaction::new_signed_with_payer(
-            &ixs,
-            Some(&signer_pk),
-            &[self.signer_keypair.as_ref()],
-            self.rpc_client.get_latest_blockhash()?,
-        );
-        let sig =
-            TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
+        let sig = TransactionSender::send_ix(
+            self.rpc_client.clone(),
+            liquidate_ix,
+            self.signer_keypair.clone(),
+            Some(send_cfg),
+            SenderCfg::DEFAULT,
+        )
+        .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
 
         info!("Liquidation successful, tx signature: {:?}", sig);
         Ok(())
@@ -168,25 +155,14 @@ impl LiquidatorAccount {
             withdraw_all,
         );
 
-        let mut ixs = vec![withdraw_ix];
-
-        if let Some(price) = send_cfg.compute_unit_price_micro_lamports {
-            let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(price);
-
-            ixs.push(compute_budget_price_ix);
-        }
-
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
-
-        let tx = Transaction::new_signed_with_payer(
-            &ixs,
-            Some(&signer_pk),
-            &[self.signer_keypair.as_ref()],
-            recent_blockhash,
-        );
-
-        let sig =
-            TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
+        let sig = TransactionSender::send_ix(
+            self.rpc_client.clone(),
+            withdraw_ix,
+            self.signer_keypair.clone(),
+            Some(send_cfg),
+            SenderCfg::DEFAULT,
+        )
+        .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
 
         info!("Withdraw successful, tx signature: {:?}", sig);
 
@@ -199,7 +175,7 @@ impl LiquidatorAccount {
         token_account: &Pubkey,
         amount: u64,
         repay_all: Option<bool>,
-        sender_cfg: TxConfig,
+        send_cfg: TxConfig,
     ) -> anyhow::Result<()> {
         let marginfi_account = self.account_wrapper.address;
 
@@ -218,25 +194,14 @@ impl LiquidatorAccount {
             repay_all,
         );
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
-
-        let mut ixs = vec![repay_ix];
-
-        if let Some(price) = sender_cfg.compute_unit_price_micro_lamports {
-            let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(price);
-
-            ixs.push(compute_budget_price_ix);
-        }
-
-        let tx = Transaction::new_signed_with_payer(
-            &ixs,
-            Some(&signer_pk),
-            &[self.signer_keypair.as_ref()],
-            recent_blockhash,
-        );
-
-        let sig =
-            TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
+        let sig = TransactionSender::send_ix(
+            self.rpc_client.clone(),
+            repay_ix,
+            self.signer_keypair.clone(),
+            Some(send_cfg),
+            SenderCfg::DEFAULT,
+        )
+        .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
 
         info!("Withdraw successful, tx signature: {:?}", sig);
         Ok(())
@@ -265,25 +230,15 @@ impl LiquidatorAccount {
             amount,
         );
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let sig = TransactionSender::send_ix(
+            self.rpc_client.clone(),
+            deposit_ix,
+            self.signer_keypair.clone(),
+            Some(send_cfg),
+            SenderCfg::DEFAULT,
+        )
+        .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
 
-        let mut ixs = vec![deposit_ix];
-
-        if let Some(price) = send_cfg.compute_unit_price_micro_lamports {
-            let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_price(price);
-
-            ixs.push(compute_budget_price_ix);
-        }
-
-        let tx = Transaction::new_signed_with_payer(
-            &ixs,
-            Some(&signer_pk),
-            &[self.signer_keypair.as_ref()],
-            recent_blockhash,
-        );
-
-        let sig =
-            TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT);
         info!("Deposit successful, tx signature: {:?}", sig);
 
         Ok(())

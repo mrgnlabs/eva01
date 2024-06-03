@@ -5,6 +5,7 @@ use crate::{
     rebalancer::Rebalancer,
 };
 use log::info;
+use std::collections::HashMap;
 
 pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     info!("Starting eva01 liquidator!");
@@ -32,10 +33,18 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     liquidator.load_data().await?;
     rebalancer.load_data(liquidator.get_banks_and_map())?;
 
+    let mut accounts_to_track = HashMap::new();
+    for (key, value) in liquidator.get_accounts_to_track() {
+        accounts_to_track.insert(key, value);
+    }
+    for (key, value) in rebalancer.get_accounts_to_track() {
+        accounts_to_track.insert(key, value);
+    }
+
     let geyser_handle = GeyserService::connect(
         config.general_config.get_geyser_service_config(),
-        liquidator.get_accounts_to_track(),
-        config.general_config.marginfi_group_address.clone(),
+        accounts_to_track,
+        config.general_config.marginfi_program_id.clone(),
         liquidator_tx,
         rebalancer_tx,
     )
