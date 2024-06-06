@@ -44,7 +44,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let geyser_handle = GeyserService::connect(
         config.general_config.get_geyser_service_config(),
         accounts_to_track,
-        config.general_config.marginfi_program_id.clone(),
+        config.general_config.marginfi_program_id,
         liquidator_tx,
         rebalancer_tx,
     )
@@ -58,12 +58,12 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         let _ = rebalancer.start().await;
     });
 
-    liquidator.start().await;
+    liquidator.start().await?;
 
     Ok(())
 }
 
 pub async fn wizard_setup() -> anyhow::Result<()> {
-    crate::cli::setup::setup().await;
+    crate::cli::setup::setup().await?;
     Ok(())
 }

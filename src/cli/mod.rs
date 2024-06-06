@@ -11,16 +11,18 @@ pub mod entrypoints;
 pub mod setup;
 
 /// Main entrypoint for the Eva
-pub async fn main_entry() {
+pub async fn main_entry() -> anyhow::Result<()> {
     let args = app::Args::parse();
 
     match args.cmd {
         app::Commands::Run { path } => {
             let config = Eva01Config::try_load_from_file(path).unwrap();
-            entrypoints::run_liquidator(config).await;
+            entrypoints::run_liquidator(config).await?;
         }
         app::Commands::Setup => {
-            entrypoints::wizard_setup().await;
+            let _ = entrypoints::wizard_setup().await;
         }
     }
+
+    Ok(())
 }

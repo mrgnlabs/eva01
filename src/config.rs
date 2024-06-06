@@ -36,7 +36,7 @@ impl Eva01Config {
     pub fn try_save_from_config(&self, path: &PathBuf) -> anyhow::Result<()> {
         let toml_str = to_string_pretty(self)?;
 
-        let mut file = BufWriter::new(std::fs::File::create(&path)?);
+        let mut file = BufWriter::new(std::fs::File::create(path)?);
         writeln!(file, "{}", toml_str)?;
         Ok(())
     }

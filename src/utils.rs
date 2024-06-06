@@ -211,14 +211,14 @@ where
     Ok(I80F48::from_num(s))
 }
 
-pub(crate) fn fixed_to_float<'se, S>(i: &I80F48, serializer: S) -> Result<S::Ok, S::Error>
+pub(crate) fn fixed_to_float<S>(i: &I80F48, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
     serializer.serialize_f64(i.to_num::<f64>())
 }
 
-pub(crate) fn pubkey_to_str<'se, S>(p: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+pub(crate) fn pubkey_to_str<S>(p: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -227,7 +227,7 @@ where
 
 // TODO: The next functions can be done better
 
-pub(crate) fn vec_pubkey_to_str<'se, S>(ps: &Vec<Pubkey>, serializer: S) -> Result<S::Ok, S::Error>
+pub(crate) fn vec_pubkey_to_str<S>(ps: &Vec<Pubkey>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -240,7 +240,7 @@ where
     seq.end()
 }
 
-pub(crate) fn vec_pubkey_to_option_vec_str<'se, S>(
+pub(crate) fn vec_pubkey_to_option_vec_str<S>(
     v: &Option<Vec<Pubkey>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>

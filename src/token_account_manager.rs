@@ -95,7 +95,7 @@ impl TokenAccountManager {
                 |mint| -> Result<(Pubkey, Pubkey), TokenAccountManagerError> {
                     Ok((
                         *mint,
-                        self.get_address_for_mint(*mint).ok_or_else(|| {
+                        self.get_address_for_mint(*mint).ok_or({
                             TokenAccountManagerError::SetupFailed(
                                 "Failed to find token account address",
                             )
@@ -189,7 +189,7 @@ fn get_liquidator_seed(signer: Pubkey, mint: Pubkey, seed: &[u8]) -> [u8; 32] {
     hasher.update(mint.as_ref());
     hasher.update(seed);
 
-    hasher.finalize().try_into().unwrap()
+    hasher.finalize().into()
 }
 
 fn get_keypair_for_token_account(

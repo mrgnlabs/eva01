@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Builder::from_default_env().init();
 
     // Main entrypoint
-    crate::cli::main_entry().await;
+    crate::cli::main_entry().await?;
 
     Ok(())
 }

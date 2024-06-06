@@ -153,12 +153,11 @@ impl MarginfiAccountWrapper {
 
         let bank_accounts_and_oracles = ordered_active_banks
             .iter()
-            .map(|b| {
+            .flat_map(|b| {
                 let bank = banks.get(b).unwrap();
 
                 vec![bank.address, bank.bank.config.oracle_keys[0]]
             })
-            .flatten()
             .collect::<Vec<_>>();
 
         bank_accounts_and_oracles

@@ -115,15 +115,15 @@ impl Liquidator {
     /// Loads necessary data to the liquidator
     pub async fn load_data(&mut self) -> anyhow::Result<()> {
         let rpc_client = Arc::new(RpcClient::new(self.general_config.rpc_url.clone()));
-        let _ = self.load_marginfi_accounts(rpc_client.clone()).await;
-        let _ = self.load_oracles_and_banks(rpc_client.clone()).await;
+        self.load_marginfi_accounts(rpc_client.clone()).await?;
+        self.load_oracles_and_banks(rpc_client.clone()).await?;
         Ok(())
     }
 
     /// Liquidator starts, receiving messages and process them,
     /// a "timeout" is awaiting for accounts to be evaluated
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(10);
+        let max_duration = std::time::Duration::from_secs(5);
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.receiver.recv() {
@@ -382,8 +382,8 @@ impl Liquidator {
         let underwater_maint_value =
             maintenance_health / (asset_weight_maint - liab_weight_maint * liquidation_discount);
 
-        let (asset_amount, _) = self.get_balance_for_bank(account, &asset_bank_pk)?;
-        let (_, liab_amount) = self.get_balance_for_bank(account, &liab_bank_pk)?;
+        let (asset_amount, _) = self.get_balance_for_bank(account, asset_bank_pk)?;
+        let (_, liab_amount) = self.get_balance_for_bank(account, liab_bank_pk)?;
 
         let asset_value = asset_bank.calc_value(
             asset_amount,
@@ -399,6 +399,10 @@ impl Liquidator {
 
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
+
+        if liquidator_profit <= I80F48::ZERO {
+            return Ok((I80F48::ZERO, I80F48::ZERO));
+        }
 
         let max_liquidatable_asset_amount = asset_bank.calc_amount(
             max_liquidatable_value,

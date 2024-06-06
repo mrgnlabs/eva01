@@ -31,7 +31,7 @@ use marginfi::{
     },
 };
 use solana_client::rpc_client::RpcClient;
-use solana_program::{pubkey, pubkey::Pubkey};
+use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account_info::IntoAccountInfo, commitment_config::CommitmentConfig,
     signature::read_keypair_file, transaction::VersionedTransaction,
@@ -161,7 +161,7 @@ impl Rebalancer {
 
         self.swap_mint_bank_pk = self
             .get_bank_for_mint(&self.config.swap_mint)
-            .and_then(|bank| Some(bank.address.clone()));
+            .map(|bank| bank.address);
 
         Ok(())
     }
@@ -437,11 +437,8 @@ impl Rebalancer {
                     .and_then(|bank| Some(bank.bank.mint))
                     .unwrap();
 
-                let has_non_preferred_deposits =
-                    matches!(balance.get_side(), Some(BalanceSide::Assets))
-                        && !self.preferred_mints.contains(&mint);
-
-                has_non_preferred_deposits
+                matches!(balance.get_side(), Some(BalanceSide::Assets))
+                    && !self.preferred_mints.contains(&mint)
             });
 
         has_non_preferred_deposits
@@ -471,7 +468,7 @@ impl Rebalancer {
         let balance = self
             .token_accounts
             .get(&bank.bank.mint)
-            .and_then(|account| Some(account.get_amount()));
+            .map(|account| account.get_amount());
 
         if let Some(balance) = balance {
             if !balance.is_zero() {
@@ -553,13 +550,13 @@ impl Rebalancer {
 
     async fn swap(&self, amount: u64, src_bank: &Pubkey, dst_bank: &Pubkey) -> anyhow::Result<()> {
         let src_mint = {
-            let bank = self.banks.get(&src_bank).unwrap();
+            let bank = self.banks.get(src_bank).unwrap();
 
             bank.bank.mint
         };
 
         let dst_mint = {
-            let bank = self.banks.get(&dst_bank).unwrap();
+            let bank = self.banks.get(dst_bank).unwrap();
 
             bank.bank.mint
         };

@@ -97,12 +97,10 @@ impl TransactionSender {
             recent_blockhash,
         );
 
-        let result = match cfg.transaction_type {
+        match cfg.transaction_type {
             TransactionType::Passive => Self::passive_send_tx(rpc_client, &tx, cfg),
             TransactionType::Aggressive => Self::passive_send_tx(rpc_client, &tx, cfg),
-        };
-
-        result
+        }
     }
 
     pub fn passive_send_tx(

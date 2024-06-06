@@ -10,7 +10,7 @@ use log::info;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_sdk::{signature::Keypair, signer::Signer};
 use std::{collections::HashMap, sync::Arc};
 
 /// Wraps the liquidator account into a dedicated strecture
