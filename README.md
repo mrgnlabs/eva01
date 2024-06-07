@@ -4,6 +4,13 @@
 Marginfi liquidator
 
 ## Deployment Guide
+### Installing dependencies
+
+Ubuntu 
+```bash
+  sudo apt install build-essential libssl-dev pkg-config
+```
+
 ### Creating a New Configuration File
 
 To initiate the creation of a new configuration file for the liquidator, execute the following command in your terminal:
