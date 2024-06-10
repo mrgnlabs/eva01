@@ -31,6 +31,9 @@ mod cli;
 /// Configuration strectures for Eva01
 mod config;
 
+// Jipo client implementation
+mod jito;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger

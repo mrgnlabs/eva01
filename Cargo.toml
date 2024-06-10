@@ -28,6 +28,8 @@ marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", branch = "jp/eva-s
     "client",
     "no-entrypoint",
 ] }
+jito-protos = { git = "https://github.com/LevBeta/jito-rs" }
+jito-searcher-client = { git = "https://github.com/LevBeta/jito-rs" }
 num-traits = "0.2.18"
 rayon = "1.10.0"
 serde = "1.0.197"

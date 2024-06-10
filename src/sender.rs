@@ -3,6 +3,7 @@ use log::{error, info};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
+use solana_sdk::signature::Signature;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
@@ -12,8 +13,6 @@ use solana_sdk::{
 };
 use std::time::Duration;
 use std::{error::Error, sync::Arc};
-
-use solana_sdk::signature::Signature;
 
 #[derive(Debug, Deserialize)]
 pub struct SenderCfg {
