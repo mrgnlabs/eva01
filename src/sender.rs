@@ -3,6 +3,7 @@ use log::{error, info};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
+use solana_sdk::compute_budget;
 use solana_sdk::signature::Signature;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -88,6 +89,9 @@ impl TransactionSender {
 
             ixs.push(compute_budget_price_ix);
         }
+
+        let mut compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_limit(300000);
+        ixs.push(compute_budget_price_ix);
 
         let tx = Transaction::new_signed_with_payer(
             &ixs,
