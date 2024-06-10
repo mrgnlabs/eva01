@@ -1,16 +1,21 @@
 use jito_protos::{
     bundle::{bundle_result::Result as BundleResultType, rejected::Reason, Bundle},
     searcher::{
-        searcher_service_client::SearcherServiceClient, NextScheduledLeaderRequest,
-        SubscribeBundleResultsRequest, GetTipAccountsRequest
+        searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
+        NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
     },
 };
-use std::str::FromStr;
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig, instruction::Instruction, pubkey::Pubkey, signature::{Keypair, Signer}, system_instruction::transfer, transaction::{Transaction, VersionedTransaction}
+    commitment_config::CommitmentConfig,
+    instruction::Instruction,
+    pubkey::Pubkey,
+    signature::{Keypair, Signer},
+    system_instruction::transfer,
+    transaction::{Transaction, VersionedTransaction},
 };
+use std::str::FromStr;
 use tokio::time::sleep;
 use tonic::transport::Channel;
 
@@ -18,7 +23,7 @@ pub struct JitoClient {
     rpc: RpcClient,
     searcher_client: SearcherServiceClient<Channel>,
     keypair: Keypair,
-    tip_accounts: Vec<String>
+    tip_accounts: Vec<String>,
 }
 
 impl JitoClient {
@@ -32,7 +37,7 @@ impl JitoClient {
             rpc,
             searcher_client,
             keypair,
-            tip_accounts: Vec::new()
+            tip_accounts: Vec::new(),
         }
     }
 
@@ -48,7 +53,8 @@ impl JitoClient {
 
         let mut is_jito_leader = false;
         while !is_jito_leader {
-            let next_leader = self.searcher_client
+            let next_leader = self
+                .searcher_client
                 .get_next_scheduled_leader(NextScheduledLeaderRequest {})
                 .await
                 .expect("Failed to get next scheduled leader")
@@ -63,7 +69,11 @@ impl JitoClient {
             Transaction::new_signed_with_payer(
                 &[
                     ix,
-                    transfer(&self.keypair.pubkey(), &Pubkey::from_str(&self.tip_accounts[0])?, lamports),
+                    transfer(
+                        &self.keypair.pubkey(),
+                        &Pubkey::from_str(&self.tip_accounts[0])?,
+                        lamports,
+                    ),
                 ],
                 Some(&self.keypair.pubkey()),
                 &[&self.keypair],
@@ -90,28 +100,10 @@ impl JitoClient {
             .await
             .expect("Failed to get tip accounts")
             .into_inner();
-        
+
         self.tip_accounts = tip_accounts.accounts;
 
         Ok(())
     }
-
 }
 
-#[cfg(test)]
-mod tests {
-    use solana_sdk::signer::keypair;
-
-    use super::*;
-    #[tokio::test]
-    async fn test_leader() {
-        let keypair = Keypair::new();
-        let mut jito_client = JitoClient::new(
-            "https://rpc.ironforge.network/mainnet?apiKey=01HTYZW4C7W74CTK8N8XN2GMR5".to_string(),
-            keypair,
-            "https://mainnet.block-engine.jito.wtf".to_string(),
-        )
-        .await;
-        jito_client.get_tip_accounts().await;
-    }
-}

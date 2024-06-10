@@ -8,8 +8,11 @@ Marginfi liquidator
 
 Ubuntu 
 ```bash
-  sudo apt install build-essential libssl-dev pkg-config
+  sudo apt install build-essential libssl-dev pkg-config unzip
 ```
+
+Follow this instructions
+  https://grpc.io/docs/protoc-installation/#install-pre-compiled-binaries-any-os;
 
 ### Creating a New Configuration File
 
