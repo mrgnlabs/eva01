@@ -123,7 +123,7 @@ impl Liquidator {
     /// Liquidator starts, receiving messages and process them,
     /// a "timeout" is awaiting for accounts to be evaluated
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(5);
+        let max_duration = std::time::Duration::from_secs(1);
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.receiver.recv() {
@@ -208,11 +208,6 @@ impl Liquidator {
             let _ = self.liquidate_account(account);
         }
 
-        info!(
-            "Took: {:?} to process {:?} acounts!",
-            start.elapsed(),
-            self.marginfi_accounts.len()
-        );
         Ok(())
     }
 
