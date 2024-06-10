@@ -128,6 +128,7 @@ impl GeyserService {
                     .await
                 {
                     error!("Error sending message to geyser: {:?}", e);
+                    break;
                 }
                 ping_id += 1;
             }

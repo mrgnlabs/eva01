@@ -21,6 +21,7 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     token_program: Pubkey,
     group: Pubkey,
+    transaction_sender: TransactionSender
 }
 
 impl LiquidatorAccount {
@@ -46,6 +47,7 @@ impl LiquidatorAccount {
             program_id,
             token_program,
             group,
+            transaction_sender: TransactionSender {}
         })
     }
 
