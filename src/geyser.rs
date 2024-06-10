@@ -1,9 +1,10 @@
 use crate::utils::account_update_to_account;
+use anchor_lang::err;
 use backoff::{retry, ExponentialBackoff};
 use crossbeam::channel::Sender;
 use futures::channel::mpsc::SendError;
 use futures::{SinkExt, StreamExt};
-use log::{debug, error};
+use log::{debug, error, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
@@ -11,7 +12,7 @@ use std::{collections::HashMap, mem::size_of};
 use tokio::task::JoinHandle;
 use tonic::service::Interceptor;
 use yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError};
-use yellowstone_grpc_proto::prelude::*;
+use yellowstone_grpc_proto::{geyser, prelude::*};
 
 const MARGIN_ACCOUNT_SIZE: usize = size_of::<MarginfiAccount>() + 8;
 
@@ -54,32 +55,42 @@ impl GeyserService {
         marginfi_program_id: Pubkey,
         liquidator_sender: Sender<GeyserUpdate>,
         rebalancer_sender: Sender<GeyserUpdate>,
-    ) -> Result<JoinHandle<Result<(), GeyserServiceError>>, GeyserServiceError> {
-        let handle = retry(
-            ExponentialBackoff::default(),
-            move || -> Result<JoinHandle<Result<(), GeyserServiceError>>, backoff::Error<GeyserServiceError>> {
-                let endpoint = config.endpoint.clone();
-                let x_token = config.x_token.clone();
-
-                let geyser_client = yellowstone_grpc_client::GeyserGrpcClient::connect(endpoint, x_token, None)
-                    .map_err(|e| backoff::Error::transient(e.into()))?;
-
-                let tracked_accounts_cl = tracked_accounts.clone();
+    ) -> anyhow::Result<JoinHandle<()>> {
+        let handle = tokio::spawn(async move {
+            let endpoint = config.endpoint.clone();
+            let x_token = config.x_token.clone();
+            loop {
+                info!("Connecting to the geyser client");
+                let geyser_client = match yellowstone_grpc_client::GeyserGrpcClient::connect(
+                    endpoint.clone(),
+                    x_token.clone(),
+                    None,
+                ) {
+                    Ok(client) => client,
+                    Err(e) => {
+                        error!("Error connecting to the geyser client: {:?}", e);
+                        continue;
+                    }
+                };
+                let traked_accounts_cl = tracked_accounts.clone();
                 let liquidator_sender = liquidator_sender.clone();
                 let rebalancer_sender = rebalancer_sender.clone();
                 let handle = tokio::spawn(async move {
-                    // TODO: Work on retarting geyser service!!!
-                    if let Err(e) = Self::subscribe_and_run(tracked_accounts_cl, marginfi_program_id, geyser_client, liquidator_sender, rebalancer_sender).await {
-                        error!("Geyser service stopped becuase: {:?}", e);
+                    if let Err(e) = Self::subscribe_and_run(
+                        traked_accounts_cl,
+                        marginfi_program_id,
+                        geyser_client,
+                        liquidator_sender,
+                        rebalancer_sender,
+                    )
+                    .await
+                    {
+                        error!("Geyser service stopped: {:?}", e);
                     }
-                    Ok(())
-                });
-
-
-                Ok::<_, backoff::Error<GeyserServiceError>>(handle)
-            },
-        )
-        .map_err(|_| GeyserServiceError::GenericError)?;
+                })
+                .await;
+            }
+        });
         Ok(handle)
     }
 
