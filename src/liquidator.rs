@@ -31,8 +31,9 @@ use solana_client::{
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account_info::IntoAccountInfo,
+    blake3::Hash,
     bs58,
-    signature::{read_keypair_file, Keypair},
+    signature::{read_keypair_file, Keypair, Signature},
 };
 use std::{cmp::min, collections::HashMap, sync::Arc};
 
@@ -85,20 +86,27 @@ impl<'a> LiquidatableAccount<'a> {
     }
 }
 
+pub struct PreparedLiquidatableAccount {
+    liquidate_account: MarginfiAccountWrapper,
+    asset_bank: BankWrapper,
+    liab_bank: BankWrapper,
+    asset_amount: u64,
+    banks: HashMap<Pubkey, BankWrapper>,
+}
+
 impl Liquidator {
     /// Creates a new instance of the liquidator
-    pub fn new(
+    pub async fn new(
         general_config: GeneralConfig,
         liquidator_config: LiquidatorCfg,
         receiver: Receiver<GeyserUpdate>,
     ) -> Liquidator {
-        let liquidator_keypair = read_keypair_file(&general_config.keypair_path).unwrap();
-
         let liquidator_account = LiquidatorAccount::new(
-            liquidator_keypair,
             RpcClient::new(general_config.rpc_url.clone()),
             general_config.liquidator_account,
+            general_config.clone(),
         )
+        .await
         .unwrap();
 
         Liquidator {
@@ -159,7 +167,20 @@ impl Liquidator {
                 };
 
                 if start.elapsed() > max_duration {
-                    let _ = self.process_all_accounts();
+                    if let Ok(accounts) = self.process_all_accounts() {
+                        for account in accounts {
+                            self.liquidator_account
+                                .liquidate(
+                                    &account.liquidate_account,
+                                    &account.asset_bank,
+                                    &account.liab_bank,
+                                    account.asset_amount,
+                                    self.general_config.get_tx_config(),
+                                    &account.banks,
+                                )
+                                .await;
+                        }
+                    }
                     break;
                 }
             }
@@ -168,7 +189,7 @@ impl Liquidator {
 
     /// Starts processing/evaluate all account, checking
     /// if a liquidation is necessary/needed
-    fn process_all_accounts(&self) -> anyhow::Result<()> {
+    fn process_all_accounts(&self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
         let start = std::time::Instant::now();
         let accounts = self
             .marginfi_accounts
@@ -193,64 +214,37 @@ impl Liquidator {
                     return None;
                 }
 
-                let liq_acc = LiquidatableAccount::new(
-                    account,
-                    asset_bank_pk,
-                    liab_bank_pk,
-                    max_liquidation_amount,
-                    profit,
-                );
-                Some(liq_acc)
+                let max_liab_coverage_amount = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
+
+                let liab_bank = self.banks.get(&liab_bank_pk).unwrap();
+                let asset_bank = self.banks.get(&asset_bank_pk).unwrap();
+
+                let mut liquidation_asset_amount_capacity = liab_bank
+                    .calc_value(
+                        max_liab_coverage_amount,
+                        BalanceSide::Liabilities,
+                        RequirementType::Initial,
+                    )
+                    .unwrap();
+
+                let asset_amount_to_liquidate =
+                    min(max_liquidation_amount, liquidation_asset_amount_capacity);
+
+                let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.98);
+
+                let prepared = PreparedLiquidatableAccount {
+                    liquidate_account: account.clone(),
+                    asset_bank: asset_bank.clone(),
+                    liab_bank: liab_bank.clone(),
+                    asset_amount: slippage_adjusted_asset_amount.to_num(),
+                    banks: self.banks.clone(),
+                };
+
+                Some(prepared)
             })
             .collect::<Vec<_>>();
 
-        for account in accounts {
-            let _ = self.liquidate_account(account);
-        }
-
-        Ok(())
-    }
-
-    fn liquidate_account(&self, account: LiquidatableAccount) -> anyhow::Result<()> {
-        let max_liab_coverage_amount = self.get_max_borrow_for_bank(&account.liab_bank_pk)?;
-
-        let liab_bank = self.banks.get(&account.liab_bank_pk).unwrap();
-        let asset_bank = self.banks.get(&account.asset_bank_pk).unwrap();
-
-        let mut liquidator_capacity = liab_bank.calc_value(
-            max_liab_coverage_amount,
-            BalanceSide::Liabilities,
-            RequirementType::Initial,
-        )?;
-
-        if let Some(max_liquidation_value) = self.config.max_liquidation_value {
-            liquidator_capacity = min(liquidator_capacity, I80F48::from_num(max_liquidation_value));
-        }
-
-        let liquidation_asset_amount_capacity = asset_bank.calc_amount(
-            liquidator_capacity,
-            BalanceSide::Assets,
-            RequirementType::Initial,
-        )?;
-
-        let asset_amount_to_liquidate = min(
-            account.max_liquidation_amount,
-            liquidation_asset_amount_capacity,
-        );
-
-        let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.98);
-
-        // Liquidate comes here
-        self.liquidator_account.liquidate(
-            account.account,
-            asset_bank,
-            liab_bank,
-            slippage_adjusted_asset_amount.to_num(),
-            self.general_config.get_tx_config(),
-            &self.banks,
-        )?;
-
-        Ok(())
+        Ok(accounts)
     }
 
     fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> anyhow::Result<I80F48> {

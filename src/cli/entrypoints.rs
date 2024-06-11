@@ -21,14 +21,16 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.general_config.clone(),
         config.liquidator_config.clone(),
         liquidator_rx.clone(),
-    );
+    )
+    .await;
 
     // Create the rebalancer
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
         config.rebalancer_config.clone(),
         rebalancer_rx.clone(),
-    )?;
+    )
+    .await?;
 
     liquidator.load_data().await?;
     rebalancer.load_data(liquidator.get_banks_and_map())?;

@@ -1,6 +1,4 @@
 use crate::utils::account_update_to_account;
-use anchor_lang::err;
-use backoff::{retry, ExponentialBackoff};
 use crossbeam::channel::Sender;
 use futures::channel::mpsc::SendError;
 use futures::{SinkExt, StreamExt};
@@ -12,7 +10,7 @@ use std::{collections::HashMap, mem::size_of};
 use tokio::task::JoinHandle;
 use tonic::service::Interceptor;
 use yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError};
-use yellowstone_grpc_proto::{geyser, prelude::*};
+use yellowstone_grpc_proto::prelude::*;
 
 const MARGIN_ACCOUNT_SIZE: usize = size_of::<MarginfiAccount>() + 8;
 

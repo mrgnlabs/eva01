@@ -69,6 +69,7 @@ pub async fn setup() -> anyhow::Result<()> {
         rpc_url,
         yellowstone_endpoint,
         yellowstone_x_token,
+        block_engine_url: GeneralConfig::default_block_engine_url(),
         signer_pubkey: signer_keypair.pubkey(),
         keypair_path,
         liquidator_account: accounts[0],

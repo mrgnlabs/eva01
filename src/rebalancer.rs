@@ -60,7 +60,7 @@ pub struct Rebalancer {
 }
 
 impl Rebalancer {
-    pub fn new(
+    pub async fn new(
         general_config: GeneralConfig,
         config: RebalancerCfg,
         receiver: Receiver<GeyserUpdate>,
@@ -68,13 +68,12 @@ impl Rebalancer {
         let rpc_client = Arc::new(RpcClient::new(general_config.rpc_url.clone()));
         let token_account_manager = TokenAccountManager::new(rpc_client.clone())?;
 
-        let liquidator_keypair = read_keypair_file(&general_config.keypair_path).unwrap();
-
         let liquidator_account = LiquidatorAccount::new(
-            liquidator_keypair,
             RpcClient::new(general_config.rpc_url.clone()),
             general_config.liquidator_account,
+            general_config.clone(),
         )
+        .await
         .unwrap();
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();

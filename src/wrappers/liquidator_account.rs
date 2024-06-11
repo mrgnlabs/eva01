@@ -3,14 +3,20 @@ use super::{
     marginfi_account::{MarginfiAccountWrapper, TxConfig},
 };
 use crate::{
+    config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
     sender::{SenderCfg, TransactionSender},
 };
+use anchor_lang::accounts::signer;
 use log::info;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{signature::Keypair, signer::Signer};
+use solana_sdk::{
+    quic,
+    signature::{read_keypair_file, Keypair},
+    signer::Signer,
+};
 use std::{collections::HashMap, sync::Arc};
 
 /// Wraps the liquidator account into a dedicated strecture
@@ -21,15 +27,17 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     token_program: Pubkey,
     group: Pubkey,
-    transaction_sender: TransactionSender
+    transaction_sender: TransactionSender,
 }
 
 impl LiquidatorAccount {
-    pub fn new(
-        signer_keypair: Keypair,
+    pub async fn new(
         rpc_client: RpcClient,
         liquidator_pubkey: Pubkey,
+        config: GeneralConfig,
     ) -> anyhow::Result<Self> {
+        let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
+
         let account = rpc_client.get_account(&liquidator_pubkey)?;
 
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
@@ -39,20 +47,19 @@ impl LiquidatorAccount {
         let program_id = marginfi::id();
         let token_program = spl_token::id();
         let group = account_wrapper.account.group;
-
         Ok(Self {
             account_wrapper,
-            signer_keypair: Arc::new(signer_keypair),
+            signer_keypair,
             rpc_client: Arc::new(rpc_client),
             program_id,
             token_program,
             group,
-            transaction_sender: TransactionSender {}
+            transaction_sender: TransactionSender::new(config).await,
         })
     }
 
-    pub fn liquidate(
-        &self,
+    pub async fn liquidate(
+        &mut self,
         liquidate_account: &MarginfiAccountWrapper,
         asset_bank: &BankWrapper,
         liab_bank: &BankWrapper,
@@ -101,16 +108,10 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
-        let sig = TransactionSender::send_ix(
-            self.rpc_client.clone(),
-            liquidate_ix,
-            self.signer_keypair.clone(),
-            Some(send_cfg),
-            SenderCfg::DEFAULT,
-        )
-        .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
+        self.transaction_sender
+            .send_jito_ix(liquidate_ix, Some(send_cfg))
+            .await;
 
-        info!("Liquidation successful, tx signature: {:?}", sig);
         Ok(())
     }
 

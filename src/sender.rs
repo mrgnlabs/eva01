@@ -1,10 +1,12 @@
-use crate::wrappers::marginfi_account::TxConfig;
+use crate::jito;
+use crate::{config::GeneralConfig, jito::JitoClient, wrappers::marginfi_account::TxConfig};
 use log::{error, info};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
-use solana_sdk::compute_budget;
-use solana_sdk::signature::Signature;
+use solana_sdk::signature::{read_keypair_file, Signature};
+use solana_sdk::signer::keypair;
+use solana_sdk::{commitment_config, compute_budget};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
@@ -59,7 +61,9 @@ impl SenderCfg {
     }
 }
 
-pub struct TransactionSender;
+pub struct TransactionSender {
+    jito_client: JitoClient,
+}
 
 #[derive(Debug, Deserialize)]
 pub enum TransactionType {
@@ -68,6 +72,26 @@ pub enum TransactionType {
 }
 
 impl TransactionSender {
+    pub async fn new(config: GeneralConfig) -> Self {
+        let signer = read_keypair_file(&config.keypair_path).unwrap();
+        let mut jito_client = JitoClient::new(config, signer).await;
+        let _ = jito_client.get_tip_accounts().await;
+        TransactionSender { jito_client }
+    }
+
+    pub async fn send_jito_ix(
+        &mut self,
+        ix: Instruction,
+        tx_config: Option<TxConfig>,
+    ) -> anyhow::Result<()> {
+        let mut ixs = vec![ix];
+
+        ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(300_000));
+
+        let _ = self.jito_client.send_transaction(ixs, 10000).await;
+        Ok(())
+    }
+
     pub fn send_ix(
         rpc_client: Arc<RpcClient>,
         ix: Instruction,
@@ -90,7 +114,7 @@ impl TransactionSender {
             ixs.push(compute_budget_price_ix);
         }
 
-        let mut compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_limit(300000);
+        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_limit(300000);
         ixs.push(compute_budget_price_ix);
 
         let tx = Transaction::new_signed_with_payer(

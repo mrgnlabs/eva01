@@ -6,6 +6,7 @@ use jito_protos::{
     },
 };
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
+use log::{info, error};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -15,9 +16,11 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 use tokio::time::sleep;
 use tonic::transport::Channel;
+
+use crate::config::GeneralConfig;
 
 pub struct JitoClient {
     rpc: RpcClient,
@@ -27,21 +30,25 @@ pub struct JitoClient {
 }
 
 impl JitoClient {
-    pub async fn new(rpc_url: String, keypair: Keypair, block_engine_url: String) -> Self {
-        let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
-        let searcher_client = get_searcher_client_no_auth(&block_engine_url)
+    pub async fn new(config: GeneralConfig, signer: Keypair) -> Self {
+        let rpc = RpcClient::new_with_commitment(config.rpc_url, CommitmentConfig::confirmed());
+        let searcher_client = get_searcher_client_no_auth(&config.block_engine_url)
             .await
             .expect("Failed to create a searcher client");
 
         Self {
             rpc,
             searcher_client,
-            keypair,
+            keypair: signer,
             tip_accounts: Vec::new(),
         }
     }
 
-    pub async fn send_transaction(&mut self, ix: Instruction, lamports: u64) -> anyhow::Result<()> {
+    pub async fn send_transaction(
+        &mut self,
+        mut ixs: Vec<Instruction>,
+        lamports: u64,
+    ) -> anyhow::Result<()> {
         let mut bundle_results_subscription = self
             .searcher_client
             .subscribe_bundle_results(SubscribeBundleResultsRequest {})
@@ -65,30 +72,31 @@ impl JitoClient {
             sleep(std::time::Duration::from_millis(500)).await;
         }
 
+        ixs.push(transfer(
+            &self.keypair.pubkey(),
+            &Pubkey::from_str(&self.tip_accounts[0]).unwrap(),
+            lamports,
+        ));
+
         let txs = vec![VersionedTransaction::from(
             Transaction::new_signed_with_payer(
-                &[
-                    ix,
-                    transfer(
-                        &self.keypair.pubkey(),
-                        &Pubkey::from_str(&self.tip_accounts[0])?,
-                        lamports,
-                    ),
-                ],
+                &ixs,
                 Some(&self.keypair.pubkey()),
                 &[&self.keypair],
                 blockhash,
             ),
         )];
 
-        send_bundle_with_confirmation(
+        if let Err(err) = send_bundle_with_confirmation(
             &txs,
             &self.rpc,
             &mut self.searcher_client,
             &mut bundle_results_subscription,
         )
         .await
-        .expect("Sending bundle failed!");
+        {
+            error!("Failed to send bundle: {:?}", err);
+        };
 
         Ok(())
     }
