@@ -15,5 +15,7 @@ jobs:
               toolchain: stable
               override: true
               components: rustfmt
+          - name: Install Protoc
+            uses: arduino/setup-protoc@v3
           - name: Cargo Check
             run: cargo check

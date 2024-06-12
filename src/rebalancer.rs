@@ -449,26 +449,33 @@ impl Rebalancer {
 
     async fn handle_tokens_in_token_accounts(&mut self) -> anyhow::Result<()> {
         // Step 1: Collect necessary data into a Vec to avoid borrowing issues
-        let accounts_data: Vec<(I80F48, I80F48, Pubkey, Pubkey)> = self.token_accounts.values()
+        let accounts_data: Vec<(I80F48, I80F48, Pubkey, Pubkey)> = self
+            .token_accounts
+            .values()
             .map(|account| {
                 let bank = self.banks.get(&account.bank_address).unwrap();
                 let value = account.get_value(&bank).unwrap();
-                (value, account.get_amount(), account.bank_address, account.mint)
+                (
+                    value,
+                    account.get_amount(),
+                    account.bank_address,
+                    account.mint,
+                )
             })
             .collect();
-    
+
         // Step 2: Iterate over the collected data
         for (value, amount, bank_address, mint) in accounts_data {
             if value > self.config.token_account_dust_threshold {
                 self.swap(
-                    amount.to_num(), 
+                    amount.to_num(),
                     &bank_address,
                     &self.swap_mint_bank_pk.unwrap(),
                 )
                 .await?;
             }
         }
-    
+
         Ok(())
     }
 
