@@ -6,7 +6,7 @@ use jito_protos::{
     },
 };
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
-use log::{info, error};
+use log::{error, info};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,

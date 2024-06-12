@@ -14,7 +14,7 @@ use crate::{
 };
 use anyhow::anyhow;
 use crossbeam::channel::Receiver;
-use fixed::types::I80F48;
+use fixed::{traits::Fixed, types::I80F48};
 use fixed_macro::types::I80F48;
 use jupiter_swap_api_client::{
     quote::QuoteRequest,
@@ -166,7 +166,6 @@ impl Rebalancer {
     }
 
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        info!("Rebalancer started");
         let max_duration = std::time::Duration::from_secs(15);
         loop {
             let start = std::time::Instant::now();
@@ -207,7 +206,9 @@ impl Rebalancer {
                 }
 
                 if start.elapsed() > max_duration && self.needs_to_be_relanced() {
-                    let _ = self.rebalance_accounts().await;
+                    if let Err(e) = self.rebalance_accounts().await {
+                        info!("Failed to rebalance account: {:?}", e);
+                    }
                     break;
                 }
             }
@@ -248,7 +249,7 @@ impl Rebalancer {
         )
     }
 
-    async fn sell_non_preferred_deposits(&self) -> anyhow::Result<()> {
+    async fn sell_non_preferred_deposits(&mut self) -> anyhow::Result<()> {
         let non_preferred_deposits = self
             .liquidator_account
             .account_wrapper
@@ -416,7 +417,6 @@ impl Rebalancer {
             let value = account.get_value(&bank).unwrap();
             value > self.config.token_account_dust_threshold
         });
-
         has_tokens_in_tas
     }
 
@@ -448,73 +448,32 @@ impl Rebalancer {
     }
 
     async fn handle_tokens_in_token_accounts(&mut self) -> anyhow::Result<()> {
-        let bank_addresses = self
-            .banks
-            .iter()
-            .map(|e| e.0)
-            .filter(|bank_pk| self.swap_mint_bank_pk.unwrap() != **bank_pk)
-            .collect::<Vec<_>>();
-
-        for bank_pk in bank_addresses {
-            self.handle_token_in_token_account(bank_pk).await?;
-        }
-
-        self.refresh_token_account(&self.swap_mint_bank_pk.unwrap())
-            .await?;
-
-        let bank = self.banks.get(&self.swap_mint_bank_pk.unwrap()).unwrap();
-
-        let balance = self
-            .token_accounts
-            .get(&bank.bank.mint)
-            .map(|account| account.get_amount());
-
-        if let Some(balance) = balance {
-            if !balance.is_zero() {
-                self.liquidator_account.deposit(
-                    bank,
-                    self.swap_mint_bank_pk.unwrap(),
-                    balance.to_num(),
-                    self.general_config.get_tx_config(),
-                )?;
+        // Step 1: Collect necessary data into a Vec to avoid borrowing issues
+        let accounts_data: Vec<(I80F48, I80F48, Pubkey, Pubkey)> = self.token_accounts.values()
+            .map(|account| {
+                let bank = self.banks.get(&account.bank_address).unwrap();
+                let value = account.get_value(&bank).unwrap();
+                (value, account.get_amount(), account.bank_address, account.mint)
+            })
+            .collect();
+    
+        // Step 2: Iterate over the collected data
+        for (value, amount, bank_address, mint) in accounts_data {
+            if value > self.config.token_account_dust_threshold {
+                self.swap(
+                    amount.to_num(), 
+                    &bank_address,
+                    &self.swap_mint_bank_pk.unwrap(),
+                )
+                .await?;
             }
         }
-
-        Ok(())
-    }
-
-    async fn handle_token_in_token_account(&self, bank_pk: &Pubkey) -> anyhow::Result<()> {
-        let bank = self.banks.get(bank_pk).unwrap();
-        let amount = self
-            .liquidator_account
-            .account_wrapper
-            .get_balance_for_bank(bank_pk, bank)?;
-
-        if amount.is_none() {
-            return Ok(());
-        }
-
-        let amount = amount.unwrap();
-
-        let value = self.get_value(
-            amount.0,
-            &bank_pk,
-            RequirementType::Equity,
-            BalanceSide::Assets,
-        )?;
-
-        if value < self.config.token_account_dust_threshold {
-            return Ok(());
-        }
-
-        self.swap(amount.0.to_num(), bank_pk, &self.swap_mint_bank_pk.unwrap())
-            .await?;
-
+    
         Ok(())
     }
 
     /// Withdraw and sells a given asset
-    async fn withdraw_and_sell_deposit(&self, bank_pk: &Pubkey) -> anyhow::Result<()> {
+    async fn withdraw_and_sell_deposit(&mut self, bank_pk: &Pubkey) -> anyhow::Result<()> {
         let balance = self
             .liquidator_account
             .account_wrapper
@@ -547,7 +506,12 @@ impl Rebalancer {
         Ok(())
     }
 
-    async fn swap(&self, amount: u64, src_bank: &Pubkey, dst_bank: &Pubkey) -> anyhow::Result<()> {
+    async fn swap(
+        &mut self,
+        amount: u64,
+        src_bank: &Pubkey,
+        dst_bank: &Pubkey,
+    ) -> anyhow::Result<()> {
         let src_mint = {
             let bank = self.banks.get(src_bank).unwrap();
 
@@ -587,11 +551,19 @@ impl Rebalancer {
             })
             .await?;
 
-        let tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
+        let mut tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
             .map_err(|_| anyhow!("Failed to deserialize"))?;
+
+        tx = VersionedTransaction::try_new(
+            tx.message,
+            &[&read_keypair_file(&self.general_config.keypair_path).unwrap()],
+        )?;
 
         TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT)
             .map_err(|_| anyhow!("Failed to send swap transaction"))?;
+
+        self.refresh_token_account(src_bank).await?;
+        self.refresh_token_account(dst_bank).await?;
 
         Ok(())
     }

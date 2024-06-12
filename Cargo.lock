@@ -2119,9 +2119,9 @@ dependencies = [
 
 [[package]]
 name = "httparse"
-version = "1.9.2"
+version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f3935c160d00ac752e09787e6e6bfc26494c2183cc922f1bc678a60d4733bc2"
+checksum = "d0e7a4dd27b9476dc40cb050d3632d3bba3a70ddbff012285f7f8559a1e7e545"
 
 [[package]]
 name = "httpdate"
@@ -2454,7 +2454,7 @@ checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 [[package]]
 name = "jito-protos"
 version = "0.1.0"
-source = "git+https://github.com/LevBeta/jito-rs#7942cbde022f7c55c1be3931c044b98ccb0bc295"
+source = "git+https://github.com/LevBeta/jito-rs#2ca993b11451eaeee94dce2759f9c1b57667e399"
 dependencies = [
  "bincode",
  "bytes",
@@ -2469,7 +2469,7 @@ dependencies = [
 [[package]]
 name = "jito-searcher-client"
 version = "0.1.0"
-source = "git+https://github.com/LevBeta/jito-rs#7942cbde022f7c55c1be3931c044b98ccb0bc295"
+source = "git+https://github.com/LevBeta/jito-rs#2ca993b11451eaeee94dce2759f9c1b57667e399"
 dependencies = [
  "futures-util",
  "jito-protos",
