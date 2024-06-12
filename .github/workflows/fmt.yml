@@ -16,12 +16,7 @@ jobs:
           components: rustfmt
           override: true
       - name: Install protoc
-        run: |
-          PB_REL="https://github.com/protocolbuffers/protobuf/releases"
-          curl -LO $PB_REL/download/v25.1/protoc-25.1-linux-x86_64.zip
-          apt install -y unzip
-          unzip protoc-25.1-linux-x86_64.zip -d $HOME/.local
-          export PATH="$PATH:$HOME/.local/bin"
+        run: sudo apt-get install -y protobuf-compiler
       - name: Check Formatting
         run: |
           cargo fmt -- --check
