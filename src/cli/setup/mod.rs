@@ -78,6 +78,7 @@ pub async fn setup() -> anyhow::Result<()> {
         marginfi_program_id: GeneralConfig::default_marginfi_program_id(),
         marginfi_group_address: GeneralConfig::default_marginfi_group_address(),
         account_whitelist: GeneralConfig::default_account_whitelist(),
+        address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
     };
 
     let liquidator_config = LiquidatorCfg {
@@ -129,7 +130,7 @@ fn prompt_user(prompt_text: &str) -> anyhow::Result<String> {
 /// Simply asks the keypair path until it is a valid one,
 /// Returns (keypair_path, signer_keypair)
 fn ask_keypair_until_valid() -> anyhow::Result<(String, Keypair)> {
-    print!("Keypair file path\n");
+    println!("Keypair file path");
     loop {
         let keypair_path = prompt_user("> ")?;
         match read_keypair_file(&keypair_path) {

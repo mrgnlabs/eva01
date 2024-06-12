@@ -29,12 +29,7 @@ use solana_client::{
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{
-    account_info::IntoAccountInfo,
-    blake3::Hash,
-    bs58,
-    signature::{read_keypair_file, Keypair, Signature},
-};
+use solana_sdk::{account_info::IntoAccountInfo, bs58, signature::Keypair};
 use std::{cmp::min, collections::HashMap, sync::Arc};
 
 /// Bank group private key offset
@@ -190,7 +185,6 @@ impl Liquidator {
     /// Starts processing/evaluate all account, checking
     /// if a liquidation is necessary/needed
     fn process_all_accounts(&self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
-        let start = std::time::Instant::now();
         let accounts = self
             .marginfi_accounts
             .par_iter()
@@ -219,7 +213,7 @@ impl Liquidator {
                 let liab_bank = self.banks.get(&liab_bank_pk).unwrap();
                 let asset_bank = self.banks.get(&asset_bank_pk).unwrap();
 
-                let mut liquidation_asset_amount_capacity = liab_bank
+                let liquidation_asset_amount_capacity = liab_bank
                     .calc_value(
                         max_liab_coverage_amount,
                         BalanceSide::Liabilities,
@@ -625,10 +619,7 @@ impl Liquidator {
         let mut tracked_accounts: HashMap<Pubkey, AccountType> = HashMap::new();
 
         for bank in self.banks.values() {
-            tracked_accounts.insert(
-                bank.oracle_adapter.address.clone(),
-                AccountType::OracleAccount,
-            );
+            tracked_accounts.insert(bank.oracle_adapter.address, AccountType::OracleAccount);
         }
 
         tracked_accounts

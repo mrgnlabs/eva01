@@ -1673,6 +1673,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.8",
  "solana-account-decoder",
+ "solana-address-lookup-table-program",
  "solana-client",
  "solana-program",
  "solana-rpc-client-api",

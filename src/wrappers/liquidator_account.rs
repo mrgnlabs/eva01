@@ -7,13 +7,11 @@ use crate::{
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
     sender::{SenderCfg, TransactionSender},
 };
-use anchor_lang::accounts::signer;
 use log::info;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
-    quic,
     signature::{read_keypair_file, Keypair},
     signer::Signer,
 };
@@ -54,7 +52,7 @@ impl LiquidatorAccount {
             program_id,
             token_program,
             group,
-            transaction_sender: TransactionSender::new(config).await,
+            transaction_sender: TransactionSender::new(config).await?,
         })
     }
 
@@ -136,7 +134,7 @@ impl LiquidatorAccount {
 
         let observation_accounts =
             self.account_wrapper
-                .get_observation_accounts(&[], &banks_to_exclude, &banks);
+                .get_observation_accounts(&[], &banks_to_exclude, banks);
 
         let withdraw_ix = make_withdraw_ix(
             self.program_id,

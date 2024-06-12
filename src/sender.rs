@@ -1,12 +1,9 @@
-use crate::jito;
 use crate::{config::GeneralConfig, jito::JitoClient, wrappers::marginfi_account::TxConfig};
 use log::{error, info};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::signature::{read_keypair_file, Signature};
-use solana_sdk::signer::keypair;
-use solana_sdk::{commitment_config, compute_budget};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
@@ -72,17 +69,17 @@ pub enum TransactionType {
 }
 
 impl TransactionSender {
-    pub async fn new(config: GeneralConfig) -> Self {
+    pub async fn new(config: GeneralConfig) -> anyhow::Result<Self> {
         let signer = read_keypair_file(&config.keypair_path).unwrap();
-        let mut jito_client = JitoClient::new(config, signer).await;
+        let mut jito_client = JitoClient::new(config, signer).await?;
         let _ = jito_client.get_tip_accounts().await;
-        TransactionSender { jito_client }
+        Ok(TransactionSender { jito_client })
     }
 
     pub async fn send_jito_ix(
         &mut self,
         ix: Instruction,
-        tx_config: Option<TxConfig>,
+        _tx_config: Option<TxConfig>,
     ) -> anyhow::Result<()> {
         let mut ixs = vec![ix];
 

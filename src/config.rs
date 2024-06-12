@@ -8,6 +8,7 @@ use crate::{
 };
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
+use rayon::vec;
 use solana_sdk::{pubkey, pubkey::Pubkey};
 use std::{
     error::Error,
@@ -82,6 +83,8 @@ pub struct GeneralConfig {
         default = "GeneralConfig::default_account_whitelist"
     )]
     pub account_whitelist: Option<Vec<Pubkey>>,
+    #[serde(default = "GeneralConfig::default_address_lookup_tables")]
+    pub address_lookup_tables: Vec<Pubkey>,
 }
 
 impl std::fmt::Display for GeneralConfig {
@@ -146,6 +149,13 @@ impl GeneralConfig {
 
     pub fn default_block_engine_url() -> String {
         String::from("https://ny.mainnet.block-engine.jito.wtf")
+    }
+
+    pub fn default_address_lookup_tables() -> Vec<Pubkey> {
+        vec![
+            pubkey!("HGmknUTUmeovMc9ryERNWG6UFZDFDVr9xrum3ZhyL4fC"),
+            pubkey!("5FuKF7C1tJji2mXZuJ14U9oDb37is5mmvYLf4KwojoF1"),
+        ]
     }
 
     pub fn get_tx_config(&self) -> TxConfig {

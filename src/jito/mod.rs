@@ -1,22 +1,27 @@
 use jito_protos::{
-    bundle::{bundle_result::Result as BundleResultType, rejected::Reason, Bundle},
+    block,
     searcher::{
         searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
         NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
     },
 };
+
+use futures::stream::{FuturesUnordered, StreamExt};
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
-use log::{error, info};
+use log::error;
+use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
+    address_lookup_table_account::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
     instruction::Instruction,
+    message::{v0, VersionedMessage},
     pubkey::Pubkey,
     signature::{Keypair, Signer},
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
-use std::{str::FromStr, sync::Arc};
+use std::{ops::Add, str::FromStr};
 use tokio::time::sleep;
 use tonic::transport::Channel;
 
@@ -27,21 +32,35 @@ pub struct JitoClient {
     searcher_client: SearcherServiceClient<Channel>,
     keypair: Keypair,
     tip_accounts: Vec<String>,
+    lookup_tables: Vec<AddressLookupTableAccount>,
 }
 
 impl JitoClient {
-    pub async fn new(config: GeneralConfig, signer: Keypair) -> Self {
+    pub async fn new(config: GeneralConfig, signer: Keypair) -> anyhow::Result<Self> {
         let rpc = RpcClient::new_with_commitment(config.rpc_url, CommitmentConfig::confirmed());
         let searcher_client = get_searcher_client_no_auth(&config.block_engine_url)
             .await
             .expect("Failed to create a searcher client");
 
-        Self {
+        
+        let mut lookup_tables = vec![];
+        for table_address in &config.address_lookup_tables {
+            let raw_account = rpc.get_account(&table_address).await?;
+            let address_lookup_table = AddressLookupTable::deserialize(&raw_account.data)?;
+            let lookup_table = AddressLookupTableAccount {
+                key: table_address.clone(),
+                addresses: address_lookup_table.addresses.to_vec(),
+            };
+            lookup_tables.push(lookup_table);
+        }
+
+        Ok(Self {
             rpc,
             searcher_client,
             keypair: signer,
             tip_accounts: Vec::new(),
-        }
+            lookup_tables,
+        })
     }
 
     pub async fn send_transaction(
@@ -68,7 +87,7 @@ impl JitoClient {
                 .into_inner();
 
             let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
-            is_jito_leader = (num_slots <= 2).into();
+            is_jito_leader = num_slots <= 2;
             sleep(std::time::Duration::from_millis(500)).await;
         }
 
@@ -78,14 +97,15 @@ impl JitoClient {
             lamports,
         ));
 
-        let txs = vec![VersionedTransaction::from(
-            Transaction::new_signed_with_payer(
+        let txs = vec![VersionedTransaction::try_new(
+            VersionedMessage::V0(v0::Message::try_compile(
+                &self.keypair.pubkey(),
                 &ixs,
-                Some(&self.keypair.pubkey()),
-                &[&self.keypair],
+                &self.lookup_tables,
                 blockhash,
-            ),
-        )];
+            )?),
+            &[&self.keypair],
+        )?];
 
         if let Err(err) = send_bundle_with_confirmation(
             &txs,

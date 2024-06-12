@@ -149,7 +149,6 @@ impl TokenAccountManager {
                 .par_iter()
                 .chunks(MAX_INIT_TA_IXS)
                 .try_for_each(|chunk| {
-                    let recent_blockhash = recent_blockhash.clone();
                     let rpc = rpc_client.clone();
 
                     let ixs = chunk.iter().map(|ix| (*ix).clone()).collect::<Vec<_>>();
@@ -198,8 +197,8 @@ fn get_keypair_for_token_account(
     seed: &[u8],
 ) -> Result<Keypair, TokenAccountManagerError> {
     let keypair_seed = get_liquidator_seed(signer, mint, seed);
-    Ok(Keypair::from_seed(&keypair_seed)
-        .map_err(|_| TokenAccountManagerError::SetupFailed("Keypair::from_seed failed"))?)
+    Keypair::from_seed(&keypair_seed)
+        .map_err(|_| TokenAccountManagerError::SetupFailed("Keypair::from_seed failed"))
 }
 
 fn get_address_for_token_account(

@@ -14,7 +14,7 @@ use crate::{
 };
 use anyhow::anyhow;
 use crossbeam::channel::Receiver;
-use fixed::{traits::Fixed, types::I80F48};
+use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use jupiter_swap_api_client::{
     quote::QuoteRequest,
@@ -293,9 +293,9 @@ impl Rebalancer {
         let balance = self
             .liquidator_account
             .account_wrapper
-            .get_balance_for_bank(&bank_pk, &bank)?;
+            .get_balance_for_bank(&bank_pk, bank)?;
 
-        if matches!(balance, None) || matches!(balance, Some((_, BalanceSide::Assets))) {
+        if balance.is_none() || matches!(balance, Some((_, BalanceSide::Assets))) {
             return Ok(());
         }
 
@@ -414,7 +414,7 @@ impl Rebalancer {
     fn has_tokens_in_token_accounts(&self) -> bool {
         let has_tokens_in_tas = self.token_accounts.values().any(|account| {
             let bank = self.banks.get(&account.bank_address).unwrap();
-            let value = account.get_value(&bank).unwrap();
+            let value = account.get_value(bank).unwrap();
             value > self.config.token_account_dust_threshold
         });
         has_tokens_in_tas
@@ -433,7 +433,7 @@ impl Rebalancer {
                 let mint = self
                     .banks
                     .get(&balance.bank_pk)
-                    .and_then(|bank| Some(bank.bank.mint))
+                    .map(|bank| bank.bank.mint)
                     .unwrap();
 
                 matches!(balance.get_side(), Some(BalanceSide::Assets))
@@ -454,7 +454,7 @@ impl Rebalancer {
             .values()
             .map(|account| {
                 let bank = self.banks.get(&account.bank_address).unwrap();
-                let value = account.get_value(&bank).unwrap();
+                let value = account.get_value(bank).unwrap();
                 (
                     value,
                     account.get_amount(),
@@ -465,7 +465,7 @@ impl Rebalancer {
             .collect();
 
         // Step 2: Iterate over the collected data
-        for (value, amount, bank_address, mint) in accounts_data {
+        for (value, amount, bank_address, _) in accounts_data {
             if value > self.config.token_account_dust_threshold {
                 self.swap(
                     amount.to_num(),
@@ -552,7 +552,7 @@ impl Rebalancer {
                     compute_unit_price_micro_lamports: self
                         .config
                         .compute_unit_price_micro_lamports
-                        .map(|v| ComputeUnitPriceMicroLamports::MicroLamports(v)),
+                        .map(ComputeUnitPriceMicroLamports::MicroLamports),
                     ..Default::default()
                 },
             })
@@ -586,7 +586,7 @@ impl Rebalancer {
             Some((balance, BalanceSide::Assets)) => {
                 let value = self.get_value(
                     balance,
-                    &bank_pk,
+                    bank_pk,
                     RequirementType::Initial,
                     BalanceSide::Assets,
                 )?;
@@ -677,7 +677,7 @@ impl Rebalancer {
         let balance = self
             .token_accounts
             .get(&mint)
-            .and_then(|account| Some(account.get_amount()));
+            .map(|account| account.get_amount());
 
         Ok(balance)
     }

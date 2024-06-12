@@ -73,7 +73,7 @@ impl GeyserService {
                 let traked_accounts_cl = tracked_accounts.clone();
                 let liquidator_sender = liquidator_sender.clone();
                 let rebalancer_sender = rebalancer_sender.clone();
-                let handle = tokio::spawn(async move {
+                tokio::spawn(async move {
                     if let Err(e) = Self::subscribe_and_run(
                         traked_accounts_cl,
                         marginfi_program_id,
