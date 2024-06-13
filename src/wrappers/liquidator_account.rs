@@ -183,7 +183,7 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
 
         let repay_ix = make_repay_ix(
-            self.token_program,
+            self.program_id,
             self.group,
             marginfi_account,
             signer_pk,
@@ -204,7 +204,7 @@ impl LiquidatorAccount {
         )
         .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
 
-        info!("Withdraw successful, tx signature: {:?}", sig);
+        info!("Repay successful, tx signature: {:?}", sig);
         Ok(())
     }
 

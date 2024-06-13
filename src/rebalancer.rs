@@ -12,6 +12,7 @@ use crate::{
         marginfi_account::MarginfiAccountWrapper, token_account::TokenAccountWrapper,
     },
 };
+use anchor_spl::token;
 use anyhow::anyhow;
 use crossbeam::channel::Receiver;
 use fixed::types::I80F48;
@@ -290,6 +291,8 @@ impl Rebalancer {
     async fn repay_liability(&mut self, bank_pk: Pubkey) -> anyhow::Result<()> {
         let bank = self.banks.get(&bank_pk).unwrap();
 
+        // Get the balance for the liability and check if it's a valide balance
+
         let balance = self
             .liquidator_account
             .account_wrapper
@@ -301,83 +304,91 @@ impl Rebalancer {
 
         let (liab_balance, _) = balance.unwrap();
 
+        // Gets how much tokens of needing repay asset to purchase
+
         let token_balance = self
             .get_token_balance_for_bank(&bank_pk)?
             .unwrap_or_default();
 
         let liab_to_purchase = liab_balance - token_balance;
 
-        if !liab_to_purchase.is_zero() {
-            let liab_usd_value = self.get_value(
-                liab_to_purchase,
-                &bank_pk,
-                RequirementType::Initial,
-                BalanceSide::Liabilities,
-            )?;
+        if liab_to_purchase.is_zero() {
+            return Ok(());
+        }
 
-            let required_swap_token =
-                self.get_amount(liab_usd_value, &self.swap_mint_bank_pk.unwrap(), None)?;
+        let liab_usd_value = self.get_value(
+            liab_to_purchase,
+            &bank_pk,
+            RequirementType::Initial,
+            BalanceSide::Liabilities,
+        )?;
 
-            let swap_token_balance = self
-                .get_token_balance_for_bank(&self.swap_mint_bank_pk.unwrap())?
-                .unwrap_or_default();
+        // Get the amount of USDC needed to repay the liability
 
-            let token_balance_to_withdraw = required_swap_token - swap_token_balance;
+        let required_swap_token =
+            self.get_amount(liab_usd_value, &self.swap_mint_bank_pk.unwrap(), None)?;
 
-            let withdraw_amount = if token_balance_to_withdraw.is_positive() {
-                let (max_withdraw_amount, withdraw_all) =
-                    self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk.unwrap())?;
+        let swap_token_balance = self
+            .get_token_balance_for_bank(&self.swap_mint_bank_pk.unwrap())?
+            .unwrap_or_default();
 
-                let withdraw_amount = min(max_withdraw_amount, token_balance_to_withdraw);
+        let token_balance_to_withdraw = required_swap_token - swap_token_balance;
 
-                self.liquidator_account.withdraw(
-                    bank,
-                    self.token_account_manager
-                        .get_address_for_mint(bank.bank.mint)
-                        .unwrap(),
-                    withdraw_amount.to_num(),
-                    Some(withdraw_all),
-                    self.general_config.get_tx_config(),
-                    &self.banks,
-                )?;
+        let withdraw_amount = if token_balance_to_withdraw.is_positive() {
+            let (max_withdraw_amount, withdraw_all) =
+                self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk.unwrap())?;
 
-                withdraw_amount
-            } else {
-                I80F48::ZERO
-            };
+            let withdraw_amount = min(max_withdraw_amount, token_balance_to_withdraw);
 
-            let amount_to_swap = min(liab_balance + withdraw_amount, required_swap_token);
+            let bank = self.banks.get(&self.swap_mint_bank_pk.unwrap()).unwrap();
 
-            if amount_to_swap.is_positive() {
-                self.swap(
-                    amount_to_swap.to_num(),
-                    &self.swap_mint_bank_pk.unwrap(),
-                    &bank_pk,
-                )
-                .await?;
-
-                self.refresh_token_account(&bank_pk).await?;
-            }
-
-            let token_balance = self
-                .get_token_balance_for_bank(&bank_pk)?
-                .unwrap_or_default();
-
-            let repay_all = token_balance >= liab_balance;
-
-            let bank = self.banks.get(&bank_pk).unwrap();
-
-            self.liquidator_account.repay(
+            self.liquidator_account.withdraw(
                 bank,
-                &self
-                    .token_account_manager
+                self.token_account_manager
                     .get_address_for_mint(bank.bank.mint)
                     .unwrap(),
-                token_balance.to_num(),
-                Some(repay_all),
+                withdraw_amount.to_num(),
+                Some(withdraw_all),
                 self.general_config.get_tx_config(),
+                &self.banks,
             )?;
+
+            withdraw_amount
+        } else {
+            I80F48::ZERO
+        };
+
+        let amount_to_swap = min(liab_balance + withdraw_amount, required_swap_token);
+
+        if amount_to_swap.is_positive() {
+            self.swap(
+                amount_to_swap.to_num(),
+                &self.swap_mint_bank_pk.unwrap(),
+                &bank_pk,
+            )
+            .await?;
+
+            self.refresh_token_account(&bank_pk).await?;
         }
+
+        let token_balance = self
+            .get_token_balance_for_bank(&bank_pk)?
+            .unwrap_or_default();
+
+        let repay_all = token_balance >= liab_balance;
+
+        let bank = self.banks.get(&bank_pk).unwrap();
+
+        self.liquidator_account.repay(
+            bank,
+            &self
+                .token_account_manager
+                .get_address_for_mint(bank.bank.mint)
+                .unwrap(),
+            token_balance.to_num(),
+            Some(repay_all),
+            self.general_config.get_tx_config(),
+        )?;
 
         Ok(())
     }
@@ -581,7 +592,6 @@ impl Rebalancer {
             .liquidator_account
             .account_wrapper
             .get_balance_for_bank(bank_pk, self.banks.get(bank_pk).unwrap())?;
-
         Ok(match balance {
             Some((balance, BalanceSide::Assets)) => {
                 let value = self.get_value(
@@ -591,7 +601,11 @@ impl Rebalancer {
                     BalanceSide::Assets,
                 )?;
 
-                (I80F48!(0), value <= free_collateral)
+                let max_withdraw = value.min(free_collateral);
+
+                let amount = self.get_amount(max_withdraw, bank_pk, Some(PriceBias::Low))?;
+
+                (amount, value <= free_collateral)
             }
             _ => (I80F48!(0), false),
         })
