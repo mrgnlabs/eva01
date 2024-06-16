@@ -8,7 +8,6 @@ use crate::{
 };
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use rayon::vec;
 use solana_sdk::{pubkey, pubkey::Pubkey};
 use std::{
     error::Error,

@@ -12,7 +12,6 @@ use crate::{
         marginfi_account::MarginfiAccountWrapper, token_account::TokenAccountWrapper,
     },
 };
-use anchor_spl::token;
 use anyhow::anyhow;
 use crossbeam::channel::Receiver;
 use fixed::types::I80F48;
@@ -463,15 +462,18 @@ impl Rebalancer {
         let accounts_data: Vec<(I80F48, I80F48, Pubkey, Pubkey)> = self
             .token_accounts
             .values()
-            .map(|account| {
+            .filter_map(|account| {
+                if account.mint == self.config.swap_mint {
+                    return None;
+                }
                 let bank = self.banks.get(&account.bank_address).unwrap();
                 let value = account.get_value(bank).unwrap();
-                (
+                Some((
                     value,
                     account.get_amount(),
                     account.bank_address,
                     account.mint,
-                )
+                ))
             })
             .collect();
 

@@ -1,12 +1,8 @@
-use jito_protos::{
-    block,
-    searcher::{
-        searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
-        NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
-    },
+use jito_protos::searcher::{
+    searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
+    NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
 };
 
-use futures::stream::{FuturesUnordered, StreamExt};
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
 use log::error;
 use solana_address_lookup_table_program::state::AddressLookupTable;
@@ -19,9 +15,9 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signer},
     system_instruction::transfer,
-    transaction::{Transaction, VersionedTransaction},
+    transaction::VersionedTransaction,
 };
-use std::{ops::Add, str::FromStr};
+use std::str::FromStr;
 use tokio::time::sleep;
 use tonic::transport::Channel;
 
@@ -42,13 +38,12 @@ impl JitoClient {
             .await
             .expect("Failed to create a searcher client");
 
-        
         let mut lookup_tables = vec![];
         for table_address in &config.address_lookup_tables {
-            let raw_account = rpc.get_account(&table_address).await?;
+            let raw_account = rpc.get_account(table_address).await?;
             let address_lookup_table = AddressLookupTable::deserialize(&raw_account.data)?;
             let lookup_table = AddressLookupTableAccount {
-                key: table_address.clone(),
+                key: *table_address,
                 addresses: address_lookup_table.addresses.to_vec(),
             };
             lookup_tables.push(lookup_table);

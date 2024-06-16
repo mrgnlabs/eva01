@@ -111,7 +111,7 @@ impl TransactionSender {
             ixs.push(compute_budget_price_ix);
         }
 
-        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_limit(300000);
+        let compute_budget_price_ix = ComputeBudgetInstruction::set_compute_unit_limit(500000);
         ixs.push(compute_budget_price_ix);
 
         let tx = Transaction::new_signed_with_payer(
