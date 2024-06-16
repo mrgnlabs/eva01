@@ -35,15 +35,6 @@ use std::{cmp::min, collections::HashMap, sync::Arc};
 /// Bank group private key offset
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
 
-/// Responsible for liquidating accounts on Marginfi
-///
-/// TODO: Fix possible issue with update order, as
-/// liquidator and messages updates are running in single thread
-///
-///
-/// TODO: On this version our target is to evaluate only
-/// the accounts that we need, minimizing the
-/// time for that task and to liquidate.
 pub struct Liquidator {
     liquidator_account: LiquidatorAccount,
     general_config: GeneralConfig,
@@ -213,8 +204,8 @@ impl Liquidator {
                 let liab_bank = self.banks.get(&liab_bank_pk).unwrap();
                 let asset_bank = self.banks.get(&asset_bank_pk).unwrap();
 
-                let liquidation_asset_amount_capacity = liab_bank
-                    .calc_value(
+                let liquidation_asset_amount_capacity = asset_bank
+                    .calc_amount(
                         max_liab_coverage_amount,
                         BalanceSide::Liabilities,
                         RequirementType::Initial,
@@ -226,15 +217,13 @@ impl Liquidator {
 
                 let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.98);
 
-                let prepared = PreparedLiquidatableAccount {
+                Some(PreparedLiquidatableAccount {
                     liquidate_account: account.clone(),
                     asset_bank: asset_bank.clone(),
                     liab_bank: liab_bank.clone(),
                     asset_amount: slippage_adjusted_asset_amount.to_num(),
                     banks: self.banks.clone(),
-                };
-
-                Some(prepared)
+                })
             })
             .collect::<Vec<_>>();
 
@@ -243,6 +232,7 @@ impl Liquidator {
 
     fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> anyhow::Result<I80F48> {
         let free_collateral = self.get_free_collateral()?;
+
         let bank = self.banks.get(bank_pk).unwrap();
 
         let (asset_amount, _) =
