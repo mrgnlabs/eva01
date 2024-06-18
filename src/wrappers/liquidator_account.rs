@@ -108,7 +108,7 @@ impl LiquidatorAccount {
 
         self.transaction_sender
             .send_jito_ix(liquidate_ix, Some(send_cfg))
-            .await;
+            .await?;
 
         Ok(())
     }

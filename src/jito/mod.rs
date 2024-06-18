@@ -111,7 +111,8 @@ impl JitoClient {
         .await
         {
             error!("Failed to send bundle: {:?}", err);
-        };
+            anyhow::anyhow!("Failed to send bundle: {:?}", err);
+        }
 
         Ok(())
     }

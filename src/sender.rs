@@ -85,8 +85,7 @@ impl TransactionSender {
 
         ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(300_000));
 
-        let _ = self.jito_client.send_transaction(ixs, 10000).await;
-        Ok(())
+        self.jito_client.send_transaction(ixs, 30000).await
     }
 
     pub fn send_ix(

@@ -117,7 +117,7 @@ impl Liquidator {
     /// Liquidator starts, receiving messages and process them,
     /// a "timeout" is awaiting for accounts to be evaluated
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(1);
+        let max_duration = std::time::Duration::from_secs(5);
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.receiver.recv() {
@@ -155,7 +155,8 @@ impl Liquidator {
                 if start.elapsed() > max_duration {
                     if let Ok(accounts) = self.process_all_accounts() {
                         for account in accounts {
-                            self.liquidator_account
+                            if let Err(e) = self
+                                .liquidator_account
                                 .liquidate(
                                     &account.liquidate_account,
                                     &account.asset_bank,
@@ -164,7 +165,13 @@ impl Liquidator {
                                     self.general_config.get_tx_config(),
                                     &account.banks,
                                 )
-                                .await;
+                                .await
+                            {
+                                info!(
+                                    "Failed to liquidate account {:?}, error: {:?}",
+                                    account.liquidate_account.address, e
+                                );
+                            }
                         }
                     }
                     break;
@@ -207,7 +214,7 @@ impl Liquidator {
                 let liquidation_asset_amount_capacity = asset_bank
                     .calc_amount(
                         max_liab_coverage_amount,
-                        BalanceSide::Liabilities,
+                        BalanceSide::Assets,
                         RequirementType::Initial,
                     )
                     .unwrap();
