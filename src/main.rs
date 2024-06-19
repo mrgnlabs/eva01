@@ -31,8 +31,8 @@ mod cli;
 /// Configuration strectures for Eva01
 mod config;
 
-// Jipo client implementation
-mod jito;
+/// Transaction related structures
+mod transactions;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

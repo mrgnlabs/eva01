@@ -4,16 +4,17 @@ use jito_protos::searcher::{
 };
 
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
-use log::error;
+use log::{error, info};
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     address_lookup_table_account::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
+    config,
     instruction::Instruction,
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
-    signature::{Keypair, Signer},
+    signature::{read_keypair_file, Keypair, Signer},
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
@@ -66,8 +67,7 @@ impl JitoClient {
         let mut bundle_results_subscription = self
             .searcher_client
             .subscribe_bundle_results(SubscribeBundleResultsRequest {})
-            .await
-            .expect("subscribe to bundle results")
+            .await?
             .into_inner();
 
         let blockhash = self.rpc.get_latest_blockhash().await?;
@@ -77,8 +77,7 @@ impl JitoClient {
             let next_leader = self
                 .searcher_client
                 .get_next_scheduled_leader(NextScheduledLeaderRequest {})
-                .await
-                .expect("Failed to get next scheduled leader")
+                .await?
                 .into_inner();
 
             let num_slots = next_leader.next_leader_slot - next_leader.current_slot;

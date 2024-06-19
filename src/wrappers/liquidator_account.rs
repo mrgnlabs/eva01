@@ -14,6 +14,7 @@ use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     signature::{read_keypair_file, Keypair},
     signer::Signer,
+    transaction,
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -26,6 +27,7 @@ pub struct LiquidatorAccount {
     token_program: Pubkey,
     group: Pubkey,
     transaction_sender: TransactionSender,
+    transaction_manager: TransactionManager,
 }
 
 impl LiquidatorAccount {
@@ -42,6 +44,11 @@ impl LiquidatorAccount {
 
         let account_wrapper = MarginfiAccountWrapper::new(liquidator_pubkey, *marginfi_account);
 
+        let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<BatchTransactions>();
+
+        let transaction_manager =
+            TransactionManager::new(transaction_rx, config.general_config.clone()).await;
+
         let program_id = marginfi::id();
         let token_program = spl_token::id();
         let group = account_wrapper.account.group;
@@ -53,6 +60,7 @@ impl LiquidatorAccount {
             token_program,
             group,
             transaction_sender: TransactionSender::new(config).await?,
+            transaction_manager,
         })
     }
 

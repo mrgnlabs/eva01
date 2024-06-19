@@ -1,4 +1,6 @@
-use crate::{config::GeneralConfig, jito::JitoClient, wrappers::marginfi_account::TxConfig};
+use crate::{
+    config::GeneralConfig, transactions::jito::JitoClient, wrappers::marginfi_account::TxConfig,
+};
 use log::{error, info};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
