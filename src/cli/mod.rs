@@ -20,7 +20,7 @@ pub async fn main_entry() -> anyhow::Result<()> {
             entrypoints::run_liquidator(config).await?;
         }
         app::Commands::Setup => {
-            let _ = entrypoints::wizard_setup().await;
+            entrypoints::wizard_setup().await?;
         }
     }
 

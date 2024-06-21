@@ -4,7 +4,6 @@ use std::{
 };
 
 use crate::{config::GeneralConfig, sender::TransactionSender};
-use anyhow::Ok;
 use crossbeam::channel::Receiver;
 use futures::{
     stream::{iter, FuturesUnordered, StreamExt},
@@ -13,12 +12,13 @@ use futures::{
 use jito_protos::{
     bundle,
     searcher::{
-        searcher_service_client::SearcherServiceClient, NextScheduledLeaderRequest,
-        SubscribeBundleResultsRequest,
+        searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
+        NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
     },
 };
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
 use log::{error, info};
+use rayon::vec;
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -41,13 +41,16 @@ const LEADERSHIP_THRESHOLD: u64 = 2;
 const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Manages transactions for the liquidator and rebalancer
-struct TransactionManager {
+pub struct TransactionManager {
     rx: Receiver<BatchTransactions>,
-    transaction_sender: TransactionSender,
     keypair: Keypair,
     rpc: RpcClient,
+    /// The searcher client for the jito block engine
     searcher_client: SearcherServiceClient<Channel>,
+    /// Atomic boolean to check if the current node is the jito leader
     is_jito_leader: AtomicBool,
+    /// The tip accounts of the jito block engine
+    tip_accounts: Vec<String>,
     lookup_tables: Vec<AddressLookupTableAccount>,
 }
 
@@ -59,7 +62,7 @@ pub type BatchTransactions = Vec<Vec<Instruction>>;
 
 impl TransactionManager {
     /// Creates a new transaction manager
-    async fn new(rx: Receiver<BatchTransactions>, config: GeneralConfig) -> Self {
+    pub async fn new(rx: Receiver<BatchTransactions>, config: GeneralConfig) -> Self {
         let keypair = read_keypair_file(&config.keypair_path).unwrap();
         let searcher_client = get_searcher_client_no_auth(&config.block_engine_url)
             .await
@@ -82,18 +85,28 @@ impl TransactionManager {
 
         Self {
             rx,
-            transaction_sender: TransactionSender::new(config.clone()).await.unwrap(),
             keypair,
             rpc,
             searcher_client,
             is_jito_leader: AtomicBool::new(false),
+            tip_accounts: vec![],
             lookup_tables,
         }
     }
 
     /// Starts the transaction manager
-    async fn start(&mut self) {
+    pub async fn start(&mut self) {
+        // Load all tip accounts
+        self.tip_accounts = self.get_tip_accounts().await.unwrap();
+
+        //let handle = tokio::task::spawn(async move {
+        //    if let Err(e) = self.listen_for_leader().await {
+        //        error!("Failed to listen for the next leader: {:?}", e);
+        //    }
+        //});
+
         for mut instructions in self.rx.iter() {
+            info!("Received instructions: {:?}", instructions);
             while !self.is_jito_leader.load(Ordering::Relaxed) {
                 sleep(std::time::Duration::from_millis(500));
             }
@@ -109,7 +122,7 @@ impl TransactionManager {
 
             while let Some(result) = transaction_futures.next().await {
                 if let Err(e) = result {
-                    error!("Failed to send transaction: {:?}", e);
+                    error!("Failed to send bundle: {:?}", e);
                 }
             }
         }
@@ -184,5 +197,15 @@ impl TransactionManager {
                 .store(num_slots <= LEADERSHIP_THRESHOLD, Ordering::Relaxed);
         }
         Ok(())
+    }
+
+    async fn get_tip_accounts(&mut self) -> anyhow::Result<Vec<String>> {
+        let tip_accounts = self
+            .searcher_client
+            .get_tip_accounts(GetTipAccountsRequest {})
+            .await?
+            .into_inner();
+
+        Ok(tip_accounts.accounts)
     }
 }

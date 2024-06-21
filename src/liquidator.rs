@@ -1,6 +1,7 @@
 use crate::{
     config::{GeneralConfig, LiquidatorCfg},
     geyser::{AccountType, GeyserUpdate},
+    transaction_manager::BatchTransactions,
     utils::{batch_get_multiple_accounts, BankAccountWithPriceFeedEva, BatchLoadingConfig},
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
@@ -9,7 +10,7 @@ use crate::{
 };
 use anchor_client::Program;
 use anchor_lang::Discriminator;
-use crossbeam::channel::Receiver;
+use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{debug, info};
@@ -29,7 +30,7 @@ use solana_client::{
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{account_info::IntoAccountInfo, bs58, signature::Keypair};
+use solana_sdk::{account_info::IntoAccountInfo, bs58, signature::Keypair, transaction};
 use std::{cmp::min, collections::HashMap, sync::Arc};
 
 /// Bank group private key offset
@@ -39,7 +40,8 @@ pub struct Liquidator {
     liquidator_account: LiquidatorAccount,
     general_config: GeneralConfig,
     config: LiquidatorCfg,
-    receiver: Receiver<GeyserUpdate>,
+    geyser_receiver: Receiver<GeyserUpdate>,
+    transaction_sender: Sender<BatchTransactions>,
     marginfi_accounts: HashMap<Pubkey, MarginfiAccountWrapper>,
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
@@ -85,11 +87,13 @@ impl Liquidator {
     pub async fn new(
         general_config: GeneralConfig,
         liquidator_config: LiquidatorCfg,
-        receiver: Receiver<GeyserUpdate>,
+        geyser_receiver: Receiver<GeyserUpdate>,
+        transaction_sender: Sender<BatchTransactions>,
     ) -> Liquidator {
         let liquidator_account = LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
             general_config.liquidator_account,
+            transaction_sender.clone(),
             general_config.clone(),
         )
         .await
@@ -98,7 +102,8 @@ impl Liquidator {
         Liquidator {
             general_config,
             config: liquidator_config,
-            receiver,
+            geyser_receiver,
+            transaction_sender,
             marginfi_accounts: HashMap::new(),
             banks: HashMap::new(),
             liquidator_account,
@@ -120,7 +125,7 @@ impl Liquidator {
         let max_duration = std::time::Duration::from_secs(5);
         loop {
             let start = std::time::Instant::now();
-            while let Ok(mut msg) = self.receiver.recv() {
+            while let Ok(mut msg) = self.geyser_receiver.recv() {
                 match msg.account_type {
                     AccountType::OracleAccount => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {

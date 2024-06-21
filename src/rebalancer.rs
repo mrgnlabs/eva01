@@ -3,6 +3,7 @@ use crate::{
     geyser::{AccountType, GeyserUpdate},
     sender::{SenderCfg, TransactionSender},
     token_account_manager::TokenAccountManager,
+    transaction_manager::BatchTransactions,
     utils::{
         accessor, batch_get_multiple_accounts, calc_weighted_assets_new, calc_weighted_liabs_new,
         BankAccountWithPriceFeedEva,
@@ -13,7 +14,7 @@ use crate::{
     },
 };
 use anyhow::anyhow;
-use crossbeam::channel::Receiver;
+use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use jupiter_swap_api_client::{
@@ -33,8 +34,10 @@ use marginfi::{
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
-    account_info::IntoAccountInfo, commitment_config::CommitmentConfig,
-    signature::read_keypair_file, transaction::VersionedTransaction,
+    account_info::IntoAccountInfo,
+    commitment_config::CommitmentConfig,
+    signature::read_keypair_file,
+    transaction::{self, VersionedTransaction},
 };
 use std::{
     cmp::min,
@@ -56,14 +59,15 @@ pub struct Rebalancer {
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
     preferred_mints: HashSet<Pubkey>,
     swap_mint_bank_pk: Option<Pubkey>,
-    receiver: Receiver<GeyserUpdate>,
+    geyser_receiver: Receiver<GeyserUpdate>,
 }
 
 impl Rebalancer {
     pub async fn new(
         general_config: GeneralConfig,
         config: RebalancerCfg,
-        receiver: Receiver<GeyserUpdate>,
+        transaction_tx: Sender<BatchTransactions>,
+        geyser_receiver: Receiver<GeyserUpdate>,
     ) -> anyhow::Result<Self> {
         let rpc_client = Arc::new(RpcClient::new(general_config.rpc_url.clone()));
         let token_account_manager = TokenAccountManager::new(rpc_client.clone())?;
@@ -71,6 +75,7 @@ impl Rebalancer {
         let liquidator_account = LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
             general_config.liquidator_account,
+            transaction_tx.clone(),
             general_config.clone(),
         )
         .await
@@ -90,7 +95,7 @@ impl Rebalancer {
             oracle_to_bank: HashMap::new(),
             preferred_mints,
             swap_mint_bank_pk: None,
-            receiver,
+            geyser_receiver,
         })
     }
 
@@ -169,7 +174,7 @@ impl Rebalancer {
         let max_duration = std::time::Duration::from_secs(15);
         loop {
             let start = std::time::Instant::now();
-            while let Ok(mut msg) = self.receiver.recv() {
+            while let Ok(mut msg) = self.geyser_receiver.recv() {
                 match msg.account_type {
                     AccountType::OracleAccount => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {

@@ -6,7 +6,9 @@ use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
     sender::{SenderCfg, TransactionSender},
+    transaction_manager::{BatchTransactions, TransactionManager},
 };
+use crossbeam::channel::Sender;
 use log::info;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
 use solana_client::rpc_client::RpcClient;
@@ -26,14 +28,14 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     token_program: Pubkey,
     group: Pubkey,
-    transaction_sender: TransactionSender,
-    transaction_manager: TransactionManager,
+    transaction_tx: Sender<BatchTransactions>,
 }
 
 impl LiquidatorAccount {
     pub async fn new(
         rpc_client: RpcClient,
         liquidator_pubkey: Pubkey,
+        transaction_tx: Sender<BatchTransactions>,
         config: GeneralConfig,
     ) -> anyhow::Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
@@ -43,11 +45,6 @@ impl LiquidatorAccount {
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
 
         let account_wrapper = MarginfiAccountWrapper::new(liquidator_pubkey, *marginfi_account);
-
-        let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<BatchTransactions>();
-
-        let transaction_manager =
-            TransactionManager::new(transaction_rx, config.general_config.clone()).await;
 
         let program_id = marginfi::id();
         let token_program = spl_token::id();
@@ -59,8 +56,7 @@ impl LiquidatorAccount {
             program_id,
             token_program,
             group,
-            transaction_sender: TransactionSender::new(config).await?,
-            transaction_manager,
+            transaction_tx,
         })
     }
 
@@ -114,9 +110,8 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
-        self.transaction_sender
-            .send_jito_ix(liquidate_ix, Some(send_cfg))
-            .await?;
+        // Double vec implies that is a single bundle
+        self.transaction_tx.send(vec![vec![liquidate_ix]])?;
 
         Ok(())
     }
@@ -164,16 +159,8 @@ impl LiquidatorAccount {
             withdraw_all,
         );
 
-        let sig = TransactionSender::send_ix(
-            self.rpc_client.clone(),
-            withdraw_ix,
-            self.signer_keypair.clone(),
-            Some(send_cfg),
-            SenderCfg::DEFAULT,
-        )
-        .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
-
-        info!("Withdraw successful, tx signature: {:?}", sig);
+        // Double vec implies that is a single bundle
+        self.transaction_tx.send(vec![vec![withdraw_ix]])?;
 
         Ok(())
     }
@@ -203,16 +190,9 @@ impl LiquidatorAccount {
             repay_all,
         );
 
-        let sig = TransactionSender::send_ix(
-            self.rpc_client.clone(),
-            repay_ix,
-            self.signer_keypair.clone(),
-            Some(send_cfg),
-            SenderCfg::DEFAULT,
-        )
-        .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
+        // Double vec implies that is a single bundle
+        self.transaction_tx.send(vec![vec![repay_ix]])?;
 
-        info!("Repay successful, tx signature: {:?}", sig);
         Ok(())
     }
 
@@ -239,16 +219,8 @@ impl LiquidatorAccount {
             amount,
         );
 
-        let sig = TransactionSender::send_ix(
-            self.rpc_client.clone(),
-            deposit_ix,
-            self.signer_keypair.clone(),
-            Some(send_cfg),
-            SenderCfg::DEFAULT,
-        )
-        .map_err(|e| anyhow::anyhow!("Coulnd't send the transaction {:?}", e))?;
-
-        info!("Deposit successful, tx signature: {:?}", sig);
+        // Double vec implies that is a single bundle
+        self.transaction_tx.send(vec![vec![deposit_ix]])?;
 
         Ok(())
     }

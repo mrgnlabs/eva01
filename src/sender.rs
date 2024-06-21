@@ -1,5 +1,5 @@
 use crate::{
-    config::GeneralConfig, transactions::jito::JitoClient, wrappers::marginfi_account::TxConfig,
+    config::GeneralConfig, wrappers::marginfi_account::TxConfig,
 };
 use log::{error, info};
 use serde::Deserialize;
@@ -60,9 +60,7 @@ impl SenderCfg {
     }
 }
 
-pub struct TransactionSender {
-    jito_client: JitoClient,
-}
+pub struct TransactionSender;
 
 #[derive(Debug, Deserialize)]
 pub enum TransactionType {
@@ -71,25 +69,6 @@ pub enum TransactionType {
 }
 
 impl TransactionSender {
-    pub async fn new(config: GeneralConfig) -> anyhow::Result<Self> {
-        let signer = read_keypair_file(&config.keypair_path).unwrap();
-        let mut jito_client = JitoClient::new(config, signer).await?;
-        let _ = jito_client.get_tip_accounts().await;
-        Ok(TransactionSender { jito_client })
-    }
-
-    pub async fn send_jito_ix(
-        &mut self,
-        ix: Instruction,
-        _tx_config: Option<TxConfig>,
-    ) -> anyhow::Result<()> {
-        let mut ixs = vec![ix];
-
-        ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(300_000));
-
-        self.jito_client.send_transaction(ixs, 30000).await
-    }
-
     pub fn send_ix(
         rpc_client: Arc<RpcClient>,
         ix: Instruction,

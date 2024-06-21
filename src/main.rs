@@ -31,8 +31,8 @@ mod cli;
 /// Configuration strectures for Eva01
 mod config;
 
-/// Transaction related structures
-mod transactions;
+/// Transactio manager
+mod transaction_manager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
