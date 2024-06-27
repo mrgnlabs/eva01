@@ -7,6 +7,7 @@ use crate::{
 };
 use log::info;
 use std::collections::HashMap;
+use yellowstone_grpc_client::GeyserGrpcClient;
 
 pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     info!("Starting eva01 liquidator!");
@@ -54,21 +55,19 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         accounts_to_track.insert(key, value);
     }
 
-    let geyser_handle = GeyserService::connect(
-        config.general_config.get_geyser_service_config(),
-        accounts_to_track,
-        config.general_config.marginfi_program_id,
-        liquidator_tx,
-        rebalancer_tx,
-    )
-    .await?;
-
     tokio::task::spawn(async move {
-        let _ = transaction_manager.start().await;
+        GeyserService::connect(
+            config.general_config.get_geyser_service_config(),
+            accounts_to_track,
+            config.general_config.marginfi_program_id,
+            liquidator_tx,
+            rebalancer_tx,
+        )
+        .await;
     });
 
     tokio::task::spawn(async move {
-        let _ = geyser_handle.await;
+        let _ = transaction_manager.start().await;
     });
 
     tokio::task::spawn(async move {

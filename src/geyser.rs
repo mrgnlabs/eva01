@@ -2,13 +2,11 @@ use crate::utils::account_update_to_account;
 use crossbeam::channel::Sender;
 use futures::channel::mpsc::SendError;
 use futures::{SinkExt, StreamExt};
-use log::{debug, error, info};
+use log::{error, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use std::{collections::HashMap, mem::size_of};
-use tokio::task::JoinHandle;
-use tonic::service::Interceptor;
 use yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError};
 use yellowstone_grpc_proto::prelude::*;
 
@@ -53,85 +51,24 @@ impl GeyserService {
         marginfi_program_id: Pubkey,
         liquidator_sender: Sender<GeyserUpdate>,
         rebalancer_sender: Sender<GeyserUpdate>,
-    ) -> anyhow::Result<JoinHandle<()>> {
-        let handle = tokio::spawn(async move {
-            let endpoint = config.endpoint.clone();
-            let x_token = config.x_token.clone();
-            loop {
-                info!("Connecting to the geyser client");
-                let geyser_client = match yellowstone_grpc_client::GeyserGrpcClient::connect(
-                    endpoint.clone(),
-                    x_token.clone(),
-                    None,
-                ) {
-                    Ok(client) => client,
-                    Err(e) => {
-                        error!("Error connecting to the geyser client: {:?}", e);
-                        continue;
-                    }
-                };
-                let traked_accounts_cl = tracked_accounts.clone();
-                let liquidator_sender = liquidator_sender.clone();
-                let rebalancer_sender = rebalancer_sender.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = Self::subscribe_and_run(
-                        traked_accounts_cl,
-                        marginfi_program_id,
-                        geyser_client,
-                        liquidator_sender,
-                        rebalancer_sender,
-                    )
-                    .await
-                    {
-                        error!("Geyser service stopped: {:?}", e);
-                    }
-                })
-                .await;
-            }
-        });
-        Ok(handle)
-    }
-
-    #[allow(clippy::all)]
-    async fn subscribe_and_run(
-        tracked_accounts: HashMap<Pubkey, AccountType>,
-        marginfi_program_id: Pubkey,
-        mut geyser_client: GeyserGrpcClient<impl Interceptor + 'static>,
-        liquidator_sender: Sender<GeyserUpdate>,
-        rebalancer_sender: Sender<GeyserUpdate>,
     ) -> anyhow::Result<()> {
+        info!("Connecting to geyser");
+
+        let mut client = GeyserGrpcClient::build_from_shared(config.endpoint)?
+            .x_token(config.x_token)?
+            .connect()
+            .await?;
+
+        info!("Connected to geyser");
+
         let tracked_accounts_vec: Vec<Pubkey> = tracked_accounts.keys().cloned().collect();
+
         let sub_req =
             Self::build_geyser_subscribe_request(&tracked_accounts_vec, &marginfi_program_id);
 
-        let (mut subscribe_tx, mut subscribe_rx) = geyser_client.subscribe().await?;
+        let (subscribe_tx, mut stream) = client.subscribe_with_request(Some(sub_req)).await?;
 
-        subscribe_tx.send(sub_req.clone()).await.map_err(|e| {
-            error!("Error sending message to geyser client: {:?}", e);
-            GeyserServiceError::GenericError
-        })?;
-
-        // Stars a thread to handle ping's to the geyser protocol to
-        // prevent disconnection
-        let ping_service_handle = tokio::task::spawn(async move {
-            let mut ping_id = 1;
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-
-                if let Err(e) = subscribe_tx
-                    .send(SubscribeRequest {
-                        ping: Some(SubscribeRequestPing { id: ping_id }),
-                        ..Default::default()
-                    })
-                    .await
-                {
-                    error!("Error sending message to geyser: {:?}", e);
-                    break;
-                }
-                ping_id += 1;
-            }
-        });
-        while let Some(msg) = subscribe_rx.next().await {
+        while let Some(msg) = stream.next().await {
             match msg {
                 Ok(msg) => {
                     if let Some(update_oneof) = msg.update_oneof {
@@ -205,10 +142,6 @@ impl GeyserService {
                 }
             }
         }
-        let _ = ping_service_handle.await;
-
-        error!("Geyser subscription ended!");
-
         Ok(())
     }
 
@@ -242,8 +175,6 @@ impl GeyserService {
         );
 
         request.accounts = req;
-
-        debug!("Sending SubscribeRequest: {:#?}", request);
 
         request
     }

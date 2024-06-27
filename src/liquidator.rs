@@ -30,7 +30,7 @@ use solana_client::{
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{account_info::IntoAccountInfo, bs58, signature::Keypair, transaction};
+use solana_sdk::{account_info::IntoAccountInfo, bs58, signature::Keypair};
 use std::{cmp::min, collections::HashMap, sync::Arc};
 
 /// Bank group private key offset
@@ -160,6 +160,10 @@ impl Liquidator {
                 if start.elapsed() > max_duration {
                     if let Ok(accounts) = self.process_all_accounts() {
                         for account in accounts {
+                            info!(
+                                "Liquidating account {:?}",
+                                account.liquidate_account.address
+                            );
                             if let Err(e) = self
                                 .liquidator_account
                                 .liquidate(

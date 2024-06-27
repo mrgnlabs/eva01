@@ -1,36 +1,28 @@
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    thread::sleep,
-};
-
-use crate::{config::GeneralConfig, sender::TransactionSender};
+use crate::config::GeneralConfig;
 use crossbeam::channel::Receiver;
-use futures::{
-    stream::{iter, FuturesUnordered, StreamExt},
-    FutureExt,
-};
-use jito_protos::{
-    bundle,
-    searcher::{
-        searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
-        NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
-    },
+use futures::stream::FuturesUnordered;
+use jito_protos::searcher::{
+    searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
+    NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
 };
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
 use log::{error, info};
-use rayon::vec;
 use solana_address_lookup_table_program::state::AddressLookupTable;
-use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::{
+    nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc,
+    rpc_client::SerializableTransaction, rpc_config::RpcSimulateTransactionConfig,
+};
 use solana_sdk::{
     address_lookup_table_account::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
     message::{v0, VersionedMessage},
-    pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair, Signer},
-    transaction::VersionedTransaction,
+    signature::{read_keypair_file, Keypair, Signature, Signer},
+    transaction::{Transaction, VersionedTransaction},
 };
+use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tonic::transport::Channel;
 
 /// The leadership threshold related to the jito block engine
@@ -45,6 +37,7 @@ pub struct TransactionManager {
     rx: Receiver<BatchTransactions>,
     keypair: Keypair,
     rpc: RpcClient,
+    non_block_rpc: NonBlockRpc,
     /// The searcher client for the jito block engine
     searcher_client: SearcherServiceClient<Channel>,
     /// Atomic boolean to check if the current node is the jito leader
@@ -71,6 +64,8 @@ impl TransactionManager {
         let rpc =
             RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
 
+        let non_block_rpc = NonBlockRpc::new(config.rpc_url.clone());
+
         // Loads the Address Lookup Table's accounts
         let mut lookup_tables = vec![];
         for table_address in &config.address_lookup_tables {
@@ -87,6 +82,7 @@ impl TransactionManager {
             rx,
             keypair,
             rpc,
+            non_block_rpc,
             searcher_client,
             is_jito_leader: AtomicBool::new(false),
             tip_accounts: vec![],
@@ -95,35 +91,10 @@ impl TransactionManager {
     }
 
     /// Starts the transaction manager
-    pub async fn start(&mut self) {
-        // Load all tip accounts
-        self.tip_accounts = self.get_tip_accounts().await.unwrap();
-
-        //let handle = tokio::task::spawn(async move {
-        //    if let Err(e) = self.listen_for_leader().await {
-        //        error!("Failed to listen for the next leader: {:?}", e);
-        //    }
-        //});
-
-        for mut instructions in self.rx.iter() {
-            info!("Received instructions: {:?}", instructions);
-            while !self.is_jito_leader.load(Ordering::Relaxed) {
-                sleep(std::time::Duration::from_millis(500));
-            }
-
-            let mut transaction_futures = FuturesUnordered::new();
-
-            for transaction in self.configure_instructions(instructions).await.unwrap() {
-                transaction_futures.push(
-                    self.send_transaction(transaction, self.searcher_client.clone())
-                        .boxed(),
-                );
-            }
-
-            while let Some(result) = transaction_futures.next().await {
-                if let Err(e) = result {
-                    error!("Failed to send bundle: {:?}", e);
-                }
+    pub async fn start(&mut self) { 
+        for instructions in self.rx.iter() {
+            for instructions in instructions {
+                self.send_agressive_tx(instructions);
             }
         }
     }
@@ -152,6 +123,49 @@ impl TransactionManager {
         }
 
         Ok(())
+    }
+
+    /// Implements a alternative solution to jito transactions
+    /// Sends a transaction to the network and waits for confirmation (non-jito)
+    fn send_agressive_tx(
+        &self,
+        mut ixs: Vec<Instruction>,
+    ) -> Result<Signature, Box<dyn Error>> {
+        let recent_blockhash = self.non_block_rpc.get_latest_blockhash()?;
+
+        ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(500_000));
+
+        let transaction = Transaction::new_signed_with_payer(
+            &ixs,
+            Some(&self.keypair.pubkey()),
+            &[&self.keypair],
+            recent_blockhash,
+        );
+
+        let signature = *transaction.get_signature();
+
+        self.non_block_rpc.simulate_transaction_with_config(
+            &transaction,
+            RpcSimulateTransactionConfig {
+                commitment: Some(CommitmentConfig::processed()),
+                ..Default::default()
+            },
+        )?;
+
+        (0..12).try_for_each(|_| {
+            self.non_block_rpc.send_transaction(&transaction)?;
+            Ok::<_, Box<dyn Error>>(())
+        })?;
+
+        let blockhash = transaction.get_recent_blockhash();
+
+        self.non_block_rpc.confirm_transaction_with_spinner(
+            &signature,
+            blockhash,
+            CommitmentConfig::confirmed(),
+        )?;
+
+        Ok(signature)
     }
 
     /// Configures the instructions
@@ -205,6 +219,8 @@ impl TransactionManager {
             .get_tip_accounts(GetTipAccountsRequest {})
             .await?
             .into_inner();
+
+        info!("Received tip accounts: {:?}", tip_accounts.accounts);
 
         Ok(tip_accounts.accounts)
     }
