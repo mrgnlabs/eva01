@@ -159,11 +159,13 @@ impl TransactionManager {
 
         let blockhash = transaction.get_recent_blockhash();
 
-        self.non_block_rpc.confirm_transaction_with_spinner(
+        if let Err(err) = self.non_block_rpc.confirm_transaction_with_spinner(
             &signature,
             blockhash,
             CommitmentConfig::confirmed(),
-        )?;
+        ) {
+            error!("Error confirming transaction: {:?}", err);
+        }
 
         Ok(signature)
     }
