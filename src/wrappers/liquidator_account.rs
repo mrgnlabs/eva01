@@ -1,22 +1,16 @@
-use super::{
-    bank::BankWrapper,
-    marginfi_account::{MarginfiAccountWrapper, TxConfig},
-};
+use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
-    sender::{SenderCfg, TransactionSender},
-    transaction_manager::{BatchTransactions, TransactionManager},
+    transaction_manager::BatchTransactions,
 };
 use crossbeam::channel::Sender;
-use log::info;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     signature::{read_keypair_file, Keypair},
     signer::Signer,
-    transaction,
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -24,7 +18,6 @@ use std::{collections::HashMap, sync::Arc};
 pub struct LiquidatorAccount {
     pub account_wrapper: MarginfiAccountWrapper,
     pub signer_keypair: Arc<Keypair>,
-    rpc_client: Arc<RpcClient>,
     program_id: Pubkey,
     token_program: Pubkey,
     group: Pubkey,
@@ -52,7 +45,6 @@ impl LiquidatorAccount {
         Ok(Self {
             account_wrapper,
             signer_keypair,
-            rpc_client: Arc::new(rpc_client),
             program_id,
             token_program,
             group,
@@ -66,7 +58,6 @@ impl LiquidatorAccount {
         asset_bank: &BankWrapper,
         liab_bank: &BankWrapper,
         asset_amount: u64,
-        send_cfg: TxConfig,
         banks: &HashMap<Pubkey, BankWrapper>,
     ) -> anyhow::Result<()> {
         let liquidator_account_address = self.account_wrapper.address;
@@ -122,7 +113,6 @@ impl LiquidatorAccount {
         token_account: Pubkey,
         amount: u64,
         withdraw_all: Option<bool>,
-        send_cfg: TxConfig,
         banks: &HashMap<Pubkey, BankWrapper>,
     ) -> anyhow::Result<()> {
         let marginfi_account = self.account_wrapper.address;
@@ -171,7 +161,6 @@ impl LiquidatorAccount {
         token_account: &Pubkey,
         amount: u64,
         repay_all: Option<bool>,
-        send_cfg: TxConfig,
     ) -> anyhow::Result<()> {
         let marginfi_account = self.account_wrapper.address;
 
@@ -201,7 +190,6 @@ impl LiquidatorAccount {
         bank: &BankWrapper,
         token_account: Pubkey,
         amount: u64,
-        send_cfg: TxConfig,
     ) -> anyhow::Result<()> {
         let marginfi_account = self.account_wrapper.address;
 

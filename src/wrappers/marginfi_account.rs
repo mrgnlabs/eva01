@@ -34,7 +34,7 @@ impl MarginfiAccountWrapper {
             .balances
             .iter()
             .filter(|b| matches!(b.get_side(), Some(BalanceSide::Liabilities)) && b.active)
-            .filter_map(|b| Some((b.liability_shares.into(), b.bank_pk)))
+            .map(|b| (b.liability_shares.into(), b.bank_pk))
             .collect::<Vec<_>>()
     }
 
@@ -103,7 +103,7 @@ impl MarginfiAccountWrapper {
             .balances
             .iter()
             .filter(|b| matches!(b.get_side(), Some(BalanceSide::Assets)) & b.active)
-            .filter_map(|b| Some((b.asset_shares.into(), b.bank_pk)))
+            .map(|b| (b.asset_shares.into(), b.bank_pk))
             .collect::<Vec<_>>()
     }
 

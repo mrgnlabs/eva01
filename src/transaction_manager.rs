@@ -1,6 +1,5 @@
 use crate::config::GeneralConfig;
 use crossbeam::channel::Receiver;
-use futures::stream::FuturesUnordered;
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
     NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
@@ -33,6 +32,7 @@ const LEADERSHIP_THRESHOLD: u64 = 2;
 const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Manages transactions for the liquidator and rebalancer
+#[allow(dead_code)]
 pub struct TransactionManager {
     rx: Receiver<BatchTransactions>,
     keypair: Keypair,
@@ -94,7 +94,9 @@ impl TransactionManager {
     pub async fn start(&mut self) {
         for instructions in self.rx.iter() {
             for instructions in instructions {
-                self.send_agressive_tx(instructions);
+                if let Err(e) = self.send_agressive_tx(instructions) {
+                    error!("Failed to send transaction: {:?}", e);
+                }
             }
         }
     }
@@ -119,7 +121,7 @@ impl TransactionManager {
         )
         .await
         {
-            return Err(anyhow::anyhow!("Failed to send transaction"));
+            return Err(anyhow::anyhow!("Failed to send transaction: {:?}", e));
         }
 
         Ok(())
@@ -209,7 +211,6 @@ impl TransactionManager {
             self.is_jito_leader
                 .store(num_slots <= LEADERSHIP_THRESHOLD, Ordering::Relaxed);
         }
-        Ok(())
     }
 
     async fn get_tip_accounts(&mut self) -> anyhow::Result<Vec<String>> {

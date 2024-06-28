@@ -1,13 +1,12 @@
 use crate::utils::account_update_to_account;
 use crossbeam::channel::Sender;
-use futures::channel::mpsc::SendError;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use log::{error, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use std::{collections::HashMap, mem::size_of};
-use yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError};
+use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
 
 const MARGIN_ACCOUNT_SIZE: usize = size_of::<MarginfiAccount>() + 8;
@@ -66,7 +65,7 @@ impl GeyserService {
         let sub_req =
             Self::build_geyser_subscribe_request(&tracked_accounts_vec, &marginfi_program_id);
 
-        let (subscribe_tx, mut stream) = client.subscribe_with_request(Some(sub_req)).await?;
+        let (_, mut stream) = client.subscribe_with_request(Some(sub_req)).await?;
 
         while let Some(msg) = stream.next().await {
             match msg {
@@ -78,7 +77,7 @@ impl GeyserService {
                                 {
                                     if let Ok(account) = account_update_to_account(update_account) {
                                         if let Ok(account_owner_pk) =
-                                            Pubkey::try_from(account.owner.clone())
+                                            Pubkey::try_from(account.owner)
                                         {
                                             if account_owner_pk == marginfi_program_id
                                                 && update_account.data.len() == MARGIN_ACCOUNT_SIZE
@@ -178,16 +177,4 @@ impl GeyserService {
 
         request
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum GeyserServiceError {
-    #[error("Generic error")]
-    GenericError,
-    #[error("Geyser client error: {0}")]
-    GeyserServiceError(#[from] GeyserGrpcClientError),
-    #[error("Error parsing account: {0}")]
-    AnyhowError(#[from] anyhow::Error),
-    #[error("Error sending message to geyser: {0}")]
-    SendError(#[from] SendError),
 }

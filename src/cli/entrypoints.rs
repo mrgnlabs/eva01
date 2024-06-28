@@ -5,9 +5,8 @@ use crate::{
     rebalancer::Rebalancer,
     transaction_manager::{BatchTransactions, TransactionManager},
 };
-use log::info;
+use log::{error, info};
 use std::collections::HashMap;
-use yellowstone_grpc_client::GeyserGrpcClient;
 
 pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     info!("Starting eva01 liquidator!");
@@ -56,22 +55,27 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     }
 
     tokio::task::spawn(async move {
-        GeyserService::connect(
+        if let Err(e) = GeyserService::connect(
             config.general_config.get_geyser_service_config(),
             accounts_to_track,
             config.general_config.marginfi_program_id,
             liquidator_tx,
             rebalancer_tx,
         )
-        .await;
+        .await
+        {
+            error!("Failed to connect to geyser service: {:?}", e);
+        }
     });
 
     tokio::task::spawn(async move {
-        let _ = transaction_manager.start().await;
+        transaction_manager.start().await;
     });
 
     tokio::task::spawn(async move {
-        let _ = rebalancer.start().await;
+        if let Err(e) = rebalancer.start().await {
+            error!("Failed to start rebalancer: {:?}", e);
+        }
     });
 
     liquidator.start().await?;

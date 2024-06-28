@@ -20,6 +20,7 @@ mod liquidator;
 mod rebalancer;
 
 /// Wrappers around marginfi structs
+#[warn(clippy::type_complexity)]
 mod wrappers;
 
 /// Utilities used by Eva01

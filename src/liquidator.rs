@@ -171,7 +171,6 @@ impl Liquidator {
                                     &account.asset_bank,
                                     &account.liab_bank,
                                     account.asset_amount,
-                                    self.general_config.get_tx_config(),
                                     &account.banks,
                                 )
                                 .await

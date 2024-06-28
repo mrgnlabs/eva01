@@ -34,10 +34,8 @@ use marginfi::{
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
-    account_info::IntoAccountInfo,
-    commitment_config::CommitmentConfig,
-    signature::read_keypair_file,
-    transaction::{self, VersionedTransaction},
+    account_info::IntoAccountInfo, commitment_config::CommitmentConfig,
+    signature::read_keypair_file, transaction::VersionedTransaction,
 };
 use std::{
     cmp::min,
@@ -353,7 +351,6 @@ impl Rebalancer {
                     .unwrap(),
                 withdraw_amount.to_num(),
                 Some(withdraw_all),
-                self.general_config.get_tx_config(),
                 &self.banks,
             )?;
 
@@ -391,7 +388,6 @@ impl Rebalancer {
                 .unwrap(),
             token_balance.to_num(),
             Some(repay_all),
-            self.general_config.get_tx_config(),
         )?;
 
         Ok(())
@@ -416,12 +412,8 @@ impl Rebalancer {
             .get_address_for_mint(bank.bank.mint)
             .unwrap();
 
-        self.liquidator_account.deposit(
-            bank,
-            token_address,
-            balance.to_num(),
-            self.general_config.get_tx_config(),
-        )?;
+        self.liquidator_account
+            .deposit(bank, token_address, balance.to_num())?;
 
         Ok(())
     }
@@ -521,7 +513,6 @@ impl Rebalancer {
                 .unwrap(),
             amount,
             Some(withdrawl_all),
-            self.general_config.get_tx_config(),
             &self.banks,
         )?;
 

@@ -181,6 +181,7 @@ impl TokenAccountManager {
     }
 }
 
+#[allow(dead_code)]
 fn get_liquidator_seed(signer: Pubkey, mint: Pubkey, seed: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
 

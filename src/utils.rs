@@ -285,8 +285,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
             .filter(|balance| balance.active);
 
         active_balances
-            .enumerate()
-            .map(move |(_, balance)| {
+            .map(move |balance| {
                 let bank = banks
                     .get(&balance.bank_pk)
                     .ok_or_else(|| anyhow::anyhow!("Bank not found"))?
