@@ -1,0 +1,15 @@
+[general_config]
+ rpc_url = "https://rpc.ironforge.network/mainnet?apiKey=01HTYZW4C7W74CTK8N8XN2GMR5"
+ yellowstone_endpoint = "https://mrgn.rpcpool.com/"
+
+ yellowstone_x_token = "c293bade994b3864b52c6bbbba4b"
+ signer_pubkey = "EagkuDnzvt6eUVHEZ2G7cWdThTxGo4jikJHt12D6r71i"
+
+ keypair_path = "/home/goncalo/.config/solana/liquidator.json"
+ liquidator_account = "HATVEyBpnbRLTMqbALQx2etXNGQZTYiiyjPGwxkXqCjG"
+ [liquidator_config]
+ min_profit = 0.01
+
+ max_liquidation_amount = 150
+
+ [rebalancer_config]

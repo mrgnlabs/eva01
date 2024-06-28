@@ -28,8 +28,7 @@ marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", branch = "cavey/t2
     "client",
     "no-entrypoint",
 ] }
-jito-protos = { git = "https://github.com/LevBeta/jito-rs", branch = "1.18.17"}
-jito-searcher-client = { git = "https://github.com/LevBeta/jito-rs", branch = "1.18.17"}
+
 num-traits = "0.2.18"
 rayon = "1.10.0"
 serde = "1.0.197"
@@ -50,3 +49,5 @@ tonic = "0.10.2"
 tonic-health = "0.10.2"
 yellowstone-grpc-client = { git = "https://github.com/LevBeta/yellowstone-grpc", branch = "1.18.17" }
 yellowstone-grpc-proto = { git = "https://github.com/LevBeta/yellowstone-grpc", branch = "1.18.17" }
+jito-protos = { git = "https://github.com/LevBeta/jito-rs", branch = "1.18.17"}
+jito-searcher-client = { git = "https://github.com/LevBeta/jito-rs", branch = "1.18.17"}

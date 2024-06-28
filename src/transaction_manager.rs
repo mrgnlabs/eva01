@@ -91,7 +91,7 @@ impl TransactionManager {
     }
 
     /// Starts the transaction manager
-    pub async fn start(&mut self) { 
+    pub async fn start(&mut self) {
         for instructions in self.rx.iter() {
             for instructions in instructions {
                 self.send_agressive_tx(instructions);
@@ -127,10 +127,7 @@ impl TransactionManager {
 
     /// Implements a alternative solution to jito transactions
     /// Sends a transaction to the network and waits for confirmation (non-jito)
-    fn send_agressive_tx(
-        &self,
-        mut ixs: Vec<Instruction>,
-    ) -> Result<Signature, Box<dyn Error>> {
+    fn send_agressive_tx(&self, mut ixs: Vec<Instruction>) -> Result<Signature, Box<dyn Error>> {
         let recent_blockhash = self.non_block_rpc.get_latest_blockhash()?;
 
         ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(500_000));

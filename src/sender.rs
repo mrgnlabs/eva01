@@ -1,6 +1,4 @@
-use crate::{
-    config::GeneralConfig, wrappers::marginfi_account::TxConfig,
-};
+use crate::{config::GeneralConfig, wrappers::marginfi_account::TxConfig};
 use log::{error, info};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
