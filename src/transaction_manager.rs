@@ -149,11 +149,10 @@ impl TransactionManager {
                 commitment: Some(CommitmentConfig::processed()),
                 ..Default::default()
             },
-        );
+        )?;
 
-        if simulation.is_err() {
-            error!("Failed to simulate transaction: {:?}", simulation);
-            return Err("Transaction simulation failed".into());
+        if simulation.value.err.is_some() {
+            return Err(format!("Failed to simulate transaction {:?}", simulation.value).into());
         }
 
         (0..12).try_for_each(|_| {
