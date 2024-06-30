@@ -143,13 +143,18 @@ impl TransactionManager {
 
         let signature = *transaction.get_signature();
 
-        self.non_block_rpc.simulate_transaction_with_config(
+        let simulation = self.non_block_rpc.simulate_transaction_with_config(
             &transaction,
             RpcSimulateTransactionConfig {
                 commitment: Some(CommitmentConfig::processed()),
                 ..Default::default()
             },
-        )?;
+        );
+
+        if simulation.res.value.err.is_some() {
+            error!("Failed to simulate transaction: {:?}", simulation);
+            return Err("Transaction simulation failed".into());
+        }
 
         (0..12).try_for_each(|_| {
             self.non_block_rpc.send_transaction(&transaction)?;
