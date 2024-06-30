@@ -151,7 +151,7 @@ impl TransactionManager {
             },
         );
 
-        if simulation.res.value.err.is_some() {
+        if simulation.is_err() {
             error!("Failed to simulate transaction: {:?}", simulation);
             return Err("Transaction simulation failed".into());
         }
