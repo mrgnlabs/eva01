@@ -2702,7 +2702,7 @@ checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 [[package]]
 name = "jito-protos"
 version = "0.1.0"
-source = "git+https://github.com/LevBeta/jito-rs?branch=1.18.17#d074e48d6bc2b03a66868b924445fe9dee42324d"
+source = "git+https://github.com/mrgnlabs/jito-rs?branch=1.18.17#d074e48d6bc2b03a66868b924445fe9dee42324d"
 dependencies = [
  "bincode",
  "bytes",
@@ -2717,7 +2717,7 @@ dependencies = [
 [[package]]
 name = "jito-searcher-client"
 version = "0.1.0"
-source = "git+https://github.com/LevBeta/jito-rs?branch=1.18.17#d074e48d6bc2b03a66868b924445fe9dee42324d"
+source = "git+https://github.com/mrgnlabs/jito-rs?branch=1.18.17#d074e48d6bc2b03a66868b924445fe9dee42324d"
 dependencies = [
  "futures-util",
  "jito-protos",
@@ -6954,7 +6954,7 @@ dependencies = [
 [[package]]
 name = "yellowstone-grpc-client"
 version = "1.15.0+solana.1.18.17"
-source = "git+https://github.com/LevBeta/yellowstone-grpc?branch=1.18.17#0ec7e229e97a0301337adea3de2fa47be2042936"
+source = "git+https://github.com/mrgnlabs/yellowstone-grpc?branch=1.18.17#0ec7e229e97a0301337adea3de2fa47be2042936"
 dependencies = [
  "bytes",
  "futures",
@@ -6967,7 +6967,7 @@ dependencies = [
 [[package]]
 name = "yellowstone-grpc-proto"
 version = "1.14.0+solana.1.18.17"
-source = "git+https://github.com/LevBeta/yellowstone-grpc?branch=1.18.17#0ec7e229e97a0301337adea3de2fa47be2042936"
+source = "git+https://github.com/mrgnlabs/yellowstone-grpc?branch=1.18.17#0ec7e229e97a0301337adea3de2fa47be2042936"
 dependencies = [
  "anyhow",
  "bincode",
