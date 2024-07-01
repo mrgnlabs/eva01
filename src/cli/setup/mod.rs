@@ -1,6 +1,5 @@
 use crate::config::{Eva01Config, GeneralConfig, LiquidatorCfg, RebalancerCfg};
 use fixed::types::I80F48;
-use fixed_macro::types::I80F48;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::rpc_client::RpcClient;
 use solana_client::{
@@ -152,7 +151,7 @@ pub async fn setup_from_cfg(
         Some(pubkey) => pubkey,
         None => {
             let signer_keypair = read_keypair_file(&keypair_path)
-                .expect(format!("Failed to read keypair from path: {}", keypair_path).as_str());
+                .unwrap_or_else(|_| panic!("Failed to read keypair from path: {}", keypair_path));
             signer_keypair.pubkey()
         }
     };
@@ -171,7 +170,7 @@ pub async fn setup_from_cfg(
         yellowstone_endpoint,
         yellowstone_x_token,
         block_engine_url: GeneralConfig::default_block_engine_url(),
-        signer_pubkey: signer_pubkey,
+        signer_pubkey,
         keypair_path,
         liquidator_account: marginfi_account,
         compute_unit_price_micro_lamports,

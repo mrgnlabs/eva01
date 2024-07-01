@@ -18,7 +18,7 @@ use solana_sdk::{
     instruction::Instruction,
     message::{v0, VersionedMessage},
     signature::{read_keypair_file, Keypair, Signature, Signer},
-    transaction::{Transaction, VersionedTransaction},
+    transaction::VersionedTransaction,
 };
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
