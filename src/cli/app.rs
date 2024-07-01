@@ -91,4 +91,6 @@ pub struct SetupFromCliOpts {
     pub isolated_banks: bool,
     #[arg(help = "Path to save the configuration file")]
     pub configuration_path: PathBuf,
+    #[arg(short = 'y', long, help = "Auto confirm the setup")]
+    pub yes: bool,
 }

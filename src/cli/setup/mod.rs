@@ -145,6 +145,7 @@ pub async fn setup_from_cfg(
         configuration_path,
         signer_pubkey,
         isolated_banks,
+        yes,
     }: SetupFromCliOpts,
 ) -> anyhow::Result<()> {
     let signer_pubkey = match signer_pubkey {
@@ -201,7 +202,7 @@ pub async fn setup_from_cfg(
         rebalancer_config,
     };
 
-    if configuration_path.exists() {
+    if configuration_path.exists() && !yes {
         let overwrite = prompt_user(
             "Configuration file already exists. Do you want to overwrite it? (Y/n)\n> ",
         )?;
