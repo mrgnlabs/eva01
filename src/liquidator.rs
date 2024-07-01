@@ -116,6 +116,9 @@ impl Liquidator {
         let rpc_client = Arc::new(RpcClient::new(self.general_config.rpc_url.clone()));
         self.load_marginfi_accounts(rpc_client.clone()).await?;
         self.load_oracles_and_banks(rpc_client.clone()).await?;
+        self.liquidator_account
+            .load_initial_data(rpc_client.as_ref(), self.get_all_mints())
+            .await?;
         Ok(())
     }
 
@@ -664,5 +667,12 @@ impl Liquidator {
         }
 
         values
+    }
+
+    fn get_all_mints(&self) -> Vec<Pubkey> {
+        self.banks
+            .values()
+            .map(|bank| bank.bank.mint)
+            .collect::<Vec<_>>()
     }
 }

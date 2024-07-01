@@ -19,7 +19,7 @@ pub struct LiquidatorAccount {
     pub account_wrapper: MarginfiAccountWrapper,
     pub signer_keypair: Arc<Keypair>,
     program_id: Pubkey,
-    token_program: Pubkey,
+    token_program_per_mint: HashMap<Pubkey, Pubkey>,
     group: Pubkey,
     transaction_tx: Sender<BatchTransactions>,
 }
@@ -34,22 +34,38 @@ impl LiquidatorAccount {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
 
         let account = rpc_client.get_account(&liquidator_pubkey)?;
-
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-
         let account_wrapper = MarginfiAccountWrapper::new(liquidator_pubkey, *marginfi_account);
 
         let program_id = marginfi::id();
-        let token_program = spl_token::id();
         let group = account_wrapper.account.group;
+
         Ok(Self {
             account_wrapper,
             signer_keypair,
             program_id,
-            token_program,
             group,
             transaction_tx,
+            token_program_per_mint: HashMap::new(),
         })
+    }
+
+    pub async fn load_initial_data(
+        &mut self,
+        rpc_client: &RpcClient,
+        mints: Vec<Pubkey>,
+    ) -> anyhow::Result<()> {
+        let token_program_per_mint = rpc_client
+            .get_multiple_accounts(&mints)
+            .unwrap()
+            .iter()
+            .zip(mints)
+            .map(|(account, mint)| (mint, account.as_ref().unwrap().owner))
+            .collect();
+
+        self.token_program_per_mint = token_program_per_mint;
+
+        Ok(())
     }
 
     pub async fn liquidate(
@@ -63,6 +79,7 @@ impl LiquidatorAccount {
         let liquidator_account_address = self.account_wrapper.address;
         let liquidatee_account_address = liquidate_account.address;
         let signer_pk = self.signer_keypair.pubkey();
+        let liab_mint = liab_bank.bank.mint;
 
         let (bank_liquidaity_vault_authority, _) = crate::utils::find_bank_vault_authority_pda(
             &liab_bank.address,
@@ -93,11 +110,12 @@ impl LiquidatorAccount {
             bank_liquidaity_vault_authority,
             bank_liquidaity_vault,
             bank_insurante_vault,
-            self.token_program,
+            self.token_program_per_mint.get(&liab_mint).unwrap().clone(),
             liquidator_observation_accounts,
             liquidatee_observation_accounts,
             asset_bank.bank.config.oracle_keys[0],
             liab_bank.bank.config.oracle_keys[0],
+            liab_mint,
             asset_amount,
         );
 
@@ -129,6 +147,9 @@ impl LiquidatorAccount {
             self.account_wrapper
                 .get_observation_accounts(&[], &banks_to_exclude, banks);
 
+        let mint = bank.bank.mint;
+        let token_program = self.token_program_per_mint.get(&mint).unwrap().clone();
+
         let withdraw_ix = make_withdraw_ix(
             self.program_id,
             self.group,
@@ -143,8 +164,9 @@ impl LiquidatorAccount {
             )
             .0,
             bank.bank.liquidity_vault,
-            self.token_program,
+            token_program,
             observation_accounts,
+            mint,
             amount,
             withdraw_all,
         );
@@ -166,6 +188,9 @@ impl LiquidatorAccount {
 
         let signer_pk = self.signer_keypair.pubkey();
 
+        let mint = bank.bank.mint;
+        let token_program = self.token_program_per_mint.get(&mint).unwrap().clone();
+
         let repay_ix = make_repay_ix(
             self.program_id,
             self.group,
@@ -174,7 +199,8 @@ impl LiquidatorAccount {
             bank.address,
             *token_account,
             bank.bank.liquidity_vault,
-            self.token_program,
+            token_program,
+            mint,
             amount,
             repay_all,
         );
@@ -195,6 +221,9 @@ impl LiquidatorAccount {
 
         let signer_pk = self.signer_keypair.pubkey();
 
+        let mint = bank.bank.mint;
+        let token_program = self.token_program_per_mint.get(&mint).unwrap().clone();
+
         let deposit_ix = make_deposit_ix(
             self.program_id,
             self.group,
@@ -203,7 +232,8 @@ impl LiquidatorAccount {
             bank.address,
             token_account,
             bank.bank.liquidity_vault,
-            self.token_program,
+            token_program,
+            mint,
             amount,
         );
 

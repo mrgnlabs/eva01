@@ -1,5 +1,6 @@
 use anchor_lang::{system_program, InstructionData, Key, ToAccountMetas};
 
+use anchor_spl::token_2022;
 use log::trace;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::{
@@ -38,20 +39,25 @@ pub fn make_deposit_ix(
     signer_token_account: Pubkey,
     bank_liquidity_vault: Pubkey,
     token_program: Pubkey,
+    mint: Pubkey,
     amount: u64,
 ) -> Instruction {
+    let mut accounts = marginfi::accounts::LendingAccountDeposit {
+        marginfi_group,
+        marginfi_account,
+        signer,
+        bank,
+        signer_token_account,
+        bank_liquidity_vault,
+        token_program,
+    }
+    .to_account_metas(Some(true));
+
+    maybe_add_bank_mint(&mut accounts, mint, &token_program);
+
     Instruction {
         program_id: marginfi_program_id,
-        accounts: marginfi::accounts::LendingAccountDeposit {
-            marginfi_group,
-            marginfi_account,
-            signer,
-            bank,
-            signer_token_account,
-            bank_liquidity_vault,
-            token_program,
-        }
-        .to_account_metas(Some(true)),
+        accounts,
         data: marginfi::instruction::LendingAccountDeposit { amount }.data(),
     }
 }
@@ -65,21 +71,26 @@ pub fn make_repay_ix(
     signer_token_account: Pubkey,
     bank_liquidity_vault: Pubkey,
     token_program: Pubkey,
+    mint: Pubkey,
     amount: u64,
     repay_all: Option<bool>,
 ) -> Instruction {
+    let mut accounts = marginfi::accounts::LendingAccountRepay {
+        marginfi_group,
+        marginfi_account,
+        signer,
+        bank,
+        signer_token_account,
+        bank_liquidity_vault,
+        token_program,
+    }
+    .to_account_metas(Some(true));
+
+    maybe_add_bank_mint(&mut accounts, mint, &token_program);
+
     Instruction {
         program_id: marginfi_program_id,
-        accounts: marginfi::accounts::LendingAccountRepay {
-            marginfi_group,
-            marginfi_account,
-            signer,
-            bank,
-            signer_token_account,
-            bank_liquidity_vault,
-            token_program,
-        }
-        .to_account_metas(Some(true)),
+        accounts,
         data: marginfi::instruction::LendingAccountRepay { amount, repay_all }.data(),
     }
 }
@@ -95,6 +106,7 @@ pub fn make_withdraw_ix(
     bank_liquidity_vault: Pubkey,
     token_program: Pubkey,
     observation_accounts: Vec<Pubkey>,
+    mint: Pubkey,
     amount: u64,
     withdraw_all: Option<bool>,
 ) -> Instruction {
@@ -109,6 +121,8 @@ pub fn make_withdraw_ix(
         token_program,
     }
     .to_account_metas(Some(true));
+
+    maybe_add_bank_mint(&mut accounts, mint, &token_program);
 
     trace!(
         "make_withdraw_ix: observation_accounts: {:?}",
@@ -148,6 +162,7 @@ pub fn make_liquidate_ix(
     liquidatee_observation_accounts: Vec<Pubkey>,
     asset_bank_oracle: Pubkey,
     liab_bank_oracle: Pubkey,
+    liab_mint: Pubkey,
     asset_amount: u64,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountLiquidate {
@@ -163,6 +178,8 @@ pub fn make_liquidate_ix(
         liab_bank,
     }
     .to_account_metas(Some(true));
+
+    maybe_add_bank_mint(&mut accounts, liab_mint, &token_program);
 
     accounts.extend([
         AccountMeta::new_readonly(asset_bank_oracle, false),
@@ -185,5 +202,11 @@ pub fn make_liquidate_ix(
         program_id: marginfi_program_id,
         accounts,
         data: marginfi::instruction::LendingAccountLiquidate { asset_amount }.data(),
+    }
+}
+
+fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_program: &Pubkey) {
+    if token_program == &token_2022::ID {
+        accounts.push(AccountMeta::new_readonly(mint, false));
     }
 }
