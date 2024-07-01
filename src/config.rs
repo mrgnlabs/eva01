@@ -82,7 +82,11 @@ pub struct GeneralConfig {
         default = "GeneralConfig::default_account_whitelist"
     )]
     pub account_whitelist: Option<Vec<Pubkey>>,
-    #[serde(default = "GeneralConfig::default_address_lookup_tables")]
+    #[serde(
+        default = "GeneralConfig::default_address_lookup_tables",
+        deserialize_with = "from_vec_str_to_pubkey",
+        serialize_with = "vec_pubkey_to_str"
+    )]
     pub address_lookup_tables: Vec<Pubkey>,
 }
 
@@ -176,11 +180,17 @@ pub struct LiquidatorCfg {
     pub min_profit: f64,
     /// Maximun liquidation value in USD
     pub max_liquidation_value: Option<f64>,
+    #[serde(default = "LiquidatorCfg::default_isolated_banks")]
+    pub isolated_banks: bool,
 }
 
 impl LiquidatorCfg {
     pub fn default_min_profit() -> f64 {
         0.1
+    }
+
+    pub fn default_isolated_banks() -> bool {
+        false
     }
 }
 

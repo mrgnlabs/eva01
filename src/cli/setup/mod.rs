@@ -1,4 +1,6 @@
 use crate::config::{Eva01Config, GeneralConfig, LiquidatorCfg, RebalancerCfg};
+use fixed::types::I80F48;
+use fixed_macro::types::I80F48;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::rpc_client::RpcClient;
 use solana_client::{
@@ -12,6 +14,8 @@ use solana_sdk::{
 };
 use std::io::Write;
 use std::path::PathBuf;
+
+use super::app::SetupFromCliOpts;
 
 /// Helper for initializing Marginfi Account
 pub mod initialize;
@@ -65,6 +69,9 @@ pub async fn setup() -> anyhow::Result<()> {
         }
     };
 
+    let isolated_banks =
+        prompt_user("Do you wish to liquidate on isolated banks? Y/n\n> ")?.to_lowercase() == "y";
+
     let general_config = GeneralConfig {
         rpc_url,
         yellowstone_endpoint,
@@ -84,13 +91,14 @@ pub async fn setup() -> anyhow::Result<()> {
     let liquidator_config = LiquidatorCfg {
         min_profit: LiquidatorCfg::default_min_profit(),
         max_liquidation_value: None,
+        isolated_banks,
     };
 
     let rebalancer_config = RebalancerCfg {
         token_account_dust_threshold: RebalancerCfg::default_token_account_dust_threshold(),
         preferred_mints: RebalancerCfg::default_preferred_mints(),
         swap_mint: RebalancerCfg::default_swap_mint(),
-        jup_swap_api_url: RebalancerCfg::default_jup_swap_api_url(),
+        jup_swap_api_url: RebalancerCfg::default_jup_swap_api_url().to_string(),
         compute_unit_price_micro_lamports: RebalancerCfg::default_compute_unit_price_micro_lamports(
         ),
         slippage_bps: RebalancerCfg::default_slippage_bps(),
@@ -111,6 +119,103 @@ pub async fn setup() -> anyhow::Result<()> {
         Ok(_) => println!("Configuration saved into {:?}!", configuration_path),
         Err(_) => println!(
             "Coulnd't save the configuration into {:?}, please try again!",
+            configuration_path
+        ),
+    }
+
+    Ok(())
+}
+
+pub async fn setup_from_cfg(
+    SetupFromCliOpts {
+        rpc_url,
+        keypair_path,
+        marginfi_account,
+        yellowstone_endpoint,
+        yellowstone_x_token,
+        compute_unit_price_micro_lamports,
+        marginfi_program_id,
+        marginfi_group_address,
+        min_profit,
+        max_liquidation_value,
+        token_account_dust_threshold,
+        preferred_mints,
+        swap_mint,
+        jup_swap_api_url,
+        default_slippage_bps,
+        configuration_path,
+        signer_pubkey,
+        isolated_banks,
+    }: SetupFromCliOpts,
+) -> anyhow::Result<()> {
+    let signer_pubkey = match signer_pubkey {
+        Some(pubkey) => pubkey,
+        None => {
+            let signer_keypair = read_keypair_file(&keypair_path)
+                .expect(format!("Failed to read keypair from path: {}", keypair_path).as_str());
+            signer_keypair.pubkey()
+        }
+    };
+
+    let marginfi_account = match marginfi_account {
+        Some(account) => account,
+        None => marginfi_account_by_authority(signer_pubkey, RpcClient::new(rpc_url.clone()))
+            .await
+            .expect("Failed to get marginfi account by authority")
+            .pop()
+            .expect("No marginfi account found"),
+    };
+
+    let general_config = GeneralConfig {
+        rpc_url,
+        yellowstone_endpoint,
+        yellowstone_x_token,
+        block_engine_url: GeneralConfig::default_block_engine_url(),
+        signer_pubkey: signer_pubkey,
+        keypair_path,
+        liquidator_account: marginfi_account,
+        compute_unit_price_micro_lamports,
+        marginfi_program_id,
+        marginfi_group_address,
+        account_whitelist: None,
+        address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
+    };
+
+    let liquidator_config = LiquidatorCfg {
+        min_profit,
+        max_liquidation_value,
+        isolated_banks,
+    };
+
+    let rebalancer_config = RebalancerCfg {
+        token_account_dust_threshold: I80F48::from_num(token_account_dust_threshold),
+        preferred_mints,
+        swap_mint,
+        jup_swap_api_url,
+        compute_unit_price_micro_lamports,
+        slippage_bps: default_slippage_bps,
+    };
+
+    let config = Eva01Config {
+        general_config,
+        liquidator_config,
+        rebalancer_config,
+    };
+
+    if configuration_path.exists() {
+        let overwrite = prompt_user(
+            "Configuration file already exists. Do you want to overwrite it? (Y/n)\n> ",
+        )?;
+        if overwrite.to_lowercase() != "y" {
+            println!("Aborted. Configuration file not overwritten.");
+            return Ok(());
+        }
+    }
+
+    match config.try_save_from_config(&configuration_path) {
+        Ok(_) => println!("Configuration saved into {:?}!", configuration_path),
+        Err(_) => println!(
+            "Couldn't save the configuration into {:?}, please try again!",
             configuration_path
         ),
     }

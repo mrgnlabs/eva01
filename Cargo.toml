@@ -47,7 +47,12 @@ tokio = { version = "1.35.1", features = ["rt", "macros"] }
 toml = "0.8.12"
 tonic = "0.10.2"
 tonic-health = "0.10.2"
-yellowstone-grpc-client = { git = "https://github.com/LevBeta/yellowstone-grpc", branch = "1.18.17" }
-yellowstone-grpc-proto = { git = "https://github.com/LevBeta/yellowstone-grpc", branch = "1.18.17" }
-jito-protos = { git = "https://github.com/LevBeta/jito-rs", branch = "1.18.17"}
-jito-searcher-client = { git = "https://github.com/LevBeta/jito-rs", branch = "1.18.17"}
+yellowstone-grpc-client = { git = "https://github.com/mrgnlabs/yellowstone-grpc", branch = "1.18.17" }
+yellowstone-grpc-proto = { git = "https://github.com/mrgnlabs/yellowstone-grpc", branch = "1.18.17" }
+jito-protos = { git = "https://github.com/mrgnlabs/jito-rs", branch = "1.18.17" }
+jito-searcher-client = { git = "https://github.com/mrgnlabs/jito-rs", branch = "1.18.17" }
+
+[profile.release]
+opt-level = 3
+lto = true
+target-cpu = "native"

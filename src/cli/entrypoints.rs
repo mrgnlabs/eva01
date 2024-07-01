@@ -9,7 +9,7 @@ use log::{error, info};
 use std::collections::HashMap;
 
 pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
-    info!("Starting eva01 liquidator!");
+    info!("Starting eva01 liquidator! {:#?}", &config);
 
     // Create two channels
     // Geyser -> Liquidator

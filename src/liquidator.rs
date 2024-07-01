@@ -18,7 +18,7 @@ use marginfi::{
     constants::EXP_10_I80F48,
     state::{
         marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
-        marginfi_group::Bank,
+        marginfi_group::{Bank, RiskTier},
         price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias},
     },
 };
@@ -644,6 +644,13 @@ impl Liquidator {
 
         for share in tshares {
             let bank = self.banks.get(&share.1).unwrap();
+
+            if !self.config.isolated_banks
+                && matches!(bank.bank.config.risk_tier, RiskTier::Isolated)
+            {
+                continue;
+            }
+
             let value = match balance_side {
                 BalanceSide::Liabilities => bank
                     .calc_value(share.0, BalanceSide::Liabilities, requirement_type)

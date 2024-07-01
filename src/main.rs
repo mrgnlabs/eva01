@@ -37,8 +37,8 @@ mod transaction_manager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Assemble logger
-    Builder::from_default_env().init();
+    // Assemble logger, with INFO as default log level
+    Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // Main entrypoint
     crate::cli::main_entry().await?;
