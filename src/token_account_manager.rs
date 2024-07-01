@@ -15,7 +15,7 @@ use solana_sdk::{
 };
 
 use crate::{
-    sender::{aggressive_send_tx, SenderCfg},
+    sender::{SenderCfg, TransactionSender},
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
 };
 
@@ -95,7 +95,7 @@ impl TokenAccountManager {
                 |mint| -> Result<(Pubkey, Pubkey), TokenAccountManagerError> {
                     Ok((
                         *mint,
-                        self.get_address_for_mint(*mint).ok_or_else(|| {
+                        self.get_address_for_mint(*mint).ok_or({
                             TokenAccountManagerError::SetupFailed(
                                 "Failed to find token account address",
                             )
@@ -149,7 +149,6 @@ impl TokenAccountManager {
                 .par_iter()
                 .chunks(MAX_INIT_TA_IXS)
                 .try_for_each(|chunk| {
-                    let recent_blockhash = recent_blockhash.clone();
                     let rpc = rpc_client.clone();
 
                     let ixs = chunk.iter().map(|ix| (*ix).clone()).collect::<Vec<_>>();
@@ -162,7 +161,8 @@ impl TokenAccountManager {
                         recent_blockhash,
                     );
 
-                    let sig = aggressive_send_tx(rpc, &tx, SenderCfg::DEFAULT).map_err(|e| {
+                    let sig = TransactionSender::aggressive_send_tx(rpc, &tx, SenderCfg::DEFAULT)
+                        .map_err(|e| {
                         error!("Failed to send transaction: {:?}", e);
                         TokenAccountManagerError::SetupFailed("Failed to send transaction")
                     })?;
@@ -181,6 +181,7 @@ impl TokenAccountManager {
     }
 }
 
+#[allow(dead_code)]
 fn get_liquidator_seed(signer: Pubkey, mint: Pubkey, seed: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
 
@@ -188,7 +189,7 @@ fn get_liquidator_seed(signer: Pubkey, mint: Pubkey, seed: &[u8]) -> [u8; 32] {
     hasher.update(mint.as_ref());
     hasher.update(seed);
 
-    hasher.finalize().try_into().unwrap()
+    hasher.finalize().into()
 }
 
 fn get_keypair_for_token_account(
@@ -197,8 +198,8 @@ fn get_keypair_for_token_account(
     seed: &[u8],
 ) -> Result<Keypair, TokenAccountManagerError> {
     let keypair_seed = get_liquidator_seed(signer, mint, seed);
-    Ok(Keypair::from_seed(&keypair_seed)
-        .map_err(|_| TokenAccountManagerError::SetupFailed("Keypair::from_seed failed"))?)
+    Keypair::from_seed(&keypair_seed)
+        .map_err(|_| TokenAccountManagerError::SetupFailed("Keypair::from_seed failed"))
 }
 
 fn get_address_for_token_account(
