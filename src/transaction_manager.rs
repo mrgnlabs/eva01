@@ -17,11 +17,13 @@ use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
     message::{v0, VersionedMessage},
+    pubkey::Pubkey,
     signature::{read_keypair_file, Keypair, Signature, Signer},
+    system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::{error::Error, str::FromStr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::{error::Error, str::FromStr};
 use tonic::transport::Channel;
 
 /// The leadership threshold related to the jito block engine
@@ -97,7 +99,10 @@ impl TransactionManager {
         for instructions in self.rx.iter() {
             let transactions = self.configure_instructions(instructions).await.unwrap();
             for transaction in transactions {
-                if let Err(e) = self.send_transaction(transaction, self.searcher_client.clone()).await {
+                if let Err(e) = self
+                    .send_transaction(transaction, self.searcher_client.clone())
+                    .await
+                {
                     error!("Failed to send transaction: {:?}", e);
                 }
             }
@@ -207,7 +212,7 @@ impl TransactionManager {
             ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(500_000));
             ixs.push(transfer(
                 &self.keypair.pubkey(),
-                    &self.tip_accounts[0],
+                &self.tip_accounts[0],
                 10_000,
             ));
             let transaction = VersionedTransaction::try_new(
@@ -220,7 +225,6 @@ impl TransactionManager {
                 &[&self.keypair],
             )?;
             txs.push(transaction);
-
         }
         Ok(txs)
     }
@@ -241,13 +245,19 @@ impl TransactionManager {
         }
     }
 
-    async fn get_tip_accounts(searcher_client: &mut SearcherServiceClient<Channel>) -> anyhow::Result<Vec<Pubkey>> {
+    async fn get_tip_accounts(
+        searcher_client: &mut SearcherServiceClient<Channel>,
+    ) -> anyhow::Result<Vec<Pubkey>> {
         let tip_accounts = searcher_client
             .get_tip_accounts(GetTipAccountsRequest {})
             .await?
             .into_inner();
-    
-        let tip_accounts = tip_accounts.accounts.into_iter().filter_map(|a| Pubkey::from_str(&a).ok()).collect::<Vec<Pubkey>>();
+
+        let tip_accounts = tip_accounts
+            .accounts
+            .into_iter()
+            .filter_map(|a| Pubkey::from_str(&a).ok())
+            .collect::<Vec<Pubkey>>();
 
         Ok(tip_accounts)
     }
