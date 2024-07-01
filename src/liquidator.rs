@@ -230,7 +230,7 @@ impl Liquidator {
                 let asset_amount_to_liquidate =
                     min(max_liquidation_amount, liquidation_asset_amount_capacity);
 
-                let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.98);
+                let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.95);
 
                 Some(PreparedLiquidatableAccount {
                     liquidate_account: account.clone(),

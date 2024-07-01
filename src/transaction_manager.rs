@@ -134,12 +134,15 @@ impl TransactionManager {
 
         ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(500_000));
 
-        let transaction = Transaction::new_signed_with_payer(
-            &ixs,
-            Some(&self.keypair.pubkey()),
+        let transaction = VersionedTransaction::try_new(
+            VersionedMessage::V0(v0::Message::try_compile(
+                &self.keypair.pubkey(),
+                &ixs,
+                &self.lookup_tables,
+                recent_blockhash,
+            )?),
             &[&self.keypair],
-            recent_blockhash,
-        );
+        )?;
 
         let signature = *transaction.get_signature();
 
@@ -162,13 +165,11 @@ impl TransactionManager {
 
         let blockhash = transaction.get_recent_blockhash();
 
-        if let Err(err) = self.non_block_rpc.confirm_transaction_with_spinner(
+        self.non_block_rpc.confirm_transaction_with_spinner(
             &signature,
             blockhash,
             CommitmentConfig::confirmed(),
-        ) {
-            error!("Error confirming transaction: {:?}", err);
-        }
+        )?;
 
         Ok(signature)
     }
