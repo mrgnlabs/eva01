@@ -12,15 +12,9 @@ use solana_client::{
     rpc_client::SerializableTransaction, rpc_config::RpcSimulateTransactionConfig,
 };
 use solana_sdk::{
-    address_lookup_table_account::AddressLookupTableAccount,
-    commitment_config::CommitmentConfig,
-    compute_budget::ComputeBudgetInstruction,
-    instruction::Instruction,
-    message::{v0, VersionedMessage},
-    signature::{read_keypair_file, Keypair, Signature, Signer},
-    transaction::{Transaction, VersionedTransaction},
+    address_lookup_table_account::AddressLookupTableAccount, commitment_config::CommitmentConfig, compute_budget::ComputeBudgetInstruction, instruction::Instruction, message::{v0, VersionedMessage}, pubkey::Pubkey, signature::{read_keypair_file, Keypair, Signature, Signer}, system_instruction::transfer, transaction::{Transaction, VersionedTransaction}
 };
-use std::error::Error;
+use std::{error::Error, str::FromStr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tonic::transport::Channel;
 
@@ -43,7 +37,7 @@ pub struct TransactionManager {
     /// Atomic boolean to check if the current node is the jito leader
     is_jito_leader: AtomicBool,
     /// The tip accounts of the jito block engine
-    tip_accounts: Vec<String>,
+    tip_accounts: Vec<Pubkey>,
     lookup_tables: Vec<AddressLookupTableAccount>,
 }
 
@@ -57,7 +51,7 @@ impl TransactionManager {
     /// Creates a new transaction manager
     pub async fn new(rx: Receiver<BatchTransactions>, config: GeneralConfig) -> Self {
         let keypair = read_keypair_file(&config.keypair_path).unwrap();
-        let searcher_client = get_searcher_client_no_auth(&config.block_engine_url)
+        let mut searcher_client = get_searcher_client_no_auth(&config.block_engine_url)
             .await
             .unwrap();
 
@@ -78,6 +72,8 @@ impl TransactionManager {
             lookup_tables.push(lookup_table);
         }
 
+        let tip_accounts = Self::get_tip_accounts(&mut searcher_client).await.unwrap();
+
         Self {
             rx,
             keypair,
@@ -85,7 +81,7 @@ impl TransactionManager {
             non_block_rpc,
             searcher_client,
             is_jito_leader: AtomicBool::new(false),
-            tip_accounts: vec![],
+            tip_accounts,
             lookup_tables,
         }
     }
@@ -93,8 +89,9 @@ impl TransactionManager {
     /// Starts the transaction manager
     pub async fn start(&mut self) {
         for instructions in self.rx.iter() {
-            for instructions in instructions {
-                if let Err(e) = self.send_agressive_tx(instructions) {
+            let transactions = self.configure_instructions(instructions).await.unwrap();
+            for transaction in transactions {
+                if let Err(e) = self.send_transaction(transaction, self.searcher_client.clone()).await {
                     error!("Failed to send transaction: {:?}", e);
                 }
             }
@@ -108,6 +105,21 @@ impl TransactionManager {
         transaction: VersionedTransaction,
         mut searcher_client: SearcherServiceClient<Channel>,
     ) -> anyhow::Result<()> {
+        loop {
+            let next_leader = searcher_client
+                .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+                .await?
+                .into_inner();
+
+            let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
+
+            if num_slots <= LEADERSHIP_THRESHOLD {
+                break;
+            }
+
+            tokio::time::sleep(SLEEP_DURATION).await;
+        }
+
         let mut bundle_results_subscription = searcher_client
             .subscribe_bundle_results(SubscribeBundleResultsRequest {})
             .await?
@@ -187,7 +199,11 @@ impl TransactionManager {
         let mut txs = Vec::new();
         for mut ixs in instructions {
             ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(500_000));
-
+            ixs.push(transfer(
+                &self.keypair.pubkey(),
+                    &self.tip_accounts[0],
+                10_000,
+            ));
             let transaction = VersionedTransaction::try_new(
                 VersionedMessage::V0(v0::Message::try_compile(
                     &self.keypair.pubkey(),
@@ -198,6 +214,7 @@ impl TransactionManager {
                 &[&self.keypair],
             )?;
             txs.push(transaction);
+
         }
         Ok(txs)
     }
@@ -218,15 +235,14 @@ impl TransactionManager {
         }
     }
 
-    async fn get_tip_accounts(&mut self) -> anyhow::Result<Vec<String>> {
-        let tip_accounts = self
-            .searcher_client
+    async fn get_tip_accounts(searcher_client: &mut SearcherServiceClient<Channel>) -> anyhow::Result<Vec<Pubkey>> {
+        let tip_accounts = searcher_client
             .get_tip_accounts(GetTipAccountsRequest {})
             .await?
             .into_inner();
+    
+        let tip_accounts = tip_accounts.accounts.into_iter().filter_map(|a| Pubkey::from_str(&a).ok()).collect::<Vec<Pubkey>>();
 
-        info!("Received tip accounts: {:?}", tip_accounts.accounts);
-
-        Ok(tip_accounts.accounts)
+        Ok(tip_accounts)
     }
 }
