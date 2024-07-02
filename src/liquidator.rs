@@ -80,6 +80,7 @@ pub struct PreparedLiquidatableAccount {
     liab_bank: BankWrapper,
     asset_amount: u64,
     banks: HashMap<Pubkey, BankWrapper>,
+    profit: u64,
 }
 
 impl Liquidator {
@@ -161,29 +162,33 @@ impl Liquidator {
                 };
 
                 if start.elapsed() > max_duration {
-                    if let Ok(accounts) = self.process_all_accounts() {
-                        for account in accounts {
+                    if let Ok(mut accounts) = self.process_all_accounts() {
+                        // Accounts are sorted from the highest profit to the lowest
+                        accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
+                        accounts.reverse();
+                        if let Some(highest_profit_account) = accounts.first() {
                             info!(
                                 "Liquidating account {:?}",
-                                account.liquidate_account.address
+                                highest_profit_account.liquidate_account.address
                             );
                             if let Err(e) = self
                                 .liquidator_account
                                 .liquidate(
-                                    &account.liquidate_account,
-                                    &account.asset_bank,
-                                    &account.liab_bank,
-                                    account.asset_amount,
-                                    &account.banks,
+                                    &highest_profit_account.liquidate_account,
+                                    &highest_profit_account.asset_bank,
+                                    &highest_profit_account.liab_bank,
+                                    highest_profit_account.asset_amount,
+                                    &highest_profit_account.banks,
                                 )
                                 .await
                             {
                                 info!(
                                     "Failed to liquidate account {:?}, error: {:?}",
-                                    account.liquidate_account.address, e
+                                    highest_profit_account.liquidate_account.address, e
                                 );
                             }
                         }
+
                     }
                     break;
                 }
@@ -241,6 +246,7 @@ impl Liquidator {
                     liab_bank: liab_bank.clone(),
                     asset_amount: slippage_adjusted_asset_amount.to_num(),
                     banks: self.banks.clone(),
+                    profit: profit.to_num(),
                 })
             })
             .collect::<Vec<_>>();

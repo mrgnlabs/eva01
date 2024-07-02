@@ -108,7 +108,8 @@ impl TransactionManager {
         for instructions in self.rx.clone().iter() {
             let transactions = self.configure_instructions(instructions).await.unwrap();
             loop {
-                let next_leader = self.searcher_client
+                let next_leader = self
+                    .searcher_client
                     .get_next_scheduled_leader(NextScheduledLeaderRequest {})
                     .await
                     .unwrap()
