@@ -6,7 +6,7 @@ use crate::{
     transaction_manager::{BatchTransactions, TransactionManager},
 };
 use log::{error, info};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::{atomic::AtomicBool, Arc}};
 
 pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     info!("Starting eva01 liquidator! {:#?}", &config);
@@ -18,6 +18,11 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let (liquidator_tx, liquidator_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<BatchTransactions>();
+
+    // Creates an atomicbool that will be shared between the liquidator and the rebalancer
+    // to stop the liquidator when the rebalancer ask for it
+
+    let stop_liquidator = Arc::new(AtomicBool::new(true));
 
     // Creates the transaction manager
     // a channel is shared between the liquidator/rebalancer
@@ -31,6 +36,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.liquidator_config.clone(),
         liquidator_rx.clone(),
         transaction_tx.clone(),
+        stop_liquidator.clone()
     )
     .await;
 
@@ -40,6 +46,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.rebalancer_config.clone(),
         transaction_tx.clone(),
         rebalancer_rx.clone(),
+        stop_liquidator.clone()
     )
     .await?;
 

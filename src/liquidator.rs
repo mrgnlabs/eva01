@@ -10,7 +10,7 @@ use crate::{
 };
 use anchor_client::Program;
 use anchor_lang::Discriminator;
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::{channel::{Receiver, Sender}, epoch::Atomic};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{debug, error, info};
@@ -24,7 +24,6 @@ use marginfi::{
 };
 use rayon::prelude::*;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
-use solana_address_lookup_table_program::error;
 use solana_client::{
     rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
@@ -32,7 +31,7 @@ use solana_client::{
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account_info::IntoAccountInfo, bs58, signature::Keypair};
-use std::{cmp::min, collections::HashMap, sync::Arc};
+use std::{cmp::min, collections::HashMap, sync::{atomic::AtomicBool, Arc}};
 
 /// Bank group private key offset
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
@@ -46,6 +45,7 @@ pub struct Liquidator {
     marginfi_accounts: HashMap<Pubkey, MarginfiAccountWrapper>,
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
+    stop_liquidation: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -91,6 +91,7 @@ impl Liquidator {
         liquidator_config: LiquidatorCfg,
         geyser_receiver: Receiver<GeyserUpdate>,
         transaction_sender: Sender<BatchTransactions>,
+        stop_liquidation: Arc<AtomicBool>,
     ) -> Liquidator {
         let liquidator_account = LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
@@ -110,6 +111,7 @@ impl Liquidator {
             banks: HashMap::new(),
             liquidator_account,
             oracle_to_bank: HashMap::new(),
+            stop_liquidation
         }
     }
 
@@ -127,7 +129,7 @@ impl Liquidator {
     /// Liquidator starts, receiving messages and process them,
     /// a "timeout" is awaiting for accounts to be evaluated
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(10);
+        let max_duration = std::time::Duration::from_secs(5);
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.geyser_receiver.recv() {
@@ -163,7 +165,11 @@ impl Liquidator {
                 };
 
                 if start.elapsed() > max_duration {
-                    if let Ok(mut accounts) = self.process_all_accounts() {
+                    if self.stop_liquidation.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Ok(mut accounts) = self.process_all_accounts()  {
+
                         // Accounts are sorted from the highest profit to the lowest
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();

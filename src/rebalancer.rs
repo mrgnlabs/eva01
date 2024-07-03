@@ -40,7 +40,7 @@ use solana_sdk::{
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
 };
 
 /// The rebalancer is responsible to keep the liquidator account
@@ -58,6 +58,7 @@ pub struct Rebalancer {
     preferred_mints: HashSet<Pubkey>,
     swap_mint_bank_pk: Option<Pubkey>,
     geyser_receiver: Receiver<GeyserUpdate>,
+    stop_liquidations: Arc<AtomicBool>,
 }
 
 impl Rebalancer {
@@ -66,6 +67,7 @@ impl Rebalancer {
         config: RebalancerCfg,
         transaction_tx: Sender<BatchTransactions>,
         geyser_receiver: Receiver<GeyserUpdate>,
+        stop_liquidation: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
         let rpc_client = Arc::new(RpcClient::new(general_config.rpc_url.clone()));
         let token_account_manager = TokenAccountManager::new(rpc_client.clone())?;
@@ -94,6 +96,7 @@ impl Rebalancer {
             preferred_mints,
             swap_mint_bank_pk: None,
             geyser_receiver,
+            stop_liquidations: stop_liquidation,
         })
     }
 
@@ -169,7 +172,7 @@ impl Rebalancer {
     }
 
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(15);
+        let max_duration = std::time::Duration::from_secs(5);
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.geyser_receiver.recv() {
@@ -208,7 +211,7 @@ impl Rebalancer {
                     }
                 }
 
-                if start.elapsed() > max_duration && self.needs_to_be_relanced() {
+                if start.elapsed() > max_duration && self.needs_to_be_relanced().await {
                     if let Err(e) = self.rebalance_accounts().await {
                         info!("Failed to rebalance account: {:?}", e);
                     }
@@ -218,7 +221,8 @@ impl Rebalancer {
         }
     }
 
-    fn needs_to_be_relanced(&self) -> bool {
+    async fn needs_to_be_relanced(&self) -> bool {
+        self.should_stop_liquidations().await;
         self.has_tokens_in_token_accounts()
             || self.has_non_preferred_deposits()
             || self.has_liabilities()
@@ -230,6 +234,18 @@ impl Rebalancer {
         self.handle_tokens_in_token_accounts().await?;
         self.deposit_preferred_tokens().await?;
 
+        Ok(())
+    }
+
+    // If our margin is at 50% or lower, we should stop liquidations and await until the account
+    // is fully rebalanced
+    pub async fn should_stop_liquidations(&self) -> anyhow::Result<()> {
+        let (assets, liabs) = self.calc_health(&self.liquidator_account.account_wrapper, RequirementType::Initial);
+        if (assets - liabs) / assets <= 0.5 {
+            self.stop_liquidations.store(true, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            self.stop_liquidations.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
     }
 
