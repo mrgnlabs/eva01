@@ -10,7 +10,10 @@ use crate::{
 };
 use anchor_client::Program;
 use anchor_lang::Discriminator;
-use crossbeam::{channel::{Receiver, Sender}, epoch::Atomic};
+use crossbeam::{
+    channel::{Receiver, Sender},
+    epoch::Atomic,
+};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{debug, error, info};
@@ -31,7 +34,11 @@ use solana_client::{
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account_info::IntoAccountInfo, bs58, signature::Keypair};
-use std::{cmp::min, collections::HashMap, sync::{atomic::AtomicBool, Arc}};
+use std::{
+    cmp::min,
+    collections::HashMap,
+    sync::{atomic::AtomicBool, Arc},
+};
 
 /// Bank group private key offset
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
@@ -111,7 +118,7 @@ impl Liquidator {
             banks: HashMap::new(),
             liquidator_account,
             oracle_to_bank: HashMap::new(),
-            stop_liquidation
+            stop_liquidation,
         }
     }
 
@@ -165,11 +172,13 @@ impl Liquidator {
                 };
 
                 if start.elapsed() > max_duration {
-                    if self.stop_liquidation.load(std::sync::atomic::Ordering::Relaxed) {
+                    if self
+                        .stop_liquidation
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
                         break;
                     }
-                    if let Ok(mut accounts) = self.process_all_accounts()  {
-
+                    if let Ok(mut accounts) = self.process_all_accounts() {
                         // Accounts are sorted from the highest profit to the lowest
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();

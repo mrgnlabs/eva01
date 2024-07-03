@@ -6,7 +6,10 @@ use crate::{
     transaction_manager::{BatchTransactions, TransactionManager},
 };
 use log::{error, info};
-use std::{collections::HashMap, sync::{atomic::AtomicBool, Arc}};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicBool, Arc},
+};
 
 pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     info!("Starting eva01 liquidator! {:#?}", &config);
@@ -36,7 +39,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.liquidator_config.clone(),
         liquidator_rx.clone(),
         transaction_tx.clone(),
-        stop_liquidator.clone()
+        stop_liquidator.clone(),
     )
     .await;
 
@@ -46,7 +49,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.rebalancer_config.clone(),
         transaction_tx.clone(),
         rebalancer_rx.clone(),
-        stop_liquidator.clone()
+        stop_liquidator.clone(),
     )
     .await?;
 

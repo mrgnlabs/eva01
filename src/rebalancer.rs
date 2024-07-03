@@ -240,11 +240,16 @@ impl Rebalancer {
     // If our margin is at 50% or lower, we should stop liquidations and await until the account
     // is fully rebalanced
     pub async fn should_stop_liquidations(&self) -> anyhow::Result<()> {
-        let (assets, liabs) = self.calc_health(&self.liquidator_account.account_wrapper, RequirementType::Initial);
+        let (assets, liabs) = self.calc_health(
+            &self.liquidator_account.account_wrapper,
+            RequirementType::Initial,
+        );
         if (assets - liabs) / assets <= 0.5 {
-            self.stop_liquidations.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.stop_liquidations
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         } else {
-            self.stop_liquidations.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.stop_liquidations
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(())
     }
