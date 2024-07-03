@@ -13,7 +13,7 @@ use anchor_lang::Discriminator;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, info};
+use log::{debug, error, info};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
@@ -24,6 +24,7 @@ use marginfi::{
 };
 use rayon::prelude::*;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
+use solana_address_lookup_table_program::error;
 use solana_client::{
     rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
@@ -188,7 +189,6 @@ impl Liquidator {
                                 );
                             }
                         }
-
                     }
                     break;
                 }
@@ -208,7 +208,14 @@ impl Liquidator {
                 }
 
                 let (asset_bank_pk, liab_bank_pk) =
-                    self.find_liquidation_bank_candidates(account).ok()?;
+                    match self.find_liquidation_bank_candidates(account) {
+                        Ok(Some((asset_bank_pk, liab_bank_pk))) => (asset_bank_pk, liab_bank_pk),
+                        Ok(None) => return None,
+                        Err(e) => {
+                            error!("Error finding liquidation bank candidates: {:?}", e);
+                            return None;
+                        }
+                    };
 
                 let (max_liquidation_amount, profit) = self
                     .compute_max_liquidatble_asset_amount_with_banks(
@@ -216,6 +223,9 @@ impl Liquidator {
                         &asset_bank_pk,
                         &liab_bank_pk,
                     )
+                    .map_err(|e| {
+                        error!("Error computing max liquidatable asset amount: {:?}", e);
+                    })
                     .ok()?;
 
                 if max_liquidation_amount.is_zero() || profit < self.config.min_profit {
@@ -233,7 +243,7 @@ impl Liquidator {
                         BalanceSide::Assets,
                         RequirementType::Initial,
                     )
-                    .unwrap();
+                    .ok()?;
 
                 let asset_amount_to_liquidate =
                     min(max_liquidation_amount, liquidation_asset_amount_capacity);
@@ -315,18 +325,25 @@ impl Liquidator {
     fn find_liquidation_bank_candidates(
         &self,
         account: &MarginfiAccountWrapper,
-    ) -> anyhow::Result<(Pubkey, Pubkey)> {
+    ) -> anyhow::Result<Option<(Pubkey, Pubkey)>> {
         let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
+
         let deposit_values = self.get_value_of_shares(
             deposit_shares,
             &BalanceSide::Assets,
             RequirementType::Maintenance,
-        );
+        )?;
+
         let liab_values = self.get_value_of_shares(
             liabs_shares,
             &BalanceSide::Liabilities,
             RequirementType::Maintenance,
-        );
+        )?;
+
+        if deposit_values.is_empty() || liab_values.is_empty() {
+            return Ok(None);
+        }
+
         let (_, asset_bank) = deposit_values
             .iter()
             .max_by(|a, b| a.0.cmp(&b.0))
@@ -335,9 +352,9 @@ impl Liquidator {
         let (_, liab_bank) = liab_values
             .iter()
             .max_by(|a, b| a.0.cmp(&b.0))
-            .ok_or_else(|| anyhow::anyhow!("No liabilitu bank found"))?;
+            .ok_or_else(|| anyhow::anyhow!("No liability bank found"))?;
 
-        Ok((*asset_bank, *liab_bank))
+        Ok(Some((*asset_bank, *liab_bank)))
     }
 
     /// Computes the max liquidatable asset amount
@@ -648,11 +665,16 @@ impl Liquidator {
         tshares: Vec<(I80F48, Pubkey)>,
         balance_side: &BalanceSide,
         requirement_type: RequirementType,
-    ) -> Vec<(I80F48, Pubkey)> {
+    ) -> anyhow::Result<Vec<(I80F48, Pubkey)>> {
         let mut values: Vec<(I80F48, Pubkey)> = Vec::new();
 
         for share in tshares {
-            let bank = self.banks.get(&share.1).unwrap();
+            let bank = match self.banks.get(&share.1) {
+                Some(bank) => bank,
+                None => {
+                    return Err(anyhow::anyhow!("Bank with pubkey {} not found", share.1));
+                }
+            };
 
             if !self.config.isolated_banks
                 && matches!(bank.bank.config.risk_tier, RiskTier::Isolated)
@@ -672,7 +694,7 @@ impl Liquidator {
             values.push((value, share.1));
         }
 
-        values
+        Ok(values)
     }
 
     fn get_all_mints(&self) -> Vec<Pubkey> {
