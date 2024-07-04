@@ -100,7 +100,7 @@ impl Rebalancer {
         })
     }
 
-    pub fn load_data(
+    pub async fn load_data(
         &mut self,
         banks_and_map: (HashMap<Pubkey, BankWrapper>, HashMap<Pubkey, Pubkey>),
     ) -> anyhow::Result<()> {
@@ -122,6 +122,10 @@ impl Rebalancer {
         let (mints, token_account_addresses) = self
             .token_account_manager
             .get_mints_and_token_account_addresses();
+
+        self.liquidator_account
+            .load_initial_data(&self.rpc_client, mints.clone())
+            .await?;
 
         let accounts = batch_get_multiple_accounts(
             self.rpc_client.clone(),
@@ -172,7 +176,7 @@ impl Rebalancer {
     }
 
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(5);
+        let max_duration = std::time::Duration::from_secs(10);
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.geyser_receiver.recv() {

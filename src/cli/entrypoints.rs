@@ -54,7 +54,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     .await?;
 
     liquidator.load_data().await?;
-    rebalancer.load_data(liquidator.get_banks_and_map())?;
+    rebalancer.load_data(liquidator.get_banks_and_map()).await?;
 
     let mut accounts_to_track = HashMap::new();
     for (key, value) in liquidator.get_accounts_to_track() {
