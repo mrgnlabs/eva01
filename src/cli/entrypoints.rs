@@ -25,7 +25,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // Creates an atomicbool that will be shared between the liquidator and the rebalancer
     // to stop the liquidator when the rebalancer ask for it
 
-    let stop_liquidator = Arc::new(AtomicBool::new(true));
+    let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     // Creates the transaction manager
     // a channel is shared between the liquidator/rebalancer

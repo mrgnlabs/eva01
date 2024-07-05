@@ -182,7 +182,25 @@ impl Liquidator {
                         // Accounts are sorted from the highest profit to the lowest
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();
-                        if let Some(highest_profit_account) = accounts.first() {
+                        for account in accounts {
+                            if let Err(e) = self
+                                .liquidator_account
+                                .liquidate(
+                                    &account.liquidate_account,
+                                    &account.asset_bank,
+                                    &account.liab_bank,
+                                    account.asset_amount,
+                                    &account.banks,
+                                )
+                                .await
+                            {
+                                info!(
+                                    "Failed to liquidate account {:?}, error: {:?}",
+                                    account.liquidate_account.address, e
+                                );
+                            }
+                        }
+                        /*if let Some(highest_profit_account) = accounts.first() {
                             info!(
                                 "Liquidating account {:?}",
                                 highest_profit_account.liquidate_account.address
@@ -203,7 +221,7 @@ impl Liquidator {
                                     highest_profit_account.liquidate_account.address, e
                                 );
                             }
-                        }
+                        }*/
                     }
                     break;
                 }
