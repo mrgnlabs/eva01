@@ -23,6 +23,7 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
+use core::panic;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -106,14 +107,21 @@ impl TransactionManager {
     /// Starts the transaction manager
     pub async fn start(&mut self) {
         for instructions in self.rx.clone().iter() {
-            let transactions = self.configure_instructions(instructions).await.unwrap();
+            let transactions = match self.configure_instructions(instructions).await {
+                Ok(txs) => txs,
+                Err(e) => {
+                    error!("Failed to configure instructions: {:?}", e);
+                    continue;
+                }
+            };
             loop {
-                let next_leader = self
-                    .searcher_client
-                    .get_next_scheduled_leader(NextScheduledLeaderRequest {})
-                    .await
-                    .unwrap()
-                    .into_inner();
+                let next_leader = match self.searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest {}).await {
+                    Ok(response) => response.into_inner(),
+                    Err(e) => {
+                        error!("Failed to get next scheduled leader: {:?}", e);
+                        continue;
+                    }
+                };
 
                 let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
 
@@ -123,7 +131,7 @@ impl TransactionManager {
 
                 tokio::time::sleep(SLEEP_DURATION).await;
             }
-            transactions.iter().for_each(|tx| {
+            for tx in transactions {
                 let mut transaction = Self::send_transaction(
                     tx.clone(),
                     self.searcher_client.clone(),
@@ -134,7 +142,7 @@ impl TransactionManager {
                         error!("Failed to send transaction: {:?}", e);
                     }
                 });
-            });
+            }
         }
     }
 

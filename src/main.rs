@@ -40,6 +40,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger, with INFO as default log level
     Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("Panic occurred: {:?}", panic_info);
+        std::process::exit(1);
+    }));
+
     // Main entrypoint
     crate::cli::main_entry().await?;
 
