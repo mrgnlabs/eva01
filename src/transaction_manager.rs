@@ -1,4 +1,5 @@
 use crate::config::GeneralConfig;
+use core::panic;
 use crossbeam::channel::Receiver;
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
@@ -23,7 +24,6 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use core::panic;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -115,7 +115,11 @@ impl TransactionManager {
                 }
             };
             loop {
-                let next_leader = match self.searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest {}).await {
+                let next_leader = match self
+                    .searcher_client
+                    .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+                    .await
+                {
                     Ok(response) => response.into_inner(),
                     Err(e) => {
                         error!("Failed to get next scheduled leader: {:?}", e);
