@@ -110,7 +110,7 @@ impl LiquidatorAccount {
             bank_liquidaity_vault_authority,
             bank_liquidaity_vault,
             bank_insurante_vault,
-            self.token_program_per_mint.get(&liab_mint).unwrap().clone(),
+            *self.token_program_per_mint.get(&liab_mint).unwrap(),
             liquidator_observation_accounts,
             liquidatee_observation_accounts,
             asset_bank.bank.config.oracle_keys[0],
@@ -148,7 +148,7 @@ impl LiquidatorAccount {
                 .get_observation_accounts(&[], &banks_to_exclude, banks);
 
         let mint = bank.bank.mint;
-        let token_program = self.token_program_per_mint.get(&mint).unwrap().clone();
+        let token_program = *self.token_program_per_mint.get(&mint).unwrap();
 
         let withdraw_ix = make_withdraw_ix(
             self.program_id,
@@ -189,7 +189,7 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-        let token_program = self.token_program_per_mint.get(&mint).unwrap().clone();
+        let token_program = *self.token_program_per_mint.get(&mint).unwrap();
 
         let repay_ix = make_repay_ix(
             self.program_id,
@@ -222,7 +222,7 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-        let token_program = self.token_program_per_mint.get(&mint).unwrap().clone();
+        let token_program = *self.token_program_per_mint.get(&mint).unwrap();
 
         let deposit_ix = make_deposit_ix(
             self.program_id,

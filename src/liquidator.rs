@@ -10,10 +10,7 @@ use crate::{
 };
 use anchor_client::Program;
 use anchor_lang::Discriminator;
-use crossbeam::{
-    channel::{Receiver, Sender},
-    epoch::Atomic,
-};
+use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{debug, error, info};

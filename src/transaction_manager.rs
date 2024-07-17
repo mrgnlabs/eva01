@@ -1,13 +1,11 @@
 use crate::config::GeneralConfig;
-use core::panic;
 use crossbeam::channel::Receiver;
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
     NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
 };
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
-use log::{error, info};
-use rayon::iter::IntoParallelRefIterator;
+use log::error;
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::{
     nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc,
@@ -24,12 +22,9 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use std::{error::Error, str::FromStr};
 use tonic::transport::Channel;
@@ -136,7 +131,7 @@ impl TransactionManager {
                 tokio::time::sleep(SLEEP_DURATION).await;
             }
             for tx in transactions {
-                let mut transaction = Self::send_transaction(
+                let transaction = Self::send_transaction(
                     tx.clone(),
                     self.searcher_client.clone(),
                     self.rpc.clone(),
