@@ -6,20 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# anchor-client = { version = "0.30.1", features = ["async"] }
-# anchor-lang = "0.30.1"
-# anchor-spl = "0.30.1"
-
-
 anchor-lang = { git = "https://github.com/mrgnlabs/anchor.git", rev = "fdcf299dc55ecf7cfa8c4d598aecb1363b99c02d" }
-# anchor-lang-29 = { version = "0.29.0", package = "anchor-lang" }
 anchor-spl = { git = "https://github.com/mrgnlabs/anchor.git", features = [
     "token_2022",
 ], rev = "fdcf299dc55ecf7cfa8c4d598aecb1363b99c02d" }
 anchor-client = { git = "https://github.com/mrgnlabs/anchor.git", rev = "fdcf299dc55ecf7cfa8c4d598aecb1363b99c02d", features = [
     "async",
 ] }
-
 
 anyhow = "1.0.79"
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
