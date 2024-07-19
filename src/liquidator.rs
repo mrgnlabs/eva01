@@ -153,7 +153,7 @@ impl Liquidator {
                                     &bank_to_update.bank.config,
                                     &[oracle_ai.clone()],
                                     &Clock::default(),
-                                    u64::MAX,
+                                    i64::MAX as u64,
                                 )
                                 .unwrap();
                         }
@@ -683,7 +683,7 @@ impl Liquidator {
                             &bank.config,
                             &[oracle_account_info],
                             &Clock::default(),
-                            u64::MAX,
+                            i64::MAX as u64,
                         )
                         .unwrap(),
                     ),

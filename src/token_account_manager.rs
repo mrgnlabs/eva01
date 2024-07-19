@@ -3,12 +3,15 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use anchor_lang::accounts::program;
 use anchor_spl::associated_token;
+use crossbeam::epoch::Owned;
 use log::{debug, error, info};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use sha2::{Digest, Sha256};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
+    account::Account,
     pubkey::Pubkey,
     signature::Keypair,
     signer::{SeedDerivable, Signer},
@@ -30,7 +33,7 @@ pub enum TokenAccountManagerError {
 
 #[derive(Clone)]
 pub struct TokenAccountManager {
-    mint_to_account: Arc<RwLock<HashMap<Pubkey, Pubkey>>>,
+    mint_to_account: Arc<RwLock<HashMap<Pubkey, (Pubkey, Pubkey)>>>,
     rpc_client: Arc<RpcClient>,
 }
 
@@ -47,15 +50,31 @@ impl TokenAccountManager {
         mints: &[Pubkey],
         signer: Pubkey,
     ) -> Result<(), TokenAccountManagerError> {
+        let mint_owners = batch_get_multiple_accounts(
+            self.rpc_client.clone(),
+            mints,
+            BatchLoadingConfig::DEFAULT,
+        )
+        .map_err(|e| {
+            error!("Failed to load mint accounts: {:?}", e);
+            TokenAccountManagerError::SetupFailed("Failed to find missing accounts")
+        })?
+        .iter()
+        .map(|a| a.as_ref().unwrap().owner)
+        .collect::<Vec<_>>();
+
         let mut mint_to_account = self.mint_to_account.write().unwrap();
 
-        mints.iter().try_for_each(|mint| {
-            let address = get_address_for_token_account(signer, *mint, TOKEN_ACCOUNT_SEED)?;
+        mints
+            .iter()
+            .zip(mint_owners)
+            .try_for_each(|(mint, program_id)| {
+                let address = get_address_for_token_account(signer, *mint, program_id)?;
 
-            mint_to_account.insert(*mint, address);
+                mint_to_account.insert(*mint, (address, program_id));
 
-            Ok::<_, TokenAccountManagerError>(())
-        })
+                Ok::<_, TokenAccountManagerError>(())
+            })
     }
 
     pub fn get_mints_and_token_account_addresses(&self) -> (Vec<Pubkey>, Vec<Pubkey>) {
@@ -72,7 +91,7 @@ impl TokenAccountManager {
             .map(|mint| *self.mint_to_account.read().unwrap().get(mint).unwrap())
             .collect::<Vec<_>>();
 
-        (mints, addresses)
+        (mints, addresses.iter().map(|(a, _)| *a).collect())
     }
 
     pub fn create_token_accounts(
@@ -107,7 +126,11 @@ impl TokenAccountManager {
 
         // Create missing token accounts
         {
-            let addresses = tas.iter().map(|(_, address)| *address).collect::<Vec<_>>();
+            let addresses = tas
+                .iter()
+                .map(|(mint, address)| vec![*mint, *address])
+                .flatten()
+                .collect::<Vec<_>>();
 
             let res = batch_get_multiple_accounts(
                 rpc_client.clone(),
@@ -119,20 +142,30 @@ impl TokenAccountManager {
                 TokenAccountManagerError::SetupFailed("Failed to find missing accounts")
             })?;
 
-            let tas_to_create = res
+            let address_to_account_map: HashMap<Pubkey, Option<Account>> = res
                 .iter()
-                .zip(tas.iter())
-                .filter_map(|(res, (mint, address))| {
-                    if res.is_none() {
-                        debug!("Creating token account for mint: {:?}", mint);
-                        Some((address, mint))
+                .zip(addresses.iter())
+                .map(|(account, address)| (*address, account.clone()))
+                .collect();
+
+            let tas_to_create = tas.iter()
+                .filter_map(|(mint, address)| {
+                    let mint_account =  address_to_account_map.get(mint).unwrap().as_ref().unwrap();
+                    let maybe_token_account = address_to_account_map.get(address).unwrap();
+
+                    let program_id = mint_account.owner;
+                    debug!("Token account {} for mint {} program {}, exists {}", address, mint, program_id, maybe_token_account.is_some());
+                    if maybe_token_account.is_none() {
+                        debug!("Creating token account for mint: {:?}, program_id: {}", mint, program_id);
+                        Some((address, mint, program_id))
                     } else {
                         None
                     }
+
                 })
-                .map(|(_, mint)| -> Result<_, TokenAccountManagerError> {
+                .map(|(_, mint, program_id)| -> Result<_, TokenAccountManagerError> {
                     let signer_pk = signer.pubkey();
-                    let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(&signer_pk, &signer_pk, mint, &spl_token::ID);
+                    let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(&signer_pk, &signer_pk, mint, &program_id);
 
                     Ok(ix)
                 })
@@ -177,7 +210,12 @@ impl TokenAccountManager {
     }
 
     pub fn get_address_for_mint(&self, mint: Pubkey) -> Option<Pubkey> {
-        self.mint_to_account.read().unwrap().get(&mint).copied()
+        self.mint_to_account
+            .read()
+            .unwrap()
+            .get(&mint)
+            .as_ref()
+            .map(|(a, _)| *a)
     }
 }
 
@@ -205,9 +243,7 @@ fn get_keypair_for_token_account(
 fn get_address_for_token_account(
     signer: Pubkey,
     mint: Pubkey,
-    _seed: &[u8],
+    program_id: Pubkey,
 ) -> Result<Pubkey, TokenAccountManagerError> {
-    Ok(associated_token::get_associated_token_address(
-        &signer, &mint,
-    ))
+    Ok(associated_token::get_associated_token_address_with_program_id(&signer, &mint, &program_id))
 }

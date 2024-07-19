@@ -192,7 +192,7 @@ impl Rebalancer {
                                     &bank_to_update.bank.config,
                                     &[oracle_ai.clone()],
                                     &Clock::default(),
-                                    u64::MAX,
+                                    i64::MAX as u64,
                                 )
                                 .unwrap();
                         }
