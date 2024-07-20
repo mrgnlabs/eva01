@@ -34,7 +34,7 @@ use marginfi::{
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
-    account_info::IntoAccountInfo, commitment_config::CommitmentConfig,
+    account_info::IntoAccountInfo, clock::Clock, commitment_config::CommitmentConfig,
     signature::read_keypair_file, transaction::VersionedTransaction,
 };
 use std::{
@@ -191,8 +191,8 @@ impl Rebalancer {
                                 OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                                     &bank_to_update.bank.config,
                                     &[oracle_ai.clone()],
-                                    0,
-                                    u64::MAX,
+                                    &Clock::default(),
+                                    i64::MAX as u64,
                                 )
                                 .unwrap();
                         }

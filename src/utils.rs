@@ -9,11 +9,12 @@ use backoff::ExponentialBackoff;
 use fixed::types::I80F48;
 use marginfi::{
     bank_authority_seed, bank_seed,
+    constants::{PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID, PYTH_PUSH_PYTH_SPONSORED_SHARD_ID},
     prelude::MarginfiResult,
     state::{
         marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
-        marginfi_group::{Bank, BankVaultType, RiskTier},
-        price::{PriceAdapter, PriceBias},
+        marginfi_group::{Bank, BankConfig, BankVaultType, RiskTier},
+        price::{PriceAdapter, PriceBias, PythPushOraclePriceFeed},
     },
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
@@ -542,4 +543,25 @@ pub fn calc_weighted_liabs(
         bank.mint_decimals,
         Some(liability_weight),
     )?)
+}
+
+pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
+    match bank_config.oracle_setup {
+        marginfi::state::price::OracleSetup::PythPushOracle => {
+            let feed_id = bank_config.get_pyth_push_oracle_feed_id().unwrap();
+            vec![
+                PythPushOraclePriceFeed::find_oracle_address(
+                    PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID,
+                    feed_id,
+                )
+                .0,
+                PythPushOraclePriceFeed::find_oracle_address(
+                    PYTH_PUSH_PYTH_SPONSORED_SHARD_ID,
+                    feed_id,
+                )
+                .0,
+            ]
+        }
+        _ => vec![bank_config.oracle_keys.first().unwrap().clone()],
+    }
 }

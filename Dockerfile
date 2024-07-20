@@ -12,7 +12,7 @@ RUN apt-get update && \
 COPY . .
 
 # Build the application
-RUN cargo build --release
+RUN cargo build --release --locked
 
 # Final stage
 FROM debian:bookworm-slim

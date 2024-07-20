@@ -113,8 +113,8 @@ impl LiquidatorAccount {
             *self.token_program_per_mint.get(&liab_mint).unwrap(),
             liquidator_observation_accounts,
             liquidatee_observation_accounts,
-            asset_bank.bank.config.oracle_keys[0],
-            liab_bank.bank.config.oracle_keys[0],
+            asset_bank.oracle_adapter.address,
+            liab_bank.oracle_adapter.address,
             liab_mint,
             asset_amount,
         );

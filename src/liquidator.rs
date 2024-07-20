@@ -2,7 +2,10 @@ use crate::{
     config::{GeneralConfig, LiquidatorCfg},
     geyser::{AccountType, GeyserUpdate},
     transaction_manager::BatchTransactions,
-    utils::{batch_get_multiple_accounts, BankAccountWithPriceFeedEva, BatchLoadingConfig},
+    utils::{
+        batch_get_multiple_accounts, find_oracle_keys, BankAccountWithPriceFeedEva,
+        BatchLoadingConfig,
+    },
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapper,
@@ -13,7 +16,7 @@ use anchor_lang::Discriminator;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
@@ -30,7 +33,9 @@ use solana_client::{
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{account_info::IntoAccountInfo, bs58, signature::Keypair};
+use solana_sdk::{
+    account::Account, account_info::IntoAccountInfo, bs58, clock::Clock, signature::Keypair,
+};
 use std::{
     cmp::min,
     collections::HashMap,
@@ -147,8 +152,8 @@ impl Liquidator {
                                 OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                                     &bank_to_update.bank.config,
                                     &[oracle_ai.clone()],
-                                    0,
-                                    u64::MAX,
+                                    &Clock::default(),
+                                    i64::MAX as u64,
                                 )
                                 .unwrap();
                         }
@@ -633,24 +638,39 @@ impl Liquidator {
 
         let oracle_keys = banks
             .iter()
-            .map(|(_, bank)| bank.config.oracle_keys[0])
+            .map(|(_, bank)| find_oracle_keys(&bank.config))
+            .flatten()
             .collect::<Vec<_>>();
 
         let mut oracle_accounts =
             batch_get_multiple_accounts(rpc_client, &oracle_keys, BatchLoadingConfig::DEFAULT)?;
 
-        info!("Found {:?} oracle accounts", oracle_accounts.len());
-
-        let mut oracle_with_address = oracle_keys
+        let oracle_map: HashMap<Pubkey, Option<Account>> = oracle_keys
             .iter()
             .zip(oracle_accounts.iter_mut())
-            .collect::<Vec<_>>();
+            .map(|(pk, account)| (*pk, account.take()))
+            .collect();
 
-        for ((bank_address, bank), (oracle_address, maybe_oracle_address)) in
-            banks.iter().zip(oracle_with_address.iter_mut())
-        {
-            let oracle_account_info =
-                (*oracle_address, maybe_oracle_address.as_mut().unwrap()).into_account_info();
+        info!("Found {:?} oracle accounts", oracle_accounts.len());
+
+        for (bank_address, bank) in banks.iter() {
+            let (oracle_address, mut oracle_account) = {
+                let oracle_addresses = find_oracle_keys(&bank.config);
+                let mut oracle_account = None;
+                let mut oracle_address = None;
+
+                for address in oracle_addresses.iter() {
+                    if let Some(Some(account)) = oracle_map.get(&address) {
+                        oracle_account = Some(account.clone());
+                        oracle_address = Some(*address);
+                        break;
+                    }
+                }
+
+                (oracle_address.unwrap(), oracle_account.unwrap())
+            };
+
+            let oracle_account_info = (&oracle_address, &mut oracle_account).into_account_info();
 
             self.banks.insert(
                 *bank_address,
@@ -658,19 +678,19 @@ impl Liquidator {
                     *bank_address,
                     *bank,
                     OracleWrapper::new(
-                        **oracle_address,
+                        oracle_address,
                         OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                             &bank.config,
                             &[oracle_account_info],
-                            0,
-                            u64::MAX,
+                            &Clock::default(),
+                            i64::MAX as u64,
                         )
                         .unwrap(),
                     ),
                 ),
             );
 
-            self.oracle_to_bank.insert(**oracle_address, *bank_address);
+            self.oracle_to_bank.insert(oracle_address, *bank_address);
         }
 
         Ok(())
