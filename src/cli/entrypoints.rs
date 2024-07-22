@@ -69,6 +69,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
             config.general_config.get_geyser_service_config(),
             accounts_to_track,
             config.general_config.marginfi_program_id,
+            config.general_config.marginfi_group_address,
             liquidator_tx,
             rebalancer_tx,
         )

@@ -1,8 +1,9 @@
 use crate::utils::account_update_to_account;
+use anchor_lang::AccountDeserialize;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
 use log::{error, info};
-use marginfi::state::marginfi_account::MarginfiAccount;
+use marginfi::{instructions::marginfi_account, state::marginfi_account::MarginfiAccount};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use std::{collections::HashMap, mem::size_of};
@@ -48,6 +49,7 @@ impl GeyserService {
         config: GeyserServiceConfig,
         tracked_accounts: HashMap<Pubkey, AccountType>,
         marginfi_program_id: Pubkey,
+        marginfi_group_pk: Pubkey,
         liquidator_sender: Sender<GeyserUpdate>,
         rebalancer_sender: Sender<GeyserUpdate>,
     ) -> anyhow::Result<()> {
@@ -87,6 +89,25 @@ impl GeyserService {
                                                     && update_account.data.len()
                                                         == MARGIN_ACCOUNT_SIZE
                                                 {
+                                                    let marginfi_account =
+                                                        MarginfiAccount::try_deserialize(
+                                                            &mut account.data.as_slice(),
+                                                        );
+
+                                                    match marginfi_account {
+                                                        Err(_) => {
+                                                            error!("Error deserializing marginfi account");
+                                                            continue;
+                                                        }
+                                                        Ok(marginfi_account) => {
+                                                            if marginfi_account.group
+                                                                != marginfi_group_pk
+                                                            {
+                                                                continue;
+                                                            }
+                                                        }
+                                                    }
+
                                                     let update = GeyserUpdate {
                                                         account_type: AccountType::MarginfiAccount,
                                                         address,
