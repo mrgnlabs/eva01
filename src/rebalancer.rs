@@ -23,7 +23,7 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
-use log::info;
+use log::{debug, info, warn};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
@@ -180,6 +180,7 @@ impl Rebalancer {
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.geyser_receiver.recv() {
+                debug!("Received message {:?}", msg);
                 match msg.account_type {
                     AccountType::OracleAccount => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
@@ -233,6 +234,7 @@ impl Rebalancer {
     }
 
     async fn rebalance_accounts(&mut self) -> anyhow::Result<()> {
+        debug!("Rebalancing accounts");
         self.sell_non_preferred_deposits().await?;
         self.repay_liabilities().await?;
         self.handle_tokens_in_token_accounts().await?;
@@ -248,6 +250,16 @@ impl Rebalancer {
             &self.liquidator_account.account_wrapper,
             RequirementType::Initial,
         );
+
+        if assets.is_zero() {
+            warn!("Assets are zero, stopping liquidations");
+
+            self.stop_liquidations
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+
+            return Ok(());
+        }
+
         if (assets - liabs) / assets <= 0.5 {
             self.stop_liquidations
                 .store(true, std::sync::atomic::Ordering::Relaxed);

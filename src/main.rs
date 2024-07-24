@@ -1,5 +1,5 @@
 use env_logger::Builder;
-use std::error::Error;
+use std::{backtrace::Backtrace, error::Error};
 
 /// Geyser service
 mod geyser;
@@ -41,7 +41,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     std::panic::set_hook(Box::new(|panic_info| {
-        eprintln!("Panic occurred: {:?}", panic_info);
+        eprintln!("Panic occurred: {:#?}", panic_info);
+
+        eprintln!("Backtrace: {}", Backtrace::capture());
+
         std::process::exit(1);
     }));
 

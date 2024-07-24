@@ -142,6 +142,7 @@ impl Liquidator {
         loop {
             let start = std::time::Instant::now();
             while let Ok(mut msg) = self.geyser_receiver.recv() {
+                debug!("Received message {:?}", msg);
                 match msg.account_type {
                     AccountType::OracleAccount => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
