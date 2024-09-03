@@ -1,5 +1,6 @@
 use crate::{
     config::{GeneralConfig, LiquidatorCfg},
+    crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
     transaction_manager::BatchTransactions,
     utils::{
@@ -55,6 +56,7 @@ pub struct Liquidator {
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
     stop_liquidation: Arc<AtomicBool>,
+    crossbar_client: CrossbarMaintainer,
 }
 
 #[derive(Clone)]
@@ -121,6 +123,7 @@ impl Liquidator {
             liquidator_account,
             oracle_to_bank: HashMap::new(),
             stop_liquidation,
+            crossbar_client: CrossbarMaintainer::new(),
         }
     }
 
@@ -149,7 +152,8 @@ impl Liquidator {
                             let oracle_ai = (&msg.address, &mut msg.account).into_account_info();
                             let bank_to_update: &mut BankWrapper =
                                 self.banks.get_mut(bank_to_update_pk).unwrap();
-                            bank_to_update.oracle_adapter.price_adapter =
+
+                            let oracle_price_adapter =
                                 OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                                     &bank_to_update.bank.config,
                                     &[oracle_ai.clone()],
@@ -157,6 +161,18 @@ impl Liquidator {
                                     i64::MAX as u64,
                                 )
                                 .unwrap();
+
+                            match oracle_price_adapter {
+                                OraclePriceFeedAdapter::SwitchboardPull(_) => {
+                                    let full_swb =
+                                        crate::utils::load_swb_pull_account(&oracle_ai).unwrap();
+                                    let feed_hash = hex::encode(full_swb.feed_hash);
+                                    bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
+                                }
+                                _ => {}
+                            }
+
+                            bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                         }
                     }
                     AccountType::MarginfiAccount => {
@@ -181,7 +197,7 @@ impl Liquidator {
                     {
                         break;
                     }
-                    if let Ok(mut accounts) = self.process_all_accounts() {
+                    if let Ok(mut accounts) = self.process_all_accounts().await {
                         // Accounts are sorted from the highest profit to the lowest
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();
@@ -203,28 +219,6 @@ impl Liquidator {
                                 );
                             }
                         }
-                        /*if let Some(highest_profit_account) = accounts.first() {
-                            info!(
-                                "Liquidating account {:?}",
-                                highest_profit_account.liquidate_account.address
-                            );
-                            if let Err(e) = self
-                                .liquidator_account
-                                .liquidate(
-                                    &highest_profit_account.liquidate_account,
-                                    &highest_profit_account.asset_bank,
-                                    &highest_profit_account.liab_bank,
-                                    highest_profit_account.asset_amount,
-                                    &highest_profit_account.banks,
-                                )
-                                .await
-                            {
-                                info!(
-                                    "Failed to liquidate account {:?}, error: {:?}",
-                                    highest_profit_account.liquidate_account.address, e
-                                );
-                            }
-                        }*/
                     }
                     break;
                 }
@@ -234,7 +228,27 @@ impl Liquidator {
 
     /// Starts processing/evaluate all account, checking
     /// if a liquidation is necessary/needed
-    fn process_all_accounts(&self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
+    async fn process_all_accounts(&mut self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
+        // Update switchboard pull prices with crossbar
+        let swb_feed_hashes = self
+            .banks
+            .values()
+            .filter_map(|bank| {
+                if let Some(feed_hash) = &bank.oracle_adapter.swb_feed_hash {
+                    Some((bank.address, feed_hash.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let simulated_prices = self.crossbar_client.simulate(swb_feed_hashes).await;
+
+        for (bank_pk, price) in simulated_prices {
+            let bank = self.banks.get_mut(&bank_pk).unwrap();
+            bank.oracle_adapter.simulated_price = Some(price);
+        }
+
         let accounts = self
             .marginfi_accounts
             .par_iter()
@@ -318,12 +332,10 @@ impl Liquidator {
 
         let lower_price = bank
             .oracle_adapter
-            .price_adapter
             .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low))?;
 
         let higher_price = bank
             .oracle_adapter
-            .price_adapter
             .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::High))?;
 
         let token_decimals = bank.bank.mint_decimals as usize;

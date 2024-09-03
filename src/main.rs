@@ -35,6 +35,9 @@ mod config;
 /// Transactio manager
 mod transaction_manager;
 
+/// Crossbar client
+mod crossbar;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger, with INFO as default log level

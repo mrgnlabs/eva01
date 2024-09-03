@@ -1,9 +1,3 @@
-use std::{
-    collections::HashMap,
-    str::FromStr,
-    sync::{atomic::AtomicUsize, Arc, RwLock},
-};
-
 use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
 use fixed::types::I80F48;
@@ -22,7 +16,13 @@ use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serializer};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account::Account;
+use solana_sdk::{account::Account, account_info::AccountInfo};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::{atomic::AtomicUsize, Arc, RwLock},
+};
+use switchboard_on_demand_client::PullFeedAccountData;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 use crate::wrappers::bank::BankWrapper;
@@ -333,12 +333,12 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     ) -> anyhow::Result<I80F48> {
         match bank.config.risk_tier {
             RiskTier::Collateral => {
-                let price_feed = &self.bank.oracle_adapter.price_adapter;
+                let oracle_adapter = &self.bank.oracle_adapter;
                 let mut asset_weight = bank
                     .config
                     .get_weight(requirement_type, BalanceSide::Assets);
 
-                let lower_price = price_feed.get_price_of_type(
+                let lower_price = oracle_adapter.get_price_of_type(
                     requirement_type.get_oracle_price_type(),
                     Some(PriceBias::Low),
                 )?;
@@ -370,16 +370,18 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
         requirement_type: RequirementType,
         bank: &Bank,
     ) -> MarginfiResult<I80F48> {
-        let price_feed = &self.bank.oracle_adapter.price_adapter;
+        let oracle_adapter = &self.bank.oracle_adapter;
 
         let liability_weight = bank
             .config
             .get_weight(requirement_type, BalanceSide::Liabilities);
 
-        let higher_price = price_feed.get_price_of_type(
-            requirement_type.get_oracle_price_type(),
-            Some(PriceBias::High),
-        )?;
+        let higher_price = oracle_adapter
+            .get_price_of_type(
+                requirement_type.get_oracle_price_type(),
+                Some(PriceBias::High),
+            )
+            .unwrap();
 
         calc_value(
             bank.get_liability_amount(self.balance.liability_shares.into())?,
@@ -411,7 +413,7 @@ pub fn calc_weighted_assets_new(
     amount: I80F48,
     requirement_type: RequirementType,
 ) -> anyhow::Result<I80F48> {
-    let price_feed = &bank.oracle_adapter.price_adapter;
+    let oracle_adapter = &bank.oracle_adapter;
     let mut asset_weight = bank
         .bank
         .config
@@ -424,7 +426,7 @@ pub fn calc_weighted_assets_new(
     };
 
     let lower_price =
-        price_feed.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+        oracle_adapter.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
 
     if matches!(requirement_type, RequirementType::Initial) {
         if let Some(discount) = bank
@@ -451,7 +453,7 @@ pub fn calc_weighted_assets(
     requirement_type: RequirementType,
 ) -> anyhow::Result<I80F48> {
     let bank_wrapper_ref = bank_rw_lock.read().unwrap();
-    let price_feed = &bank_wrapper_ref.oracle_adapter.price_adapter;
+    let oracle_adapter = &bank_wrapper_ref.oracle_adapter;
     let mut asset_weight = bank_wrapper_ref
         .bank
         .config
@@ -464,7 +466,7 @@ pub fn calc_weighted_assets(
     };
 
     let lower_price =
-        price_feed.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+        oracle_adapter.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
 
     if matches!(requirement_type, RequirementType::Initial) {
         if let Some(discount) = bank_wrapper_ref
@@ -504,7 +506,6 @@ pub fn calc_weighted_liabs_new(
 
     let higher_price = bank
         .oracle_adapter
-        .price_adapter
         .get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
 
     Ok(calc_value(
@@ -523,7 +524,7 @@ pub fn calc_weighted_liabs(
 ) -> anyhow::Result<I80F48> {
     let bank_wrapper_ref = bank_rw_lock.read().unwrap();
     let bank = &bank_wrapper_ref.bank;
-    let price_feed = &bank_wrapper_ref.oracle_adapter.price_adapter;
+    let oracle_adapter = &bank_wrapper_ref.oracle_adapter;
     let liability_weight = bank
         .config
         .get_weight(requirement_type, BalanceSide::Liabilities);
@@ -535,7 +536,7 @@ pub fn calc_weighted_liabs(
     };
 
     let higher_price =
-        price_feed.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+        oracle_adapter.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
 
     Ok(calc_value(
         amount,
@@ -564,4 +565,30 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
         }
         _ => vec![bank_config.oracle_keys.first().unwrap().clone()],
     }
+}
+
+pub fn load_swb_pull_account(account_info: &AccountInfo) -> anyhow::Result<PullFeedAccountData> {
+    let bytes = &account_info.data.borrow().to_vec();
+
+    if bytes
+        .as_ptr()
+        .align_offset(std::mem::align_of::<PullFeedAccountData>())
+        != 0
+    {
+        return Err(anyhow::anyhow!("Invalid alignment"));
+    }
+
+    let num = bytes.len() / std::mem::size_of::<PullFeedAccountData>();
+    let mut vec: Vec<PullFeedAccountData> = Vec::with_capacity(num);
+
+    unsafe {
+        vec.set_len(num);
+        std::ptr::copy_nonoverlapping(
+            bytes[8..std::mem::size_of::<PullFeedAccountData>() + 8].as_ptr(),
+            vec.as_mut_ptr() as *mut u8,
+            bytes.len(),
+        );
+    }
+
+    Ok(vec[0])
 }
