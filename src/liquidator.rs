@@ -41,10 +41,8 @@ use solana_sdk::{
     account::Account, account_info::IntoAccountInfo, bs58, clock::Clock, signature::Keypair,
 };
 use std::{
-    cell::RefCell,
     cmp::min,
     collections::HashMap,
-    rc::Rc,
     sync::{atomic::AtomicBool, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
@@ -155,28 +153,44 @@ impl Liquidator {
                 match msg.account_type {
                     AccountType::OracleAccount => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
-                            let oracle_ai = (&msg.address, &mut msg.account).into_account_info();
                             let bank_to_update: &mut BankWrapper =
                                 self.banks.get_mut(bank_to_update_pk).unwrap();
 
-                            let oracle_price_adapter =
-                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                                    &bank_to_update.bank.config,
-                                    &[oracle_ai.clone()],
-                                    &Clock::default(),
-                                    i64::MAX as u64,
-                                )
-                                .unwrap();
+                            let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup
+                            {
+                                OracleSetup::SwitchboardPull => {
+                                    let mut offsets_data =
+                                        [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                                    offsets_data.copy_from_slice(
+                                        &msg.account.data
+                                            [8..std::mem::size_of::<PullFeedAccountData>() + 8],
+                                    );
+                                    let swb_feed = crate::utils::load_swb_pull_account_from_bytes(
+                                        &offsets_data,
+                                    )
+                                    .unwrap();
 
-                            match oracle_price_adapter {
-                                OraclePriceFeedAdapter::SwitchboardPull(_) => {
-                                    let full_swb =
-                                        crate::utils::load_swb_pull_account(&oracle_ai).unwrap();
-                                    let feed_hash = hex::encode(full_swb.feed_hash);
+                                    let feed_hash = hex::encode(swb_feed.feed_hash);
                                     bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
+
+                                    OraclePriceFeedAdapter::SwitchboardPull(
+                                        SwitchboardPullPriceFeed {
+                                            feed: Box::new((&swb_feed).into()),
+                                        },
+                                    )
                                 }
-                                _ => {}
-                            }
+                                _ => {
+                                    let oracle_account_info =
+                                        (&msg.address, &mut msg.account).into_account_info();
+                                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                        &bank_to_update.bank.config,
+                                        &[oracle_account_info],
+                                        &Clock::default(),
+                                        i64::MAX as u64,
+                                    )
+                                    .unwrap()
+                                }
+                            };
 
                             bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                         }
@@ -689,28 +703,30 @@ impl Liquidator {
                 (oracle_address.unwrap(), oracle_account.unwrap())
             };
 
-            let mut oracle_account_info =
-                (&oracle_address, &mut oracle_account).into_account_info();
-
             let price_adapter = match bank.config.oracle_setup {
                 OracleSetup::SwitchboardPull => {
-                    let swb_feed = crate::utils::load_swb_pull_account_from_bytes(
-                        &oracle_account_info.data.borrow()
-                            [0..std::mem::size_of::<PullFeedAccountData>()],
-                    )
-                    .unwrap();
+                    let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                    offsets_data.copy_from_slice(
+                        &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
+                    );
+                    let swb_feed =
+                        crate::utils::load_swb_pull_account_from_bytes(&offsets_data).unwrap();
 
                     OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
                         feed: Box::new((&swb_feed).into()),
                     })
                 }
-                _ => OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                    &bank.config,
-                    &[oracle_account_info],
-                    &Clock::default(),
-                    i64::MAX as u64,
-                )
-                .unwrap(),
+                _ => {
+                    let oracle_account_info =
+                        (&oracle_address, &mut oracle_account).into_account_info();
+                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                        &bank.config,
+                        &[oracle_account_info],
+                        &Clock::default(),
+                        i64::MAX as u64,
+                    )
+                    .unwrap()
+                }
             };
 
             self.banks.insert(

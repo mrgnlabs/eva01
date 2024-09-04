@@ -296,7 +296,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
             .map(move |balance| {
                 let bank = banks
                     .get(&balance.bank_pk)
-                    .ok_or_else(|| anyhow::anyhow!("Bank not found"))?
+                    .ok_or_else(|| anyhow::anyhow!("Bank {:?} not found", balance.bank_pk))?
                     .clone();
 
                 Ok(BankAccountWithPriceFeedEva { bank, balance })
@@ -575,24 +575,12 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
 }
 
 pub fn load_swb_pull_account(account_info: &AccountInfo) -> anyhow::Result<PullFeedAccountData> {
-    let bytes = &account_info.data.borrow().to_vec();
+    let bytes = &account_info.data.borrow().to_vec()[8..std::mem::size_of::<PullFeedAccountData>()];
 
     Ok(load_swb_pull_account_from_bytes(bytes)?)
 }
 
 pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> anyhow::Result<PullFeedAccountData> {
-    println!(
-        "struct alignment {}",
-        std::mem::align_of::<PullFeedAccountData>()
-    );
-    println!("bytes alignment {}", std::mem::align_of_val(bytes));
-    println!(
-        "offset {}",
-        bytes
-            .as_ptr()
-            .align_offset(std::mem::align_of::<PullFeedAccountData>())
-    );
-
     if bytes
         .as_ptr()
         .align_offset(std::mem::align_of::<PullFeedAccountData>())

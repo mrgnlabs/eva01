@@ -3,7 +3,7 @@ use anchor_lang::AccountDeserialize;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
 use log::{error, info};
-use marginfi::{instructions::marginfi_account, state::marginfi_account::MarginfiAccount};
+use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use std::{collections::HashMap, mem::size_of};
@@ -170,7 +170,6 @@ impl GeyserService {
                 }
             }
         }
-        Ok(())
     }
 
     /// Builds a geyser subscription request payload
