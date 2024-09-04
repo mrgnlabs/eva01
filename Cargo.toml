@@ -21,12 +21,14 @@ bytemuck = "1.14.0"
 bytes = "1.5.0"
 clap = { version = "4.5.4", features = ["derive"] }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
+dirs = "4.0.0"
 env_logger = "0.11.3"
 fixed = "1.24.0"
 fixed-macro = "1.2.0"
 futures = "0.3.30"
 futures-sink = "0.3.30"
 jupiter-swap-api-client = "0.1.0"
+lazy_static = "1.5.0"
 log = "0.4.21"
 marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", branch = "main", features = [
     "mainnet-beta",
@@ -59,6 +61,7 @@ jito-searcher-client = { git = "https://github.com/mrgnlabs/jito-rs", branch = "
 switchboard-on-demand-client = "0.1.7"
 chrono = "0.4.38"
 hex = "0.4.3"
+url = "2.5.2"
 
 [profile.release]
 opt-level = 3

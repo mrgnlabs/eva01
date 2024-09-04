@@ -8,7 +8,7 @@ use marginfi::{
     state::{
         marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
         marginfi_group::{Bank, BankConfig, BankVaultType, RiskTier},
-        price::{PriceAdapter, PriceBias, PythPushOraclePriceFeed},
+        price::{PriceBias, PythPushOraclePriceFeed},
     },
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
@@ -16,13 +16,20 @@ use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serializer};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{account::Account, account_info::AccountInfo};
+use solana_sdk::{
+    account::Account,
+    account_info::AccountInfo,
+    signature::{read_keypair_file, Keypair},
+};
 use std::{
     collections::HashMap,
+    io::Write,
+    path::PathBuf,
     str::FromStr,
     sync::{atomic::AtomicUsize, Arc, RwLock},
 };
 use switchboard_on_demand_client::PullFeedAccountData;
+use url::Url;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 use crate::wrappers::bank::BankWrapper;
@@ -591,4 +598,40 @@ pub fn load_swb_pull_account(account_info: &AccountInfo) -> anyhow::Result<PullF
     }
 
     Ok(vec[0])
+}
+
+pub fn expand_tilde(path: &str) -> PathBuf {
+    if path.starts_with("~") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(&path[2..]);
+        }
+    }
+    PathBuf::from(path)
+}
+
+pub fn is_valid_url(input: &str) -> bool {
+    Url::parse(input).is_ok()
+}
+
+pub fn prompt_user(prompt_text: &str) -> anyhow::Result<String> {
+    print!("{}", prompt_text);
+    let mut input = String::new();
+    std::io::stdout().flush()?;
+    std::io::stdin().read_line(&mut input)?;
+    input.pop();
+    Ok(input)
+}
+
+/// Simply asks the keypair path until it is a valid one,
+/// Returns (keypair_path, signer_keypair)
+pub fn ask_keypair_until_valid() -> anyhow::Result<(PathBuf, Keypair)> {
+    loop {
+        let keypair_path = expand_tilde(&prompt_user("Keypair file path [required]: ")?);
+        match read_keypair_file(&keypair_path) {
+            Ok(keypair) => return Ok((keypair_path, keypair)),
+            Err(_) => {
+                println!("Failed to load the keypair from the provided path. Please try again");
+            }
+        }
+    }
 }

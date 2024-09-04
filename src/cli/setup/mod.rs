@@ -1,75 +1,96 @@
-use crate::config::{Eva01Config, GeneralConfig, LiquidatorCfg, RebalancerCfg};
+use super::app::SetupFromCliOpts;
+use crate::{
+    config::{Eva01Config, GeneralConfig, LiquidatorCfg, RebalancerCfg},
+    utils::{ask_keypair_until_valid, expand_tilde, is_valid_url, prompt_user},
+};
+
+use anyhow::bail;
 use fixed::types::I80F48;
+use lazy_static::lazy_static;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
-use solana_client::rpc_client::RpcClient;
 use solana_client::{
+    rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{
-    signature::{read_keypair_file, Signer},
-    signer::keypair::Keypair,
-};
-use std::io::Write;
-use std::path::PathBuf;
-
-use super::app::SetupFromCliOpts;
+use solana_sdk::signature::{read_keypair_file, Signer};
+use std::{ops::Not, path::PathBuf, str::FromStr};
 
 /// Helper for initializing Marginfi Account
 pub mod initialize;
 
-/// 1º -> Ask for path where the config file will be stored
-///
-/// 2º -> Ask for a solana RPC endpoint url
-///    -> Verify if we have access to the RPC endpoint
-///
-/// 3º -> Ask for the signer keypair path
-///    -> Check if the MarginfiAccount is already initialized in that keypair
-///       If not, try to initialize a account
-///
-/// 4º -> Ask for the yellowstone rpc and optinal x token
-pub async fn setup() -> anyhow::Result<()> {
-    // 1º Step
-    let configuration_path = PathBuf::from(
-        prompt_user("Pretended configuration file location\nExample: /home/mrgn/.config/liquidator/config.toml\n> ")?
-    );
+lazy_static! {
+    static ref DEFAULT_CONFIG_PATH: PathBuf = {
+        let mut path = dirs::home_dir().expect("Couldn't find the config directory");
+        path.push(".config");
+        path.push("eva01");
 
-    // 2º Step
-    let rpc_url = prompt_user("RPC endpoint url\n> ")?;
+        path
+    };
+}
+
+pub async fn setup() -> anyhow::Result<()> {
+    // Config location
+    let input_raw = prompt_user(&format!(
+        "Select config location [default: {:?}]: ",
+        *DEFAULT_CONFIG_PATH
+    ))?;
+    let configuration_dir = if input_raw.is_empty() {
+        DEFAULT_CONFIG_PATH.clone()
+    } else {
+        expand_tilde(&input_raw)
+    };
+    if !configuration_dir.exists() {
+        std::fs::create_dir_all(&configuration_dir)?;
+    }
+    let configuration_path = configuration_dir.join("config.toml");
+
+    // RPC config
+    let rpc_url = prompt_user("RPC endpoint url [required]: ")?;
+    if !is_valid_url(&rpc_url) {
+        bail!("Invalid RPC endpoint");
+    }
     let rpc_client = RpcClient::new(rpc_url.clone());
 
-    // 3º Step
+    // Target program/group
+    let input_raw = prompt_user(&format!(
+        "Select marginfi program [default: {:?}]: ",
+        GeneralConfig::default_marginfi_program_id()
+    ))?;
+    let marginfi_program_id = if input_raw.is_empty() {
+        GeneralConfig::default_marginfi_program_id()
+    } else {
+        Pubkey::from_str(&input_raw).expect("Invalid marginfi program id")
+    };
+
+    let input_raw = prompt_user(&format!(
+        "Select marginfi group [default: {:?}]: ",
+        GeneralConfig::default_marginfi_group_address()
+    ))?;
+    let marginfi_group_address = if input_raw.is_empty() {
+        GeneralConfig::default_marginfi_group_address()
+    } else {
+        Pubkey::from_str(&input_raw).expect("Invalid marginfi group address")
+    };
+
+    // Marginfi account discovery/selection
     let (keypair_path, signer_keypair) = ask_keypair_until_valid()?;
     let accounts = marginfi_account_by_authority(signer_keypair.pubkey(), rpc_client).await?;
     if accounts.is_empty() {
-        let create_new =
-            prompt_user("There is no marginfi account \nDo you wish to create a new one? Y/n\n> ")?
-                .as_str()
-                != "n";
-        if !create_new {
-            println!("Can't proceed without a marginfi account.");
-            return Err(anyhow::anyhow!("Can't proceed without a marginfi account."));
-        }
-        // Initialize a marginfi account
+        println!("No marginfi account found for the provided signer. Please create one first.");
+        bail!("No marginfi account found");
+        // TODO: initialize a marginfi account programmatically
     }
 
-    // 4º step
-    let yellowstone_endpoint = prompt_user("Yellowstone endpoint url\n> ")?;
-
+    let yellowstone_endpoint = prompt_user("Yellowstone endpoint url [required]: ")?;
     let yellowstone_x_token = {
-        let x_token =
-            prompt_user("Do you wish to add yellowstone x token? \nPress enter if not\n> ")?;
-
-        if x_token.is_empty() {
-            None
-        } else {
-            Some(x_token)
-        }
+        let x_token = prompt_user("Yellowstone x-token [optional]: ")?;
+        x_token.is_empty().not().then_some(x_token)
     };
 
     let isolated_banks =
-        prompt_user("Do you wish to liquidate on isolated banks? Y/n\n> ")?.to_lowercase() == "y";
+        prompt_user("Enable isolated banks liquidation? [Y/n] ")?.to_lowercase() == "y";
 
     let general_config = GeneralConfig {
         rpc_url,
@@ -81,8 +102,8 @@ pub async fn setup() -> anyhow::Result<()> {
         liquidator_account: accounts[0],
         compute_unit_price_micro_lamports: GeneralConfig::default_compute_unit_price_micro_lamports(
         ),
-        marginfi_program_id: GeneralConfig::default_marginfi_program_id(),
-        marginfi_group_address: GeneralConfig::default_marginfi_group_address(),
+        marginfi_program_id,
+        marginfi_group_address,
         account_whitelist: GeneralConfig::default_account_whitelist(),
         address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
     };
@@ -152,7 +173,7 @@ pub async fn setup_from_cfg(
         Some(pubkey) => pubkey,
         None => {
             let signer_keypair = read_keypair_file(&keypair_path)
-                .unwrap_or_else(|_| panic!("Failed to read keypair from path: {}", keypair_path));
+                .unwrap_or_else(|_| panic!("Failed to read keypair from path: {:?}", keypair_path));
             signer_keypair.pubkey()
         }
     };
@@ -221,30 +242,6 @@ pub async fn setup_from_cfg(
     }
 
     Ok(())
-}
-
-fn prompt_user(prompt_text: &str) -> anyhow::Result<String> {
-    print!("{}", prompt_text);
-    let mut input = String::new();
-    std::io::stdout().flush()?;
-    std::io::stdin().read_line(&mut input)?;
-    input.pop();
-    Ok(input)
-}
-
-/// Simply asks the keypair path until it is a valid one,
-/// Returns (keypair_path, signer_keypair)
-fn ask_keypair_until_valid() -> anyhow::Result<(String, Keypair)> {
-    println!("Keypair file path");
-    loop {
-        let keypair_path = prompt_user("> ")?;
-        match read_keypair_file(&keypair_path) {
-            Ok(keypair) => return Ok((keypair_path, keypair)),
-            Err(_) => {
-                println!("Failed to load the keypair from the provided path. Please try again");
-            }
-        }
-    }
 }
 
 async fn marginfi_account_by_authority(
