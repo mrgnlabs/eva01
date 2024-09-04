@@ -23,7 +23,7 @@ use marginfi::{
     state::{
         marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
         marginfi_group::{Bank, RiskTier},
-        price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias},
+        price::{OraclePriceFeedAdapter, OraclePriceType, PriceBias},
     },
 };
 use rayon::prelude::*;
@@ -38,8 +38,10 @@ use solana_sdk::{
     account::Account, account_info::IntoAccountInfo, bs58, clock::Clock, signature::Keypair,
 };
 use std::{
+    cell::RefCell,
     cmp::min,
     collections::HashMap,
+    rc::Rc,
     sync::{atomic::AtomicBool, Arc},
 };
 
@@ -683,7 +685,15 @@ impl Liquidator {
                 (oracle_address.unwrap(), oracle_account.unwrap())
             };
 
-            let oracle_account_info = (&oracle_address, &mut oracle_account).into_account_info();
+            let mut oracle_account_info =
+                (&oracle_address, &mut oracle_account).into_account_info();
+
+            let mut oracle_data_aligned = [0u8; 10000];
+            let data_len = oracle_account_info.data.borrow().len();
+            oracle_data_aligned[..data_len].copy_from_slice(&oracle_account_info.data.borrow());
+            let _ = format!("aligned: {}", std::mem::align_of_val(&oracle_data_aligned)); // TODO: this is ridiculous, need to fix
+            let new_data = Rc::new(RefCell::new(oracle_data_aligned.as_mut_slice()));
+            oracle_account_info.data = new_data;
 
             self.banks.insert(
                 *bank_address,
