@@ -19,6 +19,10 @@ impl CrossbarMaintainer {
     }
 
     pub async fn simulate(&self, feeds: Vec<(Pubkey, String)>) -> Vec<(Pubkey, f64)> {
+        if feeds.is_empty() {
+            return Vec::new();
+        }
+
         // Create a fast lookup map from feed hash to oracle hash
         let feed_hash_to_oracle_hash_map: HashMap<String, Pubkey> = feeds
             .iter()
