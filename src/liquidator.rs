@@ -692,17 +692,18 @@ impl Liquidator {
             let mut oracle_account_info =
                 (&oracle_address, &mut oracle_account).into_account_info();
 
-            let bytes = &oracle_account_info.data.borrow().to_vec();
-            if bytes
-                .as_ptr()
-                .align_offset(std::mem::align_of::<PullFeedAccountData>())
-                != 0
-            {
-                return Err(anyhow::anyhow!("Oracle account data is not aligned"));
-            }
-            let mut vec: Vec<u8> = vec![0; bytes.len()];
             let price_adapter = match bank.config.oracle_setup {
                 OracleSetup::SwitchboardPull => {
+                    let bytes = &oracle_account_info.data.borrow().to_vec();
+                    if bytes
+                        .as_ptr()
+                        .align_offset(std::mem::align_of::<PullFeedAccountData>())
+                        != 0
+                    {
+                        return Err(anyhow::anyhow!("Oracle account data is not aligned"));
+                    }
+
+                    let mut vec: Vec<u8> = vec![0; bytes.len()];
                     unsafe {
                         std::ptr::copy_nonoverlapping(
                             bytes[..].as_ptr(),
