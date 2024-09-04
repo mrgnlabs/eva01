@@ -1983,6 +1983,7 @@ dependencies = [
  "solana-sdk",
  "spl-associated-token-account 2.3.0",
  "spl-token 4.0.0",
+ "switchboard-on-demand",
  "switchboard-on-demand-client",
  "thiserror",
  "tokio",
@@ -2909,7 +2910,6 @@ dependencies = [
 [[package]]
 name = "marginfi"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?branch=main#24dfeb16d121034dda9a25056a0810c774714f64"
 dependencies = [
  "anchor-lang 0.29.0",
  "anchor-lang 0.30.1",

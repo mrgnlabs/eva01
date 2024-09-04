@@ -28,7 +28,7 @@ use std::{
     str::FromStr,
     sync::{atomic::AtomicUsize, Arc, RwLock},
 };
-use switchboard_on_demand_client::PullFeedAccountData;
+use switchboard_on_demand::PullFeedAccountData;
 use url::Url;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
@@ -577,6 +577,22 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
 pub fn load_swb_pull_account(account_info: &AccountInfo) -> anyhow::Result<PullFeedAccountData> {
     let bytes = &account_info.data.borrow().to_vec();
 
+    Ok(load_swb_pull_account_from_bytes(bytes)?)
+}
+
+pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> anyhow::Result<PullFeedAccountData> {
+    println!(
+        "struct alignment {}",
+        std::mem::align_of::<PullFeedAccountData>()
+    );
+    println!("bytes alignment {}", std::mem::align_of_val(bytes));
+    println!(
+        "offset {}",
+        bytes
+            .as_ptr()
+            .align_offset(std::mem::align_of::<PullFeedAccountData>())
+    );
+
     if bytes
         .as_ptr()
         .align_offset(std::mem::align_of::<PullFeedAccountData>())
@@ -591,7 +607,7 @@ pub fn load_swb_pull_account(account_info: &AccountInfo) -> anyhow::Result<PullF
     unsafe {
         vec.set_len(num);
         std::ptr::copy_nonoverlapping(
-            bytes[8..std::mem::size_of::<PullFeedAccountData>() + 8].as_ptr(),
+            bytes[..std::mem::size_of::<PullFeedAccountData>()].as_ptr(),
             vec.as_mut_ptr() as *mut u8,
             bytes.len(),
         );

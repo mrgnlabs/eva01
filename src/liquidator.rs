@@ -17,13 +17,16 @@ use anchor_lang::Discriminator;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
         marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
         marginfi_group::{Bank, RiskTier},
-        price::{OraclePriceFeedAdapter, OraclePriceType, PriceBias},
+        price::{
+            OraclePriceFeedAdapter, OraclePriceType, OracleSetup, PriceBias,
+            SwitchboardPullPriceFeed,
+        },
     },
 };
 use rayon::prelude::*;
@@ -44,7 +47,7 @@ use std::{
     rc::Rc,
     sync::{atomic::AtomicBool, Arc},
 };
-use switchboard_on_demand_client::PullFeedAccountData;
+use switchboard_on_demand::PullFeedAccountData;
 
 /// Bank group private key offset
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
@@ -690,7 +693,6 @@ impl Liquidator {
                 (&oracle_address, &mut oracle_account).into_account_info();
 
             let bytes = &oracle_account_info.data.borrow().to_vec();
-
             if bytes
                 .as_ptr()
                 .align_offset(std::mem::align_of::<PullFeedAccountData>())
@@ -698,36 +700,43 @@ impl Liquidator {
             {
                 return Err(anyhow::anyhow!("Oracle account data is not aligned"));
             }
+            let mut vec: Vec<u8> = vec![0; bytes.len()];
+            let price_adapter = match bank.config.oracle_setup {
+                OracleSetup::SwitchboardPull => {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes[..].as_ptr(),
+                            vec.as_mut_ptr() as *mut u8,
+                            bytes.len(),
+                        );
+                    }
 
-            let num = bytes.len() / std::mem::size_of::<PullFeedAccountData>();
-            let mut vec: Vec<u8> = Vec::with_capacity(num);
+                    oracle_account_info.data = Rc::new(RefCell::new(&mut vec));
+                    let swb_feed = crate::utils::load_swb_pull_account_from_bytes(
+                        &oracle_account_info.data.borrow()
+                            [0..std::mem::size_of::<PullFeedAccountData>()],
+                    )
+                    .unwrap();
 
-            unsafe {
-                vec.set_len(num);
-                std::ptr::copy_nonoverlapping(
-                    bytes[8..std::mem::size_of::<PullFeedAccountData>() + 8].as_ptr(),
-                    vec.as_mut_ptr() as *mut u8,
-                    bytes.len(),
-                );
-            }
-
-            oracle_account_info.data = Rc::new(RefCell::new(&mut vec));
+                    OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
+                        feed: Box::new((&swb_feed).into()),
+                    })
+                }
+                _ => OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                    &bank.config,
+                    &[oracle_account_info],
+                    &Clock::default(),
+                    i64::MAX as u64,
+                )
+                .unwrap(),
+            };
 
             self.banks.insert(
                 *bank_address,
                 BankWrapper::new(
                     *bank_address,
                     *bank,
-                    OracleWrapper::new(
-                        oracle_address,
-                        OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                            &bank.config,
-                            &[oracle_account_info],
-                            &Clock::default(),
-                            i64::MAX as u64,
-                        )
-                        .unwrap(),
-                    ),
+                    OracleWrapper::new(oracle_address, price_adapter),
                 ),
             );
 
