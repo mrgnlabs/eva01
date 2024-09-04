@@ -44,6 +44,7 @@ use std::{
     rc::Rc,
     sync::{atomic::AtomicBool, Arc},
 };
+use switchboard_on_demand_client::PullFeedAccountData;
 
 /// Bank group private key offset
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
@@ -688,12 +689,29 @@ impl Liquidator {
             let mut oracle_account_info =
                 (&oracle_address, &mut oracle_account).into_account_info();
 
-            let mut oracle_data_aligned = [0u8; 10000];
-            let data_len = oracle_account_info.data.borrow().len();
-            oracle_data_aligned[..data_len].copy_from_slice(&oracle_account_info.data.borrow());
-            let _ = format!("aligned: {}", std::mem::align_of_val(&oracle_data_aligned)); // TODO: this is ridiculous, need to fix
-            let new_data = Rc::new(RefCell::new(oracle_data_aligned.as_mut_slice()));
-            oracle_account_info.data = new_data;
+            let bytes = &oracle_account_info.data.borrow().to_vec();
+
+            if bytes
+                .as_ptr()
+                .align_offset(std::mem::align_of::<PullFeedAccountData>())
+                != 0
+            {
+                return Err(anyhow::anyhow!("Oracle account data is not aligned"));
+            }
+
+            let num = bytes.len() / std::mem::size_of::<PullFeedAccountData>();
+            let mut vec: Vec<u8> = Vec::with_capacity(num);
+
+            unsafe {
+                vec.set_len(num);
+                std::ptr::copy_nonoverlapping(
+                    bytes[8..std::mem::size_of::<PullFeedAccountData>() + 8].as_ptr(),
+                    vec.as_mut_ptr() as *mut u8,
+                    bytes.len(),
+                );
+            }
+
+            oracle_account_info.data = Rc::new(RefCell::new(&mut vec));
 
             self.banks.insert(
                 *bank_address,
