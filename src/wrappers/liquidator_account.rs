@@ -36,14 +36,12 @@ impl LiquidatorAccount {
         let account = rpc_client.get_account(&liquidator_pubkey)?;
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
         let account_wrapper = MarginfiAccountWrapper::new(liquidator_pubkey, *marginfi_account);
-
-        let program_id = marginfi::id();
         let group = account_wrapper.account.group;
 
         Ok(Self {
             account_wrapper,
             signer_keypair,
-            program_id,
+            program_id: config.marginfi_program_id,
             group,
             transaction_tx,
             token_program_per_mint: HashMap::new(),

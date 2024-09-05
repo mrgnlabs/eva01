@@ -5,7 +5,7 @@ use jito_protos::searcher::{
     NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
 };
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
-use log::error;
+use log::{debug, error};
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::{
     nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc,
@@ -109,6 +109,7 @@ impl TransactionManager {
                     continue;
                 }
             };
+            debug!("Waiting for Jito leader...");
             loop {
                 let next_leader = match self
                     .searcher_client
@@ -125,30 +126,29 @@ impl TransactionManager {
                 let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
 
                 if num_slots <= LEADERSHIP_THRESHOLD {
+                    debug!("Sending bundle");
                     break;
                 }
 
                 tokio::time::sleep(SLEEP_DURATION).await;
             }
-            for tx in transactions {
-                let transaction = Self::send_transaction(
-                    tx.clone(),
-                    self.searcher_client.clone(),
-                    self.rpc.clone(),
-                );
-                tokio::spawn(async move {
-                    if let Err(e) = transaction.await {
-                        error!("Failed to send transaction: {:?}", e);
-                    }
-                });
-            }
+            let transaction = Self::send_transactions(
+                transactions,
+                self.searcher_client.clone(),
+                self.rpc.clone(),
+            );
+            tokio::spawn(async move {
+                if let Err(e) = transaction.await {
+                    error!("Failed to send transaction: {:?}", e);
+                }
+            });
         }
     }
 
     /// Sends a transaction/bundle of transactions to the jito
     /// block engine and waits for confirmation
-    async fn send_transaction(
-        transaction: VersionedTransaction,
+    async fn send_transactions(
+        transactions: Vec<VersionedTransaction>,
         mut searcher_client: SearcherServiceClient<Channel>,
         rpc: Arc<RpcClient>,
     ) -> anyhow::Result<()> {
@@ -158,7 +158,7 @@ impl TransactionManager {
             .into_inner();
 
         if let Err(e) = send_bundle_with_confirmation(
-            &[transaction],
+            &transactions,
             &rpc,
             &mut searcher_client,
             &mut bundle_results_subscription,

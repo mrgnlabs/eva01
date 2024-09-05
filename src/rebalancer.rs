@@ -182,7 +182,7 @@ impl Rebalancer {
     pub async fn start(&mut self) -> anyhow::Result<()> {
         let max_duration = std::time::Duration::from_secs(10);
         loop {
-            let start = std::time::Instant::now();
+            let start = std::time::Instant::now().checked_sub(max_duration).unwrap();
             while let Ok(mut msg) = self.geyser_receiver.recv() {
                 debug!("Received message {:?}", msg);
                 match msg.account_type {
@@ -280,6 +280,7 @@ impl Rebalancer {
         }
 
         self.should_stop_liquidations().await.unwrap();
+
         self.has_tokens_in_token_accounts()
             || self.has_non_preferred_deposits()
             || self.has_liabilities()
