@@ -32,7 +32,9 @@ use marginfi::{
         price::{OraclePriceFeedAdapter, OracleSetup, PriceBias, SwitchboardPullPriceFeed},
     },
 };
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
+};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account_info::IntoAccountInfo, clock::Clock, commitment_config::CommitmentConfig,
@@ -41,10 +43,12 @@ use solana_sdk::{
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
+    str::FromStr,
     sync::{atomic::AtomicBool, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
-
+use switchboard_on_demand_client::QueueAccountData;
+use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed};
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
 pub struct Rebalancer {
@@ -287,6 +291,51 @@ impl Rebalancer {
     }
 
     async fn rebalance_accounts(&mut self) -> anyhow::Result<()> {
+        let active_banks = self.liquidator_account.account_wrapper.get_active_banks();
+
+        let active_swb_oracles: Vec<Pubkey> = active_banks
+            .iter()
+            .filter_map(|&bank_pk| {
+                self.banks.get(&bank_pk).and_then(|bank| {
+                    if bank.oracle_adapter.is_switchboard_pull() {
+                        Some(bank.oracle_adapter.address)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        if !active_swb_oracles.is_empty() {
+            let client = NonBlockingRpcClient::new(self.general_config.rpc_url.clone());
+            // Gateway creation is giving some issues without loading a queue first
+            // This method doesn't make sense, but it's a workaround for now
+            // Tho, it's not a good idea to load a queue for every rebalance like this
+            let queue = QueueAccountData::load(
+                &client,
+                &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w")?,
+            )
+            .await?;
+            let gw = &queue.fetch_gateways(&client).await?[0];
+
+            if let Ok(crank_data) = PullFeed::fetch_update_many_ix(
+                &client,
+                FetchUpdateManyParams {
+                    feeds: active_swb_oracles,
+                    payer: self.general_config.signer_pubkey,
+                    gateway: gw.clone(),
+                    num_signatures: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                self.liquidator_account
+                    .transaction_tx
+                    .send(vec![vec![crank_data.0]])
+                    .unwrap();
+            }
+        }
         debug!("Rebalancing accounts");
         self.sell_non_preferred_deposits().await?;
         self.repay_liabilities().await?;

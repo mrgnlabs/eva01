@@ -36,4 +36,11 @@ impl OracleWrapper {
                 .get_price_of_type(oracle_type, price_bias)?),
         }
     }
+
+    pub fn is_switchboard_pull(&self) -> bool {
+        matches!(
+            self.price_adapter,
+            OraclePriceFeedAdapter::SwitchboardPull(_)
+        )
+    }
 }

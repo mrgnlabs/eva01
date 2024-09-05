@@ -21,7 +21,7 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     token_program_per_mint: HashMap<Pubkey, Pubkey>,
     group: Pubkey,
-    transaction_tx: Sender<BatchTransactions>,
+    pub transaction_tx: Sender<BatchTransactions>,
 }
 
 impl LiquidatorAccount {
