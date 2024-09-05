@@ -52,11 +52,30 @@ pub struct TransactionManager {
     lookup_tables: Vec<AddressLookupTableAccount>,
 }
 
-/// Type alias for a batch of transactions
-/// A batch of transactions is a vector of vectors of instructions
-/// Each vector of instructions represents a single transaction
-/// The outer vector represents a batch of transactions
-pub type BatchTransactions = Vec<Vec<Instruction>>;
+// Type alias for a batch of transactions
+// A batch of transactions is a vector of vectors of instructions
+// Each vector of instructions represents a single transaction
+// The outer vector represents a batch of transactions
+pub type BatchTransactions = Vec<RawTransaction>;
+
+pub struct RawTransaction {
+    pub instructions: Vec<Instruction>,
+    pub lookup_tables: Option<Vec<AddressLookupTableAccount>>,
+}
+
+impl RawTransaction {
+    pub fn new(instructions: Vec<Instruction>) -> Self {
+        Self {
+            instructions,
+            lookup_tables: None,
+        }
+    }
+
+    pub fn with_lookup_tables(mut self, lookup_tables: Vec<AddressLookupTableAccount>) -> Self {
+        self.lookup_tables = Some(lookup_tables);
+        self
+    }
+}
 
 impl TransactionManager {
     /// Creates a new transaction manager
@@ -229,8 +248,9 @@ impl TransactionManager {
         let blockhash = self.rpc.get_latest_blockhash().await?;
 
         let mut txs = Vec::new();
-        for mut ixs in instructions {
-            ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(500_000));
+        for mut raw_transaction in instructions {
+            let mut ixs = raw_transaction.instructions;
+            ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(1_000_000));
             ixs.push(transfer(
                 &self.keypair.pubkey(),
                 &self.tip_accounts[0],
@@ -240,7 +260,11 @@ impl TransactionManager {
                 VersionedMessage::V0(v0::Message::try_compile(
                     &self.keypair.pubkey(),
                     &ixs,
-                    &self.lookup_tables,
+                    if raw_transaction.lookup_tables.is_some() {
+                        raw_transaction.lookup_tables.as_ref().unwrap()
+                    } else {
+                        &self.lookup_tables
+                    },
                     blockhash,
                 )?),
                 &[&self.keypair],

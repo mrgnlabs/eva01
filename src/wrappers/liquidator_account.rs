@@ -2,15 +2,18 @@ use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
-    transaction_manager::BatchTransactions,
+    sender::{SenderCfg, TransactionSender},
+    transaction_manager::{BatchTransactions, RawTransaction},
 };
 use crossbeam::channel::Sender;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
+use rayon::vec;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
+    compute_budget::ComputeBudgetInstruction,
     signature::{read_keypair_file, Keypair},
     signer::Signer,
 };
@@ -137,7 +140,7 @@ impl LiquidatorAccount {
             })
             .collect::<Vec<_>>();
 
-        let crank_ix = if !observation_swb_oracles.is_empty() {
+        let (crank_ix, crank_lut) = if !observation_swb_oracles.is_empty() {
             if let Ok(crank_data) = PullFeed::fetch_update_many_ix(
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
@@ -150,7 +153,7 @@ impl LiquidatorAccount {
             )
             .await
             {
-                crank_data.0
+                crank_data
             } else {
                 return Err(anyhow::anyhow!("Failed to fetch crank data"));
             }
@@ -178,9 +181,10 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
-        // Double vec implies that is a single bundle
-        self.transaction_tx
-            .send(vec![vec![crank_ix, liquidate_ix]])?;
+        self.transaction_tx.send(vec![
+            RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut),
+            RawTransaction::new(vec![liquidate_ix]),
+        ])?;
 
         Ok(())
     }
@@ -231,8 +235,8 @@ impl LiquidatorAccount {
             withdraw_all,
         );
 
-        // Double vec implies that is a single bundle
-        self.transaction_tx.send(vec![vec![withdraw_ix]])?;
+        self.transaction_tx
+            .send(vec![RawTransaction::new(vec![withdraw_ix])])?;
 
         Ok(())
     }
@@ -265,8 +269,8 @@ impl LiquidatorAccount {
             repay_all,
         );
 
-        // Double vec implies that is a single bundle
-        self.transaction_tx.send(vec![vec![repay_ix]])?;
+        self.transaction_tx
+            .send(vec![RawTransaction::new(vec![repay_ix])])?;
 
         Ok(())
     }
@@ -297,8 +301,8 @@ impl LiquidatorAccount {
             amount,
         );
 
-        // Double vec implies that is a single bundle
-        self.transaction_tx.send(vec![vec![deposit_ix]])?;
+        self.transaction_tx
+            .send(vec![RawTransaction::new(vec![deposit_ix])])?;
 
         Ok(())
     }

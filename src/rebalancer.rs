@@ -4,7 +4,7 @@ use crate::{
     geyser::{AccountType, GeyserUpdate},
     sender::{SenderCfg, TransactionSender},
     token_account_manager::TokenAccountManager,
-    transaction_manager::BatchTransactions,
+    transaction_manager::{BatchTransactions, RawTransaction},
     utils::{
         accessor, batch_get_multiple_accounts, calc_weighted_assets_new, calc_weighted_liabs_new,
         BankAccountWithPriceFeedEva,
@@ -306,7 +306,7 @@ impl Rebalancer {
             .collect();
 
         if !active_swb_oracles.is_empty() {
-            if let Ok(crank_data) = PullFeed::fetch_update_many_ix(
+            if let Ok((ix, lut)) = PullFeed::fetch_update_many_ix(
                 &self.liquidator_account.non_blocking_rpc_client,
                 FetchUpdateManyParams {
                     feeds: active_swb_oracles,
@@ -320,7 +320,7 @@ impl Rebalancer {
             {
                 self.liquidator_account
                     .transaction_tx
-                    .send(vec![vec![crank_data.0]])
+                    .send(vec![RawTransaction::new(vec![ix]).with_lookup_tables(lut)])
                     .unwrap();
             }
         }
