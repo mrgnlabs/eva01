@@ -85,8 +85,7 @@ impl Rebalancer {
             transaction_tx.clone(),
             general_config.clone(),
         )
-        .await
-        .unwrap();
+        .await?;
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();
 
@@ -307,23 +306,12 @@ impl Rebalancer {
             .collect();
 
         if !active_swb_oracles.is_empty() {
-            let client = NonBlockingRpcClient::new(self.general_config.rpc_url.clone());
-            // Gateway creation is giving some issues without loading a queue first
-            // This method doesn't make sense, but it's a workaround for now
-            // Tho, it's not a good idea to load a queue for every rebalance like this
-            let queue = QueueAccountData::load(
-                &client,
-                &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w")?,
-            )
-            .await?;
-            let gw = &queue.fetch_gateways(&client).await?[0];
-
             if let Ok(crank_data) = PullFeed::fetch_update_many_ix(
-                &client,
+                &self.liquidator_account.non_blocking_rpc_client,
                 FetchUpdateManyParams {
                     feeds: active_swb_oracles,
                     payer: self.general_config.signer_pubkey,
-                    gateway: gw.clone(),
+                    gateway: self.liquidator_account.swb_gateway.clone(),
                     num_signatures: Some(1),
                     ..Default::default()
                 },
