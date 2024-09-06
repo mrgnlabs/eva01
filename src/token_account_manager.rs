@@ -3,27 +3,20 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use anchor_lang::accounts::program;
 use anchor_spl::associated_token;
-use crossbeam::epoch::Owned;
 use log::{debug, error, info};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use sha2::{Digest, Sha256};
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::{
-    account::Account,
-    pubkey::Pubkey,
-    signature::Keypair,
-    signer::{SeedDerivable, Signer},
-};
+use solana_sdk::{account::Account, pubkey::Pubkey, signature::Keypair, signer::Signer};
 
 use crate::{
     sender::{SenderCfg, TransactionSender},
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
 };
 
-const TOKEN_ACCOUNT_SEED: &[u8] = b"liquidator_ta";
-const MAX_INIT_TA_IXS: usize = 4;
+// const TOKEN_ACCOUNT_SEED: &[u8] = b"liquidator_ta";
+const MAX_INIT_TA_IXS: usize = 10;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum TokenAccountManagerError {
@@ -230,15 +223,15 @@ fn get_liquidator_seed(signer: Pubkey, mint: Pubkey, seed: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn get_keypair_for_token_account(
-    signer: Pubkey,
-    mint: Pubkey,
-    seed: &[u8],
-) -> Result<Keypair, TokenAccountManagerError> {
-    let keypair_seed = get_liquidator_seed(signer, mint, seed);
-    Keypair::from_seed(&keypair_seed)
-        .map_err(|_| TokenAccountManagerError::SetupFailed("Keypair::from_seed failed"))
-}
+// fn get_keypair_for_token_account(
+//     signer: Pubkey,
+//     mint: Pubkey,
+//     seed: &[u8],
+// ) -> Result<Keypair, TokenAccountManagerError> {
+//     let keypair_seed = get_liquidator_seed(signer, mint, seed);
+//     Keypair::from_seed(&keypair_seed)
+//         .map_err(|_| TokenAccountManagerError::SetupFailed("Keypair::from_seed failed"))
+// }
 
 fn get_address_for_token_account(
     signer: Pubkey,

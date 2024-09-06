@@ -22,7 +22,7 @@ use marginfi::{
     constants::EXP_10_I80F48,
     state::{
         marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
-        marginfi_group::{Bank, RiskTier},
+        marginfi_group::{Bank, BankOperationalState, RiskTier},
         price::{
             OraclePriceFeedAdapter, OraclePriceType, OracleSetup, PriceBias,
             SwitchboardPullPriceFeed,
@@ -492,9 +492,11 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        debug!("Account {:?}", account.address);
-        debug!("Health {:?}", maintenance_health);
-        debug!("Liquidator profit {:?}", liquidator_profit);
+        if liquidator_profit > self.config.min_profit {
+            debug!("Account {:?}", account.address);
+            debug!("Health {:?}", maintenance_health);
+            debug!("Liquidator profit {:?}", liquidator_profit);
+        }
 
         Ok((max_liquidatable_asset_amount, liquidator_profit))
     }
@@ -777,6 +779,13 @@ impl Liquidator {
             if !self.config.isolated_banks
                 && matches!(bank.bank.config.risk_tier, RiskTier::Isolated)
             {
+                continue;
+            }
+
+            if !matches!(
+                bank.bank.config.operational_state,
+                BankOperationalState::Operational
+            ) {
                 continue;
             }
 

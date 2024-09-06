@@ -2,18 +2,15 @@ use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
-    sender::{SenderCfg, TransactionSender},
     transaction_manager::{BatchTransactions, RawTransaction},
 };
 use crossbeam::channel::Sender;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
-use rayon::vec;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
-    compute_budget::ComputeBudgetInstruction,
     signature::{read_keypair_file, Keypair},
     signer::Signer,
 };
@@ -140,8 +137,8 @@ impl LiquidatorAccount {
             })
             .collect::<Vec<_>>();
 
-        let (crank_ix, crank_lut) = if !observation_swb_oracles.is_empty() {
-            if let Ok(crank_data) = PullFeed::fetch_update_many_ix(
+        let crank_data = if !observation_swb_oracles.is_empty() {
+            if let Ok((ix, luts)) = PullFeed::fetch_update_many_ix(
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
                     feeds: observation_swb_oracles,
@@ -153,12 +150,12 @@ impl LiquidatorAccount {
             )
             .await
             {
-                crank_data
+                Some((ix, luts))
             } else {
                 return Err(anyhow::anyhow!("Failed to fetch crank data"));
             }
         } else {
-            return Err(anyhow::anyhow!("No crank data available"));
+            None
         };
 
         let liquidate_ix = make_liquidate_ix(
@@ -181,10 +178,13 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
-        self.transaction_tx.send(vec![
-            RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut),
-            RawTransaction::new(vec![liquidate_ix]),
-        ])?;
+        let mut bundle = vec![];
+        if let Some((crank_ix, crank_lut)) = crank_data {
+            bundle.push(RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut));
+        }
+        bundle.push(RawTransaction::new(vec![liquidate_ix]));
+
+        self.transaction_tx.send(bundle)?;
 
         Ok(())
     }
