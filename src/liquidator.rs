@@ -19,7 +19,7 @@ use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{debug, error, info};
 use marginfi::{
-    constants::EXP_10_I80F48,
+    constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
     state::{
         marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
         marginfi_group::{Bank, BankOperationalState, RiskTier},
@@ -274,6 +274,25 @@ impl Liquidator {
             .par_iter()
             .filter_map(|(_, account)| {
                 if !account.has_liabs() {
+                    return None;
+                }
+
+                let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
+
+                let deposit_values = self
+                    .get_value_of_shares(
+                        deposit_shares,
+                        &BalanceSide::Assets,
+                        RequirementType::Maintenance,
+                    )
+                    .unwrap();
+
+                if deposit_values
+                    .iter()
+                    .map(|(v, _)| v.to_num::<f64>())
+                    .sum::<f64>()
+                    < BANKRUPT_THRESHOLD
+                {
                     return None;
                 }
 
