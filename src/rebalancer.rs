@@ -1,9 +1,10 @@
 use crate::{
     config::{GeneralConfig, RebalancerCfg},
+    crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
     sender::{SenderCfg, TransactionSender},
     token_account_manager::TokenAccountManager,
-    transaction_manager::BatchTransactions,
+    transaction_manager::{BatchTransactions, RawTransaction},
     utils::{
         accessor, batch_get_multiple_accounts, calc_weighted_assets_new, calc_weighted_liabs_new,
         BankAccountWithPriceFeedEva,
@@ -28,10 +29,12 @@ use marginfi::{
     constants::EXP_10_I80F48,
     state::{
         marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
-        price::{OraclePriceFeedAdapter, PriceAdapter, PriceBias},
+        price::{OraclePriceFeedAdapter, OracleSetup, PriceBias, SwitchboardPullPriceFeed},
     },
 };
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
+};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account_info::IntoAccountInfo, clock::Clock, commitment_config::CommitmentConfig,
@@ -40,9 +43,12 @@ use solana_sdk::{
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
+    str::FromStr,
     sync::{atomic::AtomicBool, Arc},
 };
-
+use switchboard_on_demand::PullFeedAccountData;
+use switchboard_on_demand_client::QueueAccountData;
+use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed};
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
 pub struct Rebalancer {
@@ -59,6 +65,7 @@ pub struct Rebalancer {
     swap_mint_bank_pk: Option<Pubkey>,
     geyser_receiver: Receiver<GeyserUpdate>,
     stop_liquidations: Arc<AtomicBool>,
+    crossbar_client: CrossbarMaintainer,
 }
 
 impl Rebalancer {
@@ -78,8 +85,7 @@ impl Rebalancer {
             transaction_tx.clone(),
             general_config.clone(),
         )
-        .await
-        .unwrap();
+        .await?;
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();
 
@@ -97,6 +103,7 @@ impl Rebalancer {
             swap_mint_bank_pk: None,
             geyser_receiver,
             stop_liquidations: stop_liquidation,
+            crossbar_client: CrossbarMaintainer::new(),
         })
     }
 
@@ -178,24 +185,52 @@ impl Rebalancer {
     pub async fn start(&mut self) -> anyhow::Result<()> {
         let max_duration = std::time::Duration::from_secs(10);
         loop {
-            let start = std::time::Instant::now();
+            let start = std::time::Instant::now().checked_sub(max_duration).unwrap();
             while let Ok(mut msg) = self.geyser_receiver.recv() {
                 debug!("Received message {:?}", msg);
                 match msg.account_type {
                     AccountType::OracleAccount => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
-                            let oracle_ai = (&msg.address, &mut msg.account).into_account_info();
                             let bank_to_update: &mut BankWrapper =
                                 self.banks.get_mut(bank_to_update_pk).unwrap();
 
-                            bank_to_update.oracle_adapter.price_adapter =
-                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                                    &bank_to_update.bank.config,
-                                    &[oracle_ai.clone()],
-                                    &Clock::default(),
-                                    i64::MAX as u64,
-                                )
-                                .unwrap();
+                            let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup
+                            {
+                                OracleSetup::SwitchboardPull => {
+                                    let mut offsets_data =
+                                        [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                                    offsets_data.copy_from_slice(
+                                        &msg.account.data
+                                            [8..std::mem::size_of::<PullFeedAccountData>() + 8],
+                                    );
+                                    let swb_feed = crate::utils::load_swb_pull_account_from_bytes(
+                                        &offsets_data,
+                                    )
+                                    .unwrap();
+
+                                    let feed_hash = hex::encode(swb_feed.feed_hash);
+                                    bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
+
+                                    OraclePriceFeedAdapter::SwitchboardPull(
+                                        SwitchboardPullPriceFeed {
+                                            feed: Box::new((&swb_feed).into()),
+                                        },
+                                    )
+                                }
+                                _ => {
+                                    let oracle_account_info =
+                                        (&msg.address, &mut msg.account).into_account_info();
+                                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                        &bank_to_update.bank.config,
+                                        &[oracle_account_info],
+                                        &Clock::default(),
+                                        i64::MAX as u64,
+                                    )
+                                    .unwrap()
+                                }
+                            };
+
+                            bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                         }
                     }
                     AccountType::MarginfiAccount => {
@@ -226,14 +261,69 @@ impl Rebalancer {
         }
     }
 
-    async fn needs_to_be_relanced(&self) -> bool {
-        self.should_stop_liquidations().await;
+    async fn needs_to_be_relanced(&mut self) -> bool {
+        // Update switchboard pull prices with crossbar
+        let swb_feed_hashes = self
+            .banks
+            .values()
+            .filter_map(|bank| {
+                if let Some(feed_hash) = &bank.oracle_adapter.swb_feed_hash {
+                    Some((bank.address, feed_hash.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let simulated_prices = self.crossbar_client.simulate(swb_feed_hashes).await;
+
+        for (bank_pk, price) in simulated_prices {
+            let bank = self.banks.get_mut(&bank_pk).unwrap();
+            bank.oracle_adapter.simulated_price = Some(price);
+        }
+
+        self.should_stop_liquidations().await.unwrap();
+
         self.has_tokens_in_token_accounts()
             || self.has_non_preferred_deposits()
             || self.has_liabilities()
     }
 
     async fn rebalance_accounts(&mut self) -> anyhow::Result<()> {
+        let active_banks = self.liquidator_account.account_wrapper.get_active_banks();
+
+        let active_swb_oracles: Vec<Pubkey> = active_banks
+            .iter()
+            .filter_map(|&bank_pk| {
+                self.banks.get(&bank_pk).and_then(|bank| {
+                    if bank.oracle_adapter.is_switchboard_pull() {
+                        Some(bank.oracle_adapter.address)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        if !active_swb_oracles.is_empty() {
+            if let Ok((ix, lut)) = PullFeed::fetch_update_many_ix(
+                &self.liquidator_account.non_blocking_rpc_client,
+                FetchUpdateManyParams {
+                    feeds: active_swb_oracles,
+                    payer: self.general_config.signer_pubkey,
+                    gateway: self.liquidator_account.swb_gateway.clone(),
+                    num_signatures: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                self.liquidator_account
+                    .transaction_tx
+                    .send(vec![RawTransaction::new(vec![ix]).with_lookup_tables(lut)])
+                    .unwrap();
+            }
+        }
         debug!("Rebalancing accounts");
         self.sell_non_preferred_deposits().await?;
         self.repay_liabilities().await?;
@@ -739,7 +829,7 @@ impl Rebalancer {
     ) -> anyhow::Result<I80F48> {
         let bank = self.banks.get(bank_pk).unwrap();
 
-        let price = bank.oracle_adapter.price_adapter.get_price_of_type(
+        let price = bank.oracle_adapter.get_price_of_type(
             marginfi::state::price::OraclePriceType::RealTime,
             price_bias,
         )?;

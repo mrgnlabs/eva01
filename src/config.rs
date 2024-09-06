@@ -56,7 +56,7 @@ pub struct GeneralConfig {
         serialize_with = "pubkey_to_str"
     )]
     pub signer_pubkey: Pubkey,
-    pub keypair_path: String,
+    pub keypair_path: PathBuf,
     #[serde(
         deserialize_with = "from_pubkey_string",
         serialize_with = "pubkey_to_str"
@@ -99,7 +99,7 @@ impl std::fmt::Display for GeneralConfig {
                  - Yellowstone Endpoint: {}\n\
                  - Yellowstone X Token: {}\n\
                  - Signer Pubkey: {}\n\
-                 - Keypair Path: {}\n\
+                 - Keypair Path: {:?}\n\
                  - Liquidator Account: {}\n\
                  - Compute Unit Price Micro Lamports: {}\n\
                  - Marginfi Program ID: {}\n\

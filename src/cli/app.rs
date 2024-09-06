@@ -31,7 +31,7 @@ pub struct SetupFromCliOpts {
     #[arg(short = 'u', long, help = "RPC endpoint url")]
     pub rpc_url: String,
     #[arg(short = 'k', long, help = "Signer keypair path")]
-    pub keypair_path: String,
+    pub keypair_path: PathBuf,
     #[arg(
         long,
         help = "Signer pubkey, if not provided, will be derived from the keypair"

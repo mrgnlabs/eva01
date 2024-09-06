@@ -2,17 +2,20 @@ use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
-    transaction_manager::BatchTransactions,
+    transaction_manager::{BatchTransactions, RawTransaction},
 };
 use crossbeam::channel::Sender;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
+};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     signature::{read_keypair_file, Keypair},
     signer::Signer,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
+use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData};
 
 /// Wraps the liquidator account into a dedicated strecture
 pub struct LiquidatorAccount {
@@ -21,7 +24,9 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     token_program_per_mint: HashMap<Pubkey, Pubkey>,
     group: Pubkey,
-    transaction_tx: Sender<BatchTransactions>,
+    pub transaction_tx: Sender<BatchTransactions>,
+    pub swb_gateway: Gateway,
+    pub non_blocking_rpc_client: NonBlockingRpcClient,
 }
 
 impl LiquidatorAccount {
@@ -36,17 +41,31 @@ impl LiquidatorAccount {
         let account = rpc_client.get_account(&liquidator_pubkey)?;
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
         let account_wrapper = MarginfiAccountWrapper::new(liquidator_pubkey, *marginfi_account);
-
-        let program_id = marginfi::id();
         let group = account_wrapper.account.group;
+
+        let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
+
+        let queue = QueueAccountData::load(
+            &non_blocking_rpc_client,
+            &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
+        )
+        .await
+        .unwrap();
+        let swb_gateway = queue
+            .fetch_gateways(&non_blocking_rpc_client)
+            .await
+            .unwrap()[0]
+            .clone();
 
         Ok(Self {
             account_wrapper,
             signer_keypair,
-            program_id,
+            program_id: config.marginfi_program_id,
             group,
             transaction_tx,
             token_program_per_mint: HashMap::new(),
+            swb_gateway,
+            non_blocking_rpc_client,
         })
     }
 
@@ -99,6 +118,46 @@ impl LiquidatorAccount {
         let liquidatee_observation_accounts =
             liquidate_account.get_observation_accounts(&[], &[], banks);
 
+        let joined_observation_accounts = liquidator_observation_accounts
+            .iter()
+            .chain(liquidatee_observation_accounts.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let observation_swb_oracles = joined_observation_accounts
+            .iter()
+            .filter_map(|&pk| {
+                banks.get(&pk).and_then(|bank| {
+                    if bank.oracle_adapter.is_switchboard_pull() {
+                        Some(bank.oracle_adapter.address)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let crank_data = if !observation_swb_oracles.is_empty() {
+            if let Ok((ix, luts)) = PullFeed::fetch_update_many_ix(
+                &self.non_blocking_rpc_client,
+                FetchUpdateManyParams {
+                    feeds: observation_swb_oracles,
+                    payer: self.signer_keypair.pubkey(),
+                    gateway: self.swb_gateway.clone(),
+                    num_signatures: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                Some((ix, luts))
+            } else {
+                return Err(anyhow::anyhow!("Failed to fetch crank data"));
+            }
+        } else {
+            None
+        };
+
         let liquidate_ix = make_liquidate_ix(
             self.program_id,
             self.group,
@@ -119,8 +178,13 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
-        // Double vec implies that is a single bundle
-        self.transaction_tx.send(vec![vec![liquidate_ix]])?;
+        let mut bundle = vec![];
+        if let Some((crank_ix, crank_lut)) = crank_data {
+            bundle.push(RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut));
+        }
+        bundle.push(RawTransaction::new(vec![liquidate_ix]));
+
+        self.transaction_tx.send(bundle)?;
 
         Ok(())
     }
@@ -171,8 +235,8 @@ impl LiquidatorAccount {
             withdraw_all,
         );
 
-        // Double vec implies that is a single bundle
-        self.transaction_tx.send(vec![vec![withdraw_ix]])?;
+        self.transaction_tx
+            .send(vec![RawTransaction::new(vec![withdraw_ix])])?;
 
         Ok(())
     }
@@ -205,8 +269,8 @@ impl LiquidatorAccount {
             repay_all,
         );
 
-        // Double vec implies that is a single bundle
-        self.transaction_tx.send(vec![vec![repay_ix]])?;
+        self.transaction_tx
+            .send(vec![RawTransaction::new(vec![repay_ix])])?;
 
         Ok(())
     }
@@ -237,8 +301,8 @@ impl LiquidatorAccount {
             amount,
         );
 
-        // Double vec implies that is a single bundle
-        self.transaction_tx.send(vec![vec![deposit_ix]])?;
+        self.transaction_tx
+            .send(vec![RawTransaction::new(vec![deposit_ix])])?;
 
         Ok(())
     }

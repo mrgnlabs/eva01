@@ -63,7 +63,6 @@ impl BankWrapper {
 
         let price = self
             .oracle_adapter
-            .price_adapter
             .get_price_of_type(oracle_type, price_bias)
             .unwrap();
 
@@ -80,7 +79,6 @@ impl BankWrapper {
 
         let price = self
             .oracle_adapter
-            .price_adapter
             .get_price_of_type(oracle_type, price_bias)
             .unwrap();
 
@@ -97,7 +95,6 @@ impl BankWrapper {
 
         let price = self
             .oracle_adapter
-            .price_adapter
             .get_price_of_type(oracle_type, price_bias)
             .unwrap();
 

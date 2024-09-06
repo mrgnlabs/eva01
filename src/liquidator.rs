@@ -1,5 +1,6 @@
 use crate::{
     config::{GeneralConfig, LiquidatorCfg},
+    crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
     transaction_manager::BatchTransactions,
     utils::{
@@ -16,13 +17,16 @@ use anchor_lang::Discriminator;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use marginfi::{
-    constants::EXP_10_I80F48,
+    constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
     state::{
         marginfi_account::{BalanceSide, MarginfiAccount, RequirementType},
-        marginfi_group::{Bank, RiskTier},
-        price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias},
+        marginfi_group::{Bank, BankOperationalState, RiskTier},
+        price::{
+            OraclePriceFeedAdapter, OraclePriceType, OracleSetup, PriceBias,
+            SwitchboardPullPriceFeed,
+        },
     },
 };
 use rayon::prelude::*;
@@ -41,6 +45,7 @@ use std::{
     collections::HashMap,
     sync::{atomic::AtomicBool, Arc},
 };
+use switchboard_on_demand::PullFeedAccountData;
 
 /// Bank group private key offset
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
@@ -55,6 +60,7 @@ pub struct Liquidator {
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
     stop_liquidation: Arc<AtomicBool>,
+    crossbar_client: CrossbarMaintainer,
 }
 
 #[derive(Clone)]
@@ -121,6 +127,7 @@ impl Liquidator {
             liquidator_account,
             oracle_to_bank: HashMap::new(),
             stop_liquidation,
+            crossbar_client: CrossbarMaintainer::new(),
         }
     }
 
@@ -146,17 +153,46 @@ impl Liquidator {
                 match msg.account_type {
                     AccountType::OracleAccount => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
-                            let oracle_ai = (&msg.address, &mut msg.account).into_account_info();
                             let bank_to_update: &mut BankWrapper =
                                 self.banks.get_mut(bank_to_update_pk).unwrap();
-                            bank_to_update.oracle_adapter.price_adapter =
-                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                                    &bank_to_update.bank.config,
-                                    &[oracle_ai.clone()],
-                                    &Clock::default(),
-                                    i64::MAX as u64,
-                                )
-                                .unwrap();
+
+                            let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup
+                            {
+                                OracleSetup::SwitchboardPull => {
+                                    let mut offsets_data =
+                                        [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                                    offsets_data.copy_from_slice(
+                                        &msg.account.data
+                                            [8..std::mem::size_of::<PullFeedAccountData>() + 8],
+                                    );
+                                    let swb_feed = crate::utils::load_swb_pull_account_from_bytes(
+                                        &offsets_data,
+                                    )
+                                    .unwrap();
+
+                                    let feed_hash = hex::encode(swb_feed.feed_hash);
+                                    bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
+
+                                    OraclePriceFeedAdapter::SwitchboardPull(
+                                        SwitchboardPullPriceFeed {
+                                            feed: Box::new((&swb_feed).into()),
+                                        },
+                                    )
+                                }
+                                _ => {
+                                    let oracle_account_info =
+                                        (&msg.address, &mut msg.account).into_account_info();
+                                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                        &bank_to_update.bank.config,
+                                        &[oracle_account_info],
+                                        &Clock::default(),
+                                        i64::MAX as u64,
+                                    )
+                                    .unwrap()
+                                }
+                            };
+
+                            bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                         }
                     }
                     AccountType::MarginfiAccount => {
@@ -181,7 +217,7 @@ impl Liquidator {
                     {
                         break;
                     }
-                    if let Ok(mut accounts) = self.process_all_accounts() {
+                    if let Ok(mut accounts) = self.process_all_accounts().await {
                         // Accounts are sorted from the highest profit to the lowest
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();
@@ -203,28 +239,6 @@ impl Liquidator {
                                 );
                             }
                         }
-                        /*if let Some(highest_profit_account) = accounts.first() {
-                            info!(
-                                "Liquidating account {:?}",
-                                highest_profit_account.liquidate_account.address
-                            );
-                            if let Err(e) = self
-                                .liquidator_account
-                                .liquidate(
-                                    &highest_profit_account.liquidate_account,
-                                    &highest_profit_account.asset_bank,
-                                    &highest_profit_account.liab_bank,
-                                    highest_profit_account.asset_amount,
-                                    &highest_profit_account.banks,
-                                )
-                                .await
-                            {
-                                info!(
-                                    "Failed to liquidate account {:?}, error: {:?}",
-                                    highest_profit_account.liquidate_account.address, e
-                                );
-                            }
-                        }*/
                     }
                     break;
                 }
@@ -234,12 +248,51 @@ impl Liquidator {
 
     /// Starts processing/evaluate all account, checking
     /// if a liquidation is necessary/needed
-    fn process_all_accounts(&self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
+    async fn process_all_accounts(&mut self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
+        // Update switchboard pull prices with crossbar
+        let swb_feed_hashes = self
+            .banks
+            .values()
+            .filter_map(|bank| {
+                if let Some(feed_hash) = &bank.oracle_adapter.swb_feed_hash {
+                    Some((bank.address, feed_hash.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let simulated_prices = self.crossbar_client.simulate(swb_feed_hashes).await;
+
+        for (bank_pk, price) in simulated_prices {
+            let bank = self.banks.get_mut(&bank_pk).unwrap();
+            bank.oracle_adapter.simulated_price = Some(price);
+        }
+
         let accounts = self
             .marginfi_accounts
             .par_iter()
             .filter_map(|(_, account)| {
                 if !account.has_liabs() {
+                    return None;
+                }
+
+                let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
+
+                let deposit_values = self
+                    .get_value_of_shares(
+                        deposit_shares,
+                        &BalanceSide::Assets,
+                        RequirementType::Maintenance,
+                    )
+                    .unwrap();
+
+                if deposit_values
+                    .iter()
+                    .map(|(v, _)| v.to_num::<f64>())
+                    .sum::<f64>()
+                    < BANKRUPT_THRESHOLD
+                {
                     return None;
                 }
 
@@ -318,12 +371,10 @@ impl Liquidator {
 
         let lower_price = bank
             .oracle_adapter
-            .price_adapter
             .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low))?;
 
         let higher_price = bank
             .oracle_adapter
-            .price_adapter
             .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::High))?;
 
         let token_decimals = bank.bank.mint_decimals as usize;
@@ -460,9 +511,11 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        debug!("Account {:?}", account.address);
-        debug!("Health {:?}", maintenance_health);
-        debug!("Liquidator profit {:?}", liquidator_profit);
+        if liquidator_profit > self.config.min_profit {
+            debug!("Account {:?}", account.address);
+            debug!("Health {:?}", maintenance_health);
+            debug!("Liquidator profit {:?}", liquidator_profit);
+        }
 
         Ok((max_liquidatable_asset_amount, liquidator_profit))
     }
@@ -671,23 +724,38 @@ impl Liquidator {
                 (oracle_address.unwrap(), oracle_account.unwrap())
             };
 
-            let oracle_account_info = (&oracle_address, &mut oracle_account).into_account_info();
+            let price_adapter = match bank.config.oracle_setup {
+                OracleSetup::SwitchboardPull => {
+                    let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                    offsets_data.copy_from_slice(
+                        &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
+                    );
+                    let swb_feed =
+                        crate::utils::load_swb_pull_account_from_bytes(&offsets_data).unwrap();
+
+                    OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
+                        feed: Box::new((&swb_feed).into()),
+                    })
+                }
+                _ => {
+                    let oracle_account_info =
+                        (&oracle_address, &mut oracle_account).into_account_info();
+                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                        &bank.config,
+                        &[oracle_account_info],
+                        &Clock::default(),
+                        i64::MAX as u64,
+                    )
+                    .unwrap()
+                }
+            };
 
             self.banks.insert(
                 *bank_address,
                 BankWrapper::new(
                     *bank_address,
                     *bank,
-                    OracleWrapper::new(
-                        oracle_address,
-                        OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                            &bank.config,
-                            &[oracle_account_info],
-                            &Clock::default(),
-                            i64::MAX as u64,
-                        )
-                        .unwrap(),
-                    ),
+                    OracleWrapper::new(oracle_address, price_adapter),
                 ),
             );
 
@@ -730,6 +798,13 @@ impl Liquidator {
             if !self.config.isolated_banks
                 && matches!(bank.bank.config.risk_tier, RiskTier::Isolated)
             {
+                continue;
+            }
+
+            if !matches!(
+                bank.bank.config.operational_state,
+                BankOperationalState::Operational
+            ) {
                 continue;
             }
 

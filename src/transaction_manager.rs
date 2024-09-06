@@ -5,7 +5,7 @@ use jito_protos::searcher::{
     NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
 };
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
-use log::error;
+use log::{debug, error};
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::{
     nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc,
@@ -52,11 +52,30 @@ pub struct TransactionManager {
     lookup_tables: Vec<AddressLookupTableAccount>,
 }
 
-/// Type alias for a batch of transactions
-/// A batch of transactions is a vector of vectors of instructions
-/// Each vector of instructions represents a single transaction
-/// The outer vector represents a batch of transactions
-pub type BatchTransactions = Vec<Vec<Instruction>>;
+// Type alias for a batch of transactions
+// A batch of transactions is a vector of vectors of instructions
+// Each vector of instructions represents a single transaction
+// The outer vector represents a batch of transactions
+pub type BatchTransactions = Vec<RawTransaction>;
+
+pub struct RawTransaction {
+    pub instructions: Vec<Instruction>,
+    pub lookup_tables: Option<Vec<AddressLookupTableAccount>>,
+}
+
+impl RawTransaction {
+    pub fn new(instructions: Vec<Instruction>) -> Self {
+        Self {
+            instructions,
+            lookup_tables: None,
+        }
+    }
+
+    pub fn with_lookup_tables(mut self, lookup_tables: Vec<AddressLookupTableAccount>) -> Self {
+        self.lookup_tables = Some(lookup_tables);
+        self
+    }
+}
 
 impl TransactionManager {
     /// Creates a new transaction manager
@@ -109,6 +128,7 @@ impl TransactionManager {
                     continue;
                 }
             };
+            debug!("Waiting for Jito leader...");
             loop {
                 let next_leader = match self
                     .searcher_client
@@ -125,30 +145,29 @@ impl TransactionManager {
                 let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
 
                 if num_slots <= LEADERSHIP_THRESHOLD {
+                    debug!("Sending bundle");
                     break;
                 }
 
                 tokio::time::sleep(SLEEP_DURATION).await;
             }
-            for tx in transactions {
-                let transaction = Self::send_transaction(
-                    tx.clone(),
-                    self.searcher_client.clone(),
-                    self.rpc.clone(),
-                );
-                tokio::spawn(async move {
-                    if let Err(e) = transaction.await {
-                        error!("Failed to send transaction: {:?}", e);
-                    }
-                });
-            }
+            let transaction = Self::send_transactions(
+                transactions,
+                self.searcher_client.clone(),
+                self.rpc.clone(),
+            );
+            tokio::spawn(async move {
+                if let Err(e) = transaction.await {
+                    error!("Failed to send transaction: {:?}", e);
+                }
+            });
         }
     }
 
     /// Sends a transaction/bundle of transactions to the jito
     /// block engine and waits for confirmation
-    async fn send_transaction(
-        transaction: VersionedTransaction,
+    async fn send_transactions(
+        transactions: Vec<VersionedTransaction>,
         mut searcher_client: SearcherServiceClient<Channel>,
         rpc: Arc<RpcClient>,
     ) -> anyhow::Result<()> {
@@ -158,7 +177,7 @@ impl TransactionManager {
             .into_inner();
 
         if let Err(e) = send_bundle_with_confirmation(
-            &[transaction],
+            &transactions,
             &rpc,
             &mut searcher_client,
             &mut bundle_results_subscription,
@@ -229,8 +248,9 @@ impl TransactionManager {
         let blockhash = self.rpc.get_latest_blockhash().await?;
 
         let mut txs = Vec::new();
-        for mut ixs in instructions {
-            ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(500_000));
+        for mut raw_transaction in instructions {
+            let mut ixs = raw_transaction.instructions;
+            ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(1_000_000));
             ixs.push(transfer(
                 &self.keypair.pubkey(),
                 &self.tip_accounts[0],
@@ -240,7 +260,11 @@ impl TransactionManager {
                 VersionedMessage::V0(v0::Message::try_compile(
                     &self.keypair.pubkey(),
                     &ixs,
-                    &self.lookup_tables,
+                    if raw_transaction.lookup_tables.is_some() {
+                        raw_transaction.lookup_tables.as_ref().unwrap()
+                    } else {
+                        &self.lookup_tables
+                    },
                     blockhash,
                 )?),
                 &[&self.keypair],

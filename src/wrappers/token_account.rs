@@ -24,7 +24,6 @@ impl TokenAccountWrapper {
 
         let price = bank
             .oracle_adapter
-            .price_adapter
             .get_price_of_type(marginfi::state::price::OraclePriceType::RealTime, None)?;
 
         Ok(ui_amount * price)

@@ -2,7 +2,7 @@ use crate::wrappers::marginfi_account::TxConfig;
 use log::{error, info};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
-use solana_client::rpc_config::RpcSimulateTransactionConfig;
+use solana_client::rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig};
 use solana_sdk::signature::Signature;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -165,7 +165,13 @@ impl TransactionSender {
         }
 
         (0..cfg.spam_times).try_for_each(|_| {
-            rpc.send_transaction(transaction)?;
+            rpc.send_transaction_with_config(
+                transaction,
+                RpcSendTransactionConfig {
+                    skip_preflight: true,
+                    ..Default::default()
+                },
+            )?;
             Ok::<_, Box<dyn Error>>(())
         })?;
 

@@ -130,6 +130,17 @@ impl MarginfiAccountWrapper {
         (deposits, liabilities)
     }
 
+    pub fn get_active_banks(&self) -> Vec<Pubkey> {
+        self.account
+            .lending_account
+            .balances
+            .clone()
+            .iter()
+            .filter(|b| b.active)
+            .map(|b| b.bank_pk)
+            .collect::<Vec<_>>()
+    }
+
     pub fn get_observation_accounts(
         &self,
         banks_to_include: &[Pubkey],
