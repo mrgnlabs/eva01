@@ -27,5 +27,7 @@ WORKDIR /app
 # Copy the build artifact from the build stage
 COPY --from=builder /usr/src/app/target/release/eva01 .
 
+ENV RUST_LOG=eva01=info
+
 # Set the startup command
 CMD ["./eva01", "run", "/config/config.toml"]
