@@ -62,6 +62,7 @@ jobs:
         env:
           KUBECONFIG: ${{ secrets.KUBECONFIG }}
         run: |
+          mkdir -p ~/.kube
           echo "$KUBECONFIG" > ~/.kube/config
 
       - name: Get all eva01-* deployments
