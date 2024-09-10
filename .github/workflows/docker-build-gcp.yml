@@ -45,4 +45,31 @@ jobs:
       - name: Push Docker image with 'latest' tag to Artifact Registry
         run: |
           docker push us-east1-docker.pkg.dev/marginfi-dev/main/eva01:latest
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Set up Kubeconfig
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+        run: |
+          echo "$KUBECONFIG" > ~/.kube/config
+
+      - name: Get all eva01-* deployments
+        id: get-deployments
+        run: |
+          kubectl get deployments --no-headers -o custom-columns=":metadata.name" | grep '^eva01-' > deployments.txt
+
+      - name: Restart all eva01-* deployments
+        run: |
+          cat deployments.txt | xargs -I {} kubectl rollout restart deployment {}
 
