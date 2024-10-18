@@ -5,6 +5,8 @@ use std::{
 };
 use switchboard_on_demand_client::CrossbarClient;
 
+const CHUNK_SIZE: usize = 20;
+
 /// CrossbarMaintainer will maintain the feeds prices
 /// with simulated prices from the crossbar service
 pub(crate) struct CrossbarMaintainer {
@@ -29,28 +31,50 @@ impl CrossbarMaintainer {
             .map(|(address, feed_hash)| (feed_hash.clone(), address.clone()))
             .collect();
 
-        let feed_hashes: Vec<&str> = feeds
+        let feed_hashes: Vec<String> = feeds
             .iter()
-            .map(|(_, feed_hash)| feed_hash.as_str())
+            .map(|(_, feed_hash)| feed_hash.clone())
             .collect();
 
-        let simulated_prices = self
-            .crossbar_client
-            .simulate_feeds(&feed_hashes)
-            .await
-            .unwrap();
+        let chunk_futures: Vec<_> = feed_hashes
+            .chunks(CHUNK_SIZE)
+            .map(|chunk| {
+                let client = self.crossbar_client.clone();
+                let chunk_owned: Vec<String> = chunk.to_vec();
+
+                tokio::spawn(async move {
+                    let chunk_refs: Vec<&str> = chunk_owned.iter().map(|s| s.as_str()).collect();
+                    client.simulate_feeds(&chunk_refs).await
+                })
+            })
+            .collect();
+
+        let chunk_results = match futures::future::try_join_all(chunk_futures).await {
+            Ok(results) => results,
+            Err(e) => {
+                log::error!("Error while simulating feeds: {:?}", e);
+                return Vec::new();
+            }
+        };
+
         let mut prices = Vec::new();
-        for simulated_response in simulated_prices {
-            if let Some(price) = calculate_price(simulated_response.results) {
-                prices.push((
-                    feed_hash_to_oracle_hash_map
-                        .get(&simulated_response.feedHash)
-                        .unwrap()
-                        .clone(),
-                    price,
-                ));
+
+        for result in chunk_results {
+            if let Ok(chunk_result) = result {
+                for simulated_response in chunk_result {
+                    if let Some(price) = calculate_price(simulated_response.results) {
+                        prices.push((
+                            feed_hash_to_oracle_hash_map
+                                .get(&simulated_response.feedHash)
+                                .unwrap()
+                                .clone(),
+                            price,
+                        ));
+                    }
+                }
             }
         }
+
         prices
     }
 }
