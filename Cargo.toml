@@ -30,7 +30,7 @@ futures-sink = "0.3.30"
 jupiter-swap-api-client = "0.1.0"
 lazy_static = "1.5.0"
 log = "0.4.21"
-marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", branch = "man0s/crossbar-legacy-indexer", features = [
+marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", features = [
     "mainnet-beta",
     "client",
     "no-entrypoint",

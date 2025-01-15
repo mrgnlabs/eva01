@@ -14,6 +14,7 @@ use crate::{
 };
 use anchor_client::Program;
 use anchor_lang::Discriminator;
+use core::panic;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
@@ -25,7 +26,7 @@ use marginfi::{
         marginfi_group::{Bank, BankOperationalState, RiskTier},
         price::{
             OraclePriceFeedAdapter, OraclePriceType, OracleSetup, PriceBias,
-            SwitchboardPullPriceFeed,
+            SwitchboardPullPriceFeed, SwitchboardV2PriceFeed,
         },
     },
 };
@@ -708,6 +709,8 @@ impl Liquidator {
         info!("Found {:?} oracle accounts", oracle_accounts.len());
 
         for (bank_address, bank) in banks.iter() {
+            info!("Bank {:?}", bank_address);
+
             let (oracle_address, mut oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
@@ -724,6 +727,9 @@ impl Liquidator {
                 (oracle_address.unwrap(), oracle_account.unwrap())
             };
 
+            println!("Oracle address {:?}", oracle_address);
+            println!("Oracle account {:?}", oracle_account);
+
             let price_adapter = match bank.config.oracle_setup {
                 OracleSetup::SwitchboardPull => {
                     let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
@@ -737,7 +743,20 @@ impl Liquidator {
                         feed: Box::new((&swb_feed).into()),
                     })
                 }
-                _ => {
+                OracleSetup::PythLegacy => {
+                    println!("Pyth legacy");
+                    todo!()
+                }
+                OracleSetup::SwitchboardV2 => {
+                    let oracle_account_info =
+                        (&oracle_address, &mut oracle_account).into_account_info();
+
+                    OraclePriceFeedAdapter::SwitchboardV2(
+                        SwitchboardV2PriceFeed::load_checked(&oracle_account_info, i64::MAX, 0)
+                            .unwrap(),
+                    )
+                }
+                OracleSetup::PythPushOracle => {
                     let oracle_account_info =
                         (&oracle_address, &mut oracle_account).into_account_info();
                     OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
@@ -748,7 +767,36 @@ impl Liquidator {
                     )
                     .unwrap()
                 }
+                OracleSetup::StakedWithPythPush => {
+                    let keys = oracle_map
+                        .iter()
+                        .filter(|(key, _)| bank.config.oracle_keys.contains(key))
+                        .collect::<Vec<_>>();
+
+                    let oracle_account_infos = keys
+                        .iter()
+                        .filter(|(address, _)| *address != &Pubkey::default())
+    
+                        .map(|(address, account)| (*address, &account.unwrap()).into_account_info())
+                        .collect::<Vec<_>>();
+
+                    println!("Oracle account infos {:?}", oracle_account_infos);
+
+                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                        &bank.config,
+                        &oracle_account_infos,
+                        &Clock::default(),
+                        i64::MAX as u64,
+                    )
+                    .unwrap()
+                }
+                _ => {
+                    println!("Unknown oracle setup {:?}", bank.config.oracle_setup);
+                    panic!("Unknown oracle setup {:?}", bank.config.oracle_setup);
+                }
             };
+
+            println!("Oracle created");
 
             self.banks.insert(
                 *bank_address,
@@ -761,6 +809,8 @@ impl Liquidator {
 
             self.oracle_to_bank.insert(oracle_address, *bank_address);
         }
+
+        info!("Reached here");
 
         Ok(())
     }

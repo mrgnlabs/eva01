@@ -2910,7 +2910,7 @@ dependencies = [
 [[package]]
 name = "marginfi"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?branch=man0s/crossbar-legacy-indexer#d6f25279df16c8f745fba331d37967ac0df3571d"
+source = "git+https://github.com/mrgnlabs/marginfi-v2#bd7efdadb0bdf9cf0f9e4299f9225dcdadc17635"
 dependencies = [
  "anchor-lang 0.29.0",
  "anchor-lang 0.30.1",
