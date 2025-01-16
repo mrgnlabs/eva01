@@ -48,6 +48,7 @@ pub async fn setup() -> anyhow::Result<()> {
 
     // RPC config
     let rpc_url = prompt_user("RPC endpoint url [required]: ")?;
+    let tx_landing_url = prompt_user("RPC endpoint url [required]: ")?;
     if !is_valid_url(&rpc_url) {
         bail!("Invalid RPC endpoint");
     }
@@ -94,6 +95,7 @@ pub async fn setup() -> anyhow::Result<()> {
 
     let general_config = GeneralConfig {
         rpc_url,
+        tx_landing_url,
         yellowstone_endpoint,
         yellowstone_x_token,
         block_engine_url: GeneralConfig::default_block_engine_url(),
@@ -149,6 +151,7 @@ pub async fn setup() -> anyhow::Result<()> {
 pub async fn setup_from_cfg(
     SetupFromCliOpts {
         rpc_url,
+        tx_landing_url,
         keypair_path,
         marginfi_account,
         yellowstone_endpoint,
@@ -189,6 +192,7 @@ pub async fn setup_from_cfg(
 
     let general_config = GeneralConfig {
         rpc_url,
+        tx_landing_url,
         yellowstone_endpoint,
         yellowstone_x_token,
         block_engine_url: GeneralConfig::default_block_engine_url(),

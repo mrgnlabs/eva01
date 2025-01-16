@@ -149,7 +149,7 @@ impl TokenAccountManager {
                     let program_id = mint_account.owner;
                     debug!("Token account {} for mint {} program {}, exists {}", address, mint, program_id, maybe_token_account.is_some());
                     if maybe_token_account.is_none() {
-                        debug!("Creating token account for mint: {:?}, program_id: {}", mint, program_id);
+                        info!("Creating token account for mint: {:?}, program_id: {}", mint, program_id);
                         Some((address, mint, program_id))
                     } else {
                         None

@@ -76,7 +76,8 @@ impl Rebalancer {
         geyser_receiver: Receiver<GeyserUpdate>,
         stop_liquidation: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
-        let rpc_client = Arc::new(RpcClient::new(general_config.rpc_url.clone()));
+        println!("Tx landing url: {:?}", general_config.tx_landing_url);
+        let rpc_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
         let token_account_manager = TokenAccountManager::new(rpc_client.clone())?;
 
         let liquidator_account = LiquidatorAccount::new(

@@ -689,13 +689,12 @@ impl Liquidator {
             ))])
             .await?;
 
-        debug!("Found {} banks", banks.len());
-
         let oracle_keys = banks
             .iter()
             .map(|(_, bank)| find_oracle_keys(&bank.config))
             .flatten()
             .collect::<Vec<_>>();
+
 
         let mut oracle_accounts =
             batch_get_multiple_accounts(rpc_client, &oracle_keys, BatchLoadingConfig::DEFAULT)?;
@@ -706,11 +705,7 @@ impl Liquidator {
             .map(|(pk, account)| (*pk, account.take()))
             .collect();
 
-        info!("Found {:?} oracle accounts", oracle_accounts.len());
-
         for (bank_address, bank) in banks.iter() {
-            info!("Bank {:?}", bank_address);
-
             let (oracle_address, mut oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
@@ -727,9 +722,6 @@ impl Liquidator {
                 (oracle_address.unwrap(), oracle_account.unwrap())
             };
 
-            println!("Oracle address {:?}", oracle_address);
-            println!("Oracle account {:?}", oracle_account);
-
             let price_adapter = match bank.config.oracle_setup {
                 OracleSetup::SwitchboardPull => {
                     let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
@@ -742,10 +734,6 @@ impl Liquidator {
                     OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
                         feed: Box::new((&swb_feed).into()),
                     })
-                }
-                OracleSetup::PythLegacy => {
-                    println!("Pyth legacy");
-                    todo!()
                 }
                 OracleSetup::SwitchboardV2 => {
                     let oracle_account_info =
@@ -768,19 +756,43 @@ impl Liquidator {
                     .unwrap()
                 }
                 OracleSetup::StakedWithPythPush => {
-                    let keys = oracle_map
+                    let keys = find_oracle_keys(&bank.config);
+
+                    let mut oracle_account = oracle_map
+                        .get(keys.first().unwrap())
+                        .unwrap()
+                        .clone()
+                        .unwrap();
+                    let mut oracle_account_infos =
+                        vec![(keys.first().unwrap(), &mut oracle_account).into_account_info()];
+
+                    // Remove the first key from the list
+                    let mut keys = keys.clone();
+                    keys.remove(0);
+
+                    let accounts_map = oracle_map
                         .iter()
-                        .filter(|(key, _)| bank.config.oracle_keys.contains(key))
+                        .filter(|(key, _)| keys.contains(key))
+                        .map(|(key, address)| (*key, address.clone()))
                         .collect::<Vec<_>>();
 
-                    let oracle_account_infos = keys
+                    let mut accounts: Vec<_> = accounts_map
                         .iter()
-                        .filter(|(address, _)| *address != &Pubkey::default())
-    
-                        .map(|(address, account)| (*address, &account.unwrap()).into_account_info())
-                        .collect::<Vec<_>>();
+                        .map(|(_, account)| account.clone().unwrap())
+                        .collect();
 
-                    println!("Oracle account infos {:?}", oracle_account_infos);
+                    let remaining_account_infos: Vec<_> = accounts_map
+                        .iter()
+                        .zip(accounts.iter_mut())
+                        .map(|((address, _), account)| (address, account).into_account_info())
+                        .collect();
+
+                    oracle_account_infos.extend(remaining_account_infos);
+
+                    oracle_account_infos.sort_by_key(|info| {
+                        let address = info.key;
+                        keys.iter().position(|key| key == address)
+                    });
 
                     OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
                         &bank.config,
@@ -795,8 +807,6 @@ impl Liquidator {
                     panic!("Unknown oracle setup {:?}", bank.config.oracle_setup);
                 }
             };
-
-            println!("Oracle created");
 
             self.banks.insert(
                 *bank_address,

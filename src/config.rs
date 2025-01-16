@@ -47,6 +47,7 @@ impl Eva01Config {
 /// General config that can be shared by liquidator, rebalancer and geyser
 pub struct GeneralConfig {
     pub rpc_url: String,
+    pub tx_landing_url: String,
     pub yellowstone_endpoint: String,
     pub yellowstone_x_token: Option<String>,
     #[serde(default = "GeneralConfig::default_block_engine_url")]

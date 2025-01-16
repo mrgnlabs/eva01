@@ -30,6 +30,8 @@ pub enum Commands {
 pub struct SetupFromCliOpts {
     #[arg(short = 'u', long, help = "RPC endpoint url")]
     pub rpc_url: String,
+    #[arg(short = 't', long, help = "Tx landing url")]
+    pub tx_landing_url: String,
     #[arg(short = 'k', long, help = "Signer keypair path")]
     pub keypair_path: PathBuf,
     #[arg(

@@ -570,7 +570,30 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
                 .0,
             ]
         }
-        _ => vec![bank_config.oracle_keys.first().unwrap().clone()],
+        marginfi::state::price::OracleSetup::StakedWithPythPush => {
+            let feed_id = bank_config.get_pyth_push_oracle_feed_id().unwrap();
+            let oracle_addresses = vec![
+                PythPushOraclePriceFeed::find_oracle_address(
+                    PYTH_PUSH_PYTH_SPONSORED_SHARD_ID,
+                    feed_id,
+                )
+                .0,
+                bank_config.oracle_keys[1].clone(),
+                bank_config.oracle_keys[2].clone(),
+            ];
+            oracle_addresses
+        }
+        _ => bank_config
+            .oracle_keys
+            .iter()
+            .filter_map(|key| {
+                if *key != Pubkey::default() {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>(),
     }
 }
 
