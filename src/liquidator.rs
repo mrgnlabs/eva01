@@ -62,6 +62,7 @@ pub struct Liquidator {
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
     stop_liquidation: Arc<AtomicBool>,
     crossbar_client: CrossbarMaintainer,
+    cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
 }
 
 #[derive(Clone)]
@@ -129,6 +130,7 @@ impl Liquidator {
             oracle_to_bank: HashMap::new(),
             stop_liquidation,
             crossbar_client: CrossbarMaintainer::new(),
+            cache_oracle_needed_accounts: HashMap::new(),
         }
     }
 
@@ -140,6 +142,22 @@ impl Liquidator {
         self.liquidator_account
             .load_initial_data(rpc_client.as_ref(), self.get_all_mints())
             .await?;
+
+        for bank in self.banks.values() {
+            if bank.bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
+                let keys = &bank.bank.config.oracle_keys[1..3];
+                let accounts = batch_get_multiple_accounts(
+                    rpc_client.clone(),
+                    keys,
+                    BatchLoadingConfig::DEFAULT,
+                )
+                .unwrap();
+                for (key, account) in keys.iter().zip(accounts.iter()) {
+                    self.cache_oracle_needed_accounts
+                        .insert(*key, account.clone().unwrap());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -179,6 +197,38 @@ impl Liquidator {
                                             feed: Box::new((&swb_feed).into()),
                                         },
                                     )
+                                }
+                                OracleSetup::StakedWithPythPush => {
+                                    let keys = &bank_to_update.bank.config.oracle_keys[1..3];
+
+                                    let mut accounts_info =
+                                        vec![(&msg.address, &mut msg.account).into_account_info()];
+
+                                    let mut owned_accounts: Vec<_> = keys
+                                        .iter()
+                                        .map(|key| {
+                                            self.cache_oracle_needed_accounts
+                                                .iter()
+                                                .find(|(k, _)| *k == key)
+                                                .unwrap()
+                                                .1
+                                                .clone()
+                                        })
+                                        .collect();
+
+                                    accounts_info.extend(
+                                        keys.iter().zip(owned_accounts.iter_mut()).map(
+                                            |(key, account)| (key, account).into_account_info(),
+                                        ),
+                                    );
+
+                                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                        &bank_to_update.bank.config,
+                                        &accounts_info,
+                                        &Clock::default(),
+                                        i64::MAX as u64,
+                                    )
+                                    .unwrap()
                                 }
                                 _ => {
                                     let oracle_account_info =
@@ -223,6 +273,7 @@ impl Liquidator {
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();
                         for account in accounts {
+                            info!("Liquidating account {:?}", account.liquidate_account.address);
                             if let Err(e) = self
                                 .liquidator_account
                                 .liquidate(
@@ -695,7 +746,6 @@ impl Liquidator {
             .flatten()
             .collect::<Vec<_>>();
 
-
         let mut oracle_accounts =
             batch_get_multiple_accounts(rpc_client, &oracle_keys, BatchLoadingConfig::DEFAULT)?;
 
@@ -819,8 +869,6 @@ impl Liquidator {
 
             self.oracle_to_bank.insert(oracle_address, *bank_address);
         }
-
-        info!("Reached here");
 
         Ok(())
     }

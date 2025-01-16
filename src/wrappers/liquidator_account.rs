@@ -182,6 +182,19 @@ impl LiquidatorAccount {
         if let Some((crank_ix, crank_lut)) = crank_data {
             bundle.push(RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut));
         }
+
+        let recent_blockhash = self.non_blocking_rpc_client.get_latest_blockhash().await.unwrap();
+
+        let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+            &[liquidate_ix.clone()],
+            Some(&signer_pk),
+            &[&self.signer_keypair],
+            recent_blockhash,
+        );
+
+        let res = self.non_blocking_rpc_client.simulate_transaction(&tx).await;
+        println!("Simulated transaction {:?}", res);
+
         bundle.push(RawTransaction::new(vec![liquidate_ix]));
 
         self.transaction_tx.send(bundle)?;

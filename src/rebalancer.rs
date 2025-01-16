@@ -7,7 +7,7 @@ use crate::{
     transaction_manager::{BatchTransactions, RawTransaction},
     utils::{
         accessor, batch_get_multiple_accounts, calc_weighted_assets_new, calc_weighted_liabs_new,
-        BankAccountWithPriceFeedEva,
+        BankAccountWithPriceFeedEva, BatchLoadingConfig,
     },
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
@@ -37,8 +37,9 @@ use solana_client::{
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
-    account_info::IntoAccountInfo, clock::Clock, commitment_config::CommitmentConfig,
-    signature::read_keypair_file, transaction::VersionedTransaction,
+    account::Account, account_info::IntoAccountInfo, clock::Clock,
+    commitment_config::CommitmentConfig, signature::read_keypair_file,
+    transaction::VersionedTransaction,
 };
 use std::{
     cmp::min,
@@ -66,6 +67,7 @@ pub struct Rebalancer {
     geyser_receiver: Receiver<GeyserUpdate>,
     stop_liquidations: Arc<AtomicBool>,
     crossbar_client: CrossbarMaintainer,
+    cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
 }
 
 impl Rebalancer {
@@ -76,7 +78,6 @@ impl Rebalancer {
         geyser_receiver: Receiver<GeyserUpdate>,
         stop_liquidation: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
-        println!("Tx landing url: {:?}", general_config.tx_landing_url);
         let rpc_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
         let token_account_manager = TokenAccountManager::new(rpc_client.clone())?;
 
@@ -105,6 +106,7 @@ impl Rebalancer {
             geyser_receiver,
             stop_liquidations: stop_liquidation,
             crossbar_client: CrossbarMaintainer::new(),
+            cache_oracle_needed_accounts: HashMap::new(),
         })
     }
 
@@ -119,6 +121,22 @@ impl Rebalancer {
         for bank in self.banks.values() {
             bank_mints.push(bank.bank.mint);
             self.mint_to_bank.insert(bank.bank.mint, bank.address);
+        }
+
+        for bank in self.banks.values() {
+            if bank.bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
+                let keys = &bank.bank.config.oracle_keys[1..3];
+                let accounts = batch_get_multiple_accounts(
+                    self.rpc_client.clone(),
+                    keys,
+                    BatchLoadingConfig::DEFAULT,
+                )
+                .unwrap();
+                for (key, account) in keys.iter().zip(accounts.iter()) {
+                    self.cache_oracle_needed_accounts
+                        .insert(*key, account.clone().unwrap());
+                }
+            }
         }
 
         self.token_account_manager
@@ -218,7 +236,40 @@ impl Rebalancer {
                                         },
                                     )
                                 }
+                                OracleSetup::StakedWithPythPush => {
+                                    let keys = &bank_to_update.bank.config.oracle_keys[1..3];
+
+                                    let mut accounts_info =
+                                        vec![(&msg.address, &mut msg.account).into_account_info()];
+
+                                    let mut owned_accounts: Vec<_> = keys
+                                        .iter()
+                                        .map(|key| {
+                                            self.cache_oracle_needed_accounts
+                                                .iter()
+                                                .find(|(k, _)| *k == key)
+                                                .unwrap()
+                                                .1
+                                                .clone()
+                                        })
+                                        .collect();
+
+                                    accounts_info.extend(
+                                        keys.iter().zip(owned_accounts.iter_mut()).map(
+                                            |(key, account)| (key, account).into_account_info(),
+                                        ),
+                                    );
+
+                                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                        &bank_to_update.bank.config,
+                                        &accounts_info,
+                                        &Clock::default(),
+                                        i64::MAX as u64,
+                                    )
+                                    .unwrap()
+                                }
                                 _ => {
+                                    println!("Oracle account info {:?}", msg.address);
                                     let oracle_account_info =
                                         (&msg.address, &mut msg.account).into_account_info();
                                     OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
