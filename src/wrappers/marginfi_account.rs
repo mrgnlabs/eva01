@@ -167,7 +167,18 @@ impl MarginfiAccountWrapper {
             .flat_map(|b| {
                 let bank = banks.get(b).unwrap();
 
-                vec![bank.address, bank.oracle_adapter.address]
+                if bank.bank.config.oracle_keys[1] != Pubkey::default()
+                    && bank.bank.config.oracle_keys[2] != Pubkey::default()
+                {
+                    vec![
+                        bank.address,
+                        bank.oracle_adapter.address,
+                        bank.bank.config.oracle_keys[1],
+                        bank.bank.config.oracle_keys[2],
+                    ]
+                } else {
+                    vec![bank.address, bank.oracle_adapter.address]
+                }
             })
             .collect::<Vec<_>>();
 

@@ -4,15 +4,21 @@ use crate::{
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
     transaction_manager::{BatchTransactions, RawTransaction},
 };
+use solana_sdk::commitment_config::CommitmentConfig;
+use anchor_spl::associated_token::spl_associated_token_account::instruction::create_associated_token_account;
 use crossbeam::channel::Sender;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
+use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
+    instruction::Instruction,
+    pubkey,
     signature::{read_keypair_file, Keypair},
     signer::Signer,
+    system_instruction::transfer,
 };
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData};
@@ -109,11 +115,9 @@ impl LiquidatorAccount {
         let bank_liquidaity_vault = liab_bank.bank.liquidity_vault;
         let bank_insurante_vault = liab_bank.bank.insurance_vault;
 
-        let liquidator_observation_accounts = self.account_wrapper.get_observation_accounts(
-            &[liab_bank.address, asset_bank.address],
-            &[],
-            banks,
-        );
+        let liquidator_observation_accounts =
+            self.account_wrapper
+                .get_observation_accounts(&[], &[], banks);
 
         let liquidatee_observation_accounts =
             liquidate_account.get_observation_accounts(&[], &[], banks);
@@ -178,12 +182,18 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
+        println!("liquidate_ix: {:?}", liquidate_ix);
+
         let mut bundle = vec![];
         if let Some((crank_ix, crank_lut)) = crank_data {
             bundle.push(RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut));
         }
 
-        let recent_blockhash = self.non_blocking_rpc_client.get_latest_blockhash().await.unwrap();
+        let recent_blockhash = self
+            .non_blocking_rpc_client
+            .get_latest_blockhash()
+            .await
+            .unwrap();
 
         let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
             &[liquidate_ix.clone()],
@@ -192,8 +202,21 @@ impl LiquidatorAccount {
             recent_blockhash,
         );
 
-        let res = self.non_blocking_rpc_client.simulate_transaction(&tx).await;
-        println!("Simulated transaction {:?}", res);
+        let res = self
+            .non_blocking_rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        println!(
+            "Transaction sent without preflight check {:?} for address {:?}",
+            res, liquidate_account.address
+        );
 
         bundle.push(RawTransaction::new(vec![liquidate_ix]));
 
@@ -299,8 +322,15 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-        let token_program = *self.token_program_per_mint.get(&mint).unwrap();
 
+        let wrap_sol_ixs: Vec<Instruction> =
+            if mint == pubkey!("So11111111111111111111111111111111111111112") {
+                vec![transfer(&signer_pk, &token_account, amount)]
+            } else {
+                vec![]
+            };
+
+        let token_program = *self.token_program_per_mint.get(&mint).unwrap();
         let deposit_ix = make_deposit_ix(
             self.program_id,
             self.group,
@@ -314,8 +344,11 @@ impl LiquidatorAccount {
             amount,
         );
 
-        self.transaction_tx
-            .send(vec![RawTransaction::new(vec![deposit_ix])])?;
+        let mut transactions = vec![RawTransaction::new(wrap_sol_ixs)];
+        transactions[0]
+            .instructions
+            .extend_from_slice(&[deposit_ix]);
+        self.transaction_tx.send(transactions)?;
 
         Ok(())
     }

@@ -269,7 +269,6 @@ impl Rebalancer {
                                     .unwrap()
                                 }
                                 _ => {
-                                    println!("Oracle account info {:?}", msg.address);
                                     let oracle_account_info =
                                         (&msg.address, &mut msg.account).into_account_info();
                                     OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
@@ -377,10 +376,10 @@ impl Rebalancer {
             }
         }
         debug!("Rebalancing accounts");
-        self.sell_non_preferred_deposits().await?;
-        self.repay_liabilities().await?;
-        self.handle_tokens_in_token_accounts().await?;
-        self.deposit_preferred_tokens().await?;
+        //self.sell_non_preferred_deposits().await?;
+        //self.repay_liabilities().await?;
+        //self.handle_tokens_in_token_accounts().await?;
+        //self.deposit_preferred_tokens().await?;
 
         Ok(())
     }
