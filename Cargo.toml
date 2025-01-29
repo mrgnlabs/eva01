@@ -30,7 +30,7 @@ futures-sink = "0.3.30"
 jupiter-swap-api-client = "0.1.0"
 lazy_static = "1.5.0"
 log = "0.4.21"
-marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", branch = "man0s/crossbar-legacy-indexer", features = [
+marginfi = { git = "https://github.com/mrgnlabs/marginfi-v2", features = [
     "mainnet-beta",
     "client",
     "no-entrypoint",
@@ -58,8 +58,8 @@ yellowstone-grpc-client = { git = "https://github.com/mrgnlabs/yellowstone-grpc"
 yellowstone-grpc-proto = { git = "https://github.com/mrgnlabs/yellowstone-grpc", branch = "1.18.17" }
 jito-protos = { git = "https://github.com/mrgnlabs/jito-rs", branch = "1.18.17" }
 jito-searcher-client = { git = "https://github.com/mrgnlabs/jito-rs", branch = "1.18.17" }
-switchboard-on-demand = "0.1.7"
-switchboard-on-demand-client = "0.1.7"
+switchboard-on-demand = "0.1.15"
+switchboard-on-demand-client = "0.2.9"
 chrono = "0.4.38"
 hex = "0.4.3"
 url = "2.5.2"

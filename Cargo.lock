@@ -1640,6 +1640,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2910,7 +2924,7 @@ dependencies = [
 [[package]]
 name = "marginfi"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?branch=man0s/crossbar-legacy-indexer#d6f25279df16c8f745fba331d37967ac0df3571d"
+source = "git+https://github.com/mrgnlabs/marginfi-v2#933e11ee9b49fbb2d98ec12c6f48189c43168dd6"
 dependencies = [
  "anchor-lang 0.29.0",
  "anchor-lang 0.30.1",
@@ -4395,9 +4409,9 @@ checksum = "61697e0a1c7e512e84a621326239844a24d8207b4669b41bc18b32ea5cbf988b"
 
 [[package]]
 name = "serde"
-version = "1.0.204"
+version = "1.0.210"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc76f558e0cbb2a839d37354c575f1dc3fdc6546b5be373ba43d95f231bf7c12"
+checksum = "c8e3592472072e6e22e0a54d5904d9febf8508f65fb8552499a1abc7d1078c3a"
 dependencies = [
  "serde_derive",
 ]
@@ -4413,9 +4427,9 @@ dependencies = [
 
 [[package]]
 name = "serde_derive"
-version = "1.0.204"
+version = "1.0.210"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0cd7e117be63d3c3678776753929474f3b04a43a080c744d6b0ae2a8c28e222"
+checksum = "243902eda00fad750862fc144cea25caca5e20d615af0a81bee94ca738f1df1f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4712,7 +4726,7 @@ checksum = "c5cc431df6cc1dd964134fa4ec7df765d3af3fae9c2148f96a3c4fb500290633"
 dependencies = [
  "async-trait",
  "bincode",
- "dashmap",
+ "dashmap 5.5.3",
  "futures",
  "futures-util",
  "indexmap 2.2.6",
@@ -5952,9 +5966,9 @@ dependencies = [
 
 [[package]]
 name = "switchboard-on-demand"
-version = "0.1.14"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3852951c42f8876a443060b6882bda945f1621224236ead37959e80f5369cf81"
+checksum = "6bc728d0af2eefd2cb76a712413c41fe122c04d188442da0e13f6a1f48827342"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -5966,10 +5980,8 @@ dependencies = [
  "lazy_static",
  "libsecp256k1 0.7.1",
  "log",
- "num 0.4.3",
  "rust_decimal",
  "serde",
- "serde_json",
  "sha2 0.10.8",
  "solana-address-lookup-table-program",
  "solana-program",
@@ -5980,17 +5992,19 @@ dependencies = [
 
 [[package]]
 name = "switchboard-on-demand-client"
-version = "0.1.7"
+version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8a4ee6334ce2e60bd5c4e0c9b0ba0269d31d17e76c7f546683be55622c16c0e"
+checksum = "dfb24d22d91f03c7b13aa7da3cec1c11c8606a9fc0367abc0f150315f19f5e65"
 dependencies = [
  "anyhow_ext",
  "arrayref",
  "base58",
  "base64 0.22.1",
- "borsh 1.5.1",
+ "bincode",
+ "borsh 0.9.3",
  "bs58 0.4.0",
  "bytemuck",
+ "dashmap 6.1.0",
  "futures",
  "hex",
  "lazy_static",
@@ -5999,10 +6013,12 @@ dependencies = [
  "reqwest",
  "rust_decimal",
  "serde",
+ "serde_derive",
  "serde_json",
  "sha2 0.10.8",
  "solana-client",
  "solana-sdk",
+ "tokio",
 ]
 
 [[package]]
