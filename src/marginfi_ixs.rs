@@ -166,7 +166,7 @@ pub fn make_liquidate_ix(
     asset_amount: u64,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountLiquidate {
-        marginfi_group,
+        group: marginfi_group,
         liquidator_marginfi_account: marginfi_account,
         signer,
         liquidatee_marginfi_account,

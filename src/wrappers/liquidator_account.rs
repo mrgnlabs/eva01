@@ -4,7 +4,6 @@ use crate::{
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
     transaction_manager::{BatchTransactions, RawTransaction},
 };
-use solana_sdk::commitment_config::CommitmentConfig;
 use anchor_spl::associated_token::spl_associated_token_account::instruction::create_associated_token_account;
 use crossbeam::channel::Sender;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
@@ -13,6 +12,7 @@ use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
 };
 use solana_program::pubkey::Pubkey;
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::{
     instruction::Instruction,
     pubkey,
@@ -21,7 +21,9 @@ use solana_sdk::{
     system_instruction::transfer,
 };
 use std::{collections::HashMap, str::FromStr, sync::Arc};
-use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData};
+use switchboard_on_demand_client::{
+    FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
+};
 
 /// Wraps the liquidator account into a dedicated strecture
 pub struct LiquidatorAccount {
@@ -143,6 +145,7 @@ impl LiquidatorAccount {
 
         let crank_data = if !observation_swb_oracles.is_empty() {
             if let Ok((ix, luts)) = PullFeed::fetch_update_many_ix(
+                SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
                     feeds: observation_swb_oracles,

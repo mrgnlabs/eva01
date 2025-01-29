@@ -48,8 +48,8 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
-use switchboard_on_demand_client::QueueAccountData;
 use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed};
+use switchboard_on_demand_client::{QueueAccountData, SbContext};
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
 pub struct Rebalancer {
@@ -358,6 +358,7 @@ impl Rebalancer {
 
         if !active_swb_oracles.is_empty() {
             if let Ok((ix, lut)) = PullFeed::fetch_update_many_ix(
+                SbContext::new(),
                 &self.liquidator_account.non_blocking_rpc_client,
                 FetchUpdateManyParams {
                     feeds: active_swb_oracles,

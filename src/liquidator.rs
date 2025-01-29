@@ -273,7 +273,10 @@ impl Liquidator {
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();
                         for account in accounts {
-                            info!("Liquidating account {:?}", account.liquidate_account.address);
+                            info!(
+                                "Liquidating account {:?}",
+                                account.liquidate_account.address
+                            );
                             if let Err(e) = self
                                 .liquidator_account
                                 .liquidate(
@@ -331,13 +334,14 @@ impl Liquidator {
 
                 let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
 
-                let deposit_values = self
-                    .get_value_of_shares(
-                        deposit_shares,
-                        &BalanceSide::Assets,
-                        RequirementType::Maintenance,
-                    )
-                    .unwrap();
+                let deposit_values = match self.get_value_of_shares(
+                    deposit_shares,
+                    &BalanceSide::Assets,
+                    RequirementType::Maintenance,
+                ) {
+                    Ok(values) => values,
+                    Err(_) => return None,
+                };
 
                 if deposit_values
                     .iter()
@@ -756,6 +760,21 @@ impl Liquidator {
             .collect();
 
         for (bank_address, bank) in banks.iter() {
+            if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
+                continue;
+            }
+
+            let oracle_keys_excluded_default = bank
+                .config
+                .oracle_keys
+                .iter()
+                .filter(|key| *key != &Pubkey::default())
+                .collect::<Vec<_>>();
+
+            if oracle_keys_excluded_default.len() > 1 {
+                continue;
+            }
+
             let (oracle_address, mut oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;

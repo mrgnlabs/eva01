@@ -16,7 +16,7 @@ pub(crate) struct CrossbarMaintainer {
 impl CrossbarMaintainer {
     /// Creates a new CrossbarMaintainer empty instance
     pub fn new() -> Self {
-        let crossbar_client = CrossbarClient::default(None);
+        let crossbar_client = CrossbarClient::default();
         Self { crossbar_client }
     }
 
