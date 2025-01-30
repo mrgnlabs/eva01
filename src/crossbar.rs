@@ -1,3 +1,4 @@
+use log::error;
 use solana_sdk::pubkey::Pubkey;
 use std::{
     collections::HashMap,

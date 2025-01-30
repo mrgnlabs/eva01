@@ -80,7 +80,10 @@ impl RawTransaction {
 impl TransactionManager {
     /// Creates a new transaction manager
     pub async fn new(rx: Receiver<BatchTransactions>, config: GeneralConfig) -> Self {
-        let keypair = read_keypair_file(&config.keypair_path).unwrap();
+        let keypair = read_keypair_file(&config.keypair_path).map_err(|e| {
+            error!("Failed to read keypair file: {:?}", e);
+            e
+        }).unwrap();
         let mut searcher_client = get_searcher_client_no_auth(&config.block_engine_url)
             .await
             .unwrap();
