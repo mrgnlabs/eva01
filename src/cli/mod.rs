@@ -17,7 +17,7 @@ pub async fn main_entry() -> anyhow::Result<()> {
 
     match args.cmd {
         app::Commands::Run { path } => {
-            let config = Eva01Config::try_load_from_file(path).unwrap();
+            let config = Eva01Config::try_load_from_file(path)?;
             entrypoints::run_liquidator(config).await?;
         }
         app::Commands::Setup => {

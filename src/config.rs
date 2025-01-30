@@ -10,7 +10,6 @@ use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use solana_sdk::{pubkey, pubkey::Pubkey};
 use std::{
-    error::Error,
     io::{BufWriter, Write},
     path::PathBuf,
 };
@@ -25,11 +24,11 @@ pub struct Eva01Config {
 }
 
 impl Eva01Config {
-    pub fn try_load_from_file(path: PathBuf) -> Result<Self, Box<dyn Error>> {
+    pub fn try_load_from_file(path: PathBuf) -> anyhow::Result<Self> {
         let config_str = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config file: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to read config file: {:#?}", e))?;
         let config = toml::from_str(&config_str)
-            .map_err(|e| format!("Failed to parse config file {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse config file {:#?}", e))?;
         Ok(config)
     }
 
