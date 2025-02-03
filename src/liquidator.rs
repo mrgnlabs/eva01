@@ -56,12 +56,40 @@ pub struct Liquidator {
     general_config: GeneralConfig,
     config: LiquidatorCfg,
     geyser_receiver: Receiver<GeyserUpdate>,
+    transaction_sender: Sender<BatchTransactions>,
     marginfi_accounts: HashMap<Pubkey, MarginfiAccountWrapper>,
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
     stop_liquidation: Arc<AtomicBool>,
     crossbar_client: CrossbarMaintainer,
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
+}
+
+#[derive(Clone)]
+pub struct LiquidatableAccount<'a> {
+    account: &'a MarginfiAccountWrapper,
+    asset_bank_pk: Pubkey,
+    liab_bank_pk: Pubkey,
+    max_liquidation_amount: I80F48,
+    profit: I80F48,
+}
+
+impl<'a> LiquidatableAccount<'a> {
+    pub fn new(
+        account: &'a MarginfiAccountWrapper,
+        asset_bank_pk: Pubkey,
+        liab_bank_pk: Pubkey,
+        max_liquidation_amount: I80F48,
+        profit: I80F48,
+    ) -> LiquidatableAccount {
+        Self {
+            account,
+            asset_bank_pk,
+            liab_bank_pk,
+            max_liquidation_amount,
+            profit,
+        }
+    }
 }
 
 pub struct PreparedLiquidatableAccount {
@@ -95,6 +123,7 @@ impl Liquidator {
             general_config,
             config: liquidator_config,
             geyser_receiver,
+            transaction_sender,
             marginfi_accounts: HashMap::new(),
             banks: HashMap::new(),
             liquidator_account,
