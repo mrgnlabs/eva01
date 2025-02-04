@@ -23,6 +23,7 @@ use solana_sdk::{
 use std::{
     collections::HashMap,
     io::Write,
+    mem::MaybeUninit,
     path::PathBuf,
     str::FromStr,
     sync::{atomic::AtomicUsize, Arc},
@@ -494,8 +495,8 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
                     feed_id,
                 )
                 .0,
-                bank_config.oracle_keys[1].clone(),
-                bank_config.oracle_keys[2].clone(),
+                bank_config.oracle_keys[1],
+                bank_config.oracle_keys[2],
             ];
             oracle_addresses
         }
@@ -504,7 +505,7 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
             .iter()
             .filter_map(|key| {
                 if *key != Pubkey::default() {
-                    Some(key.clone())
+                    Some(*key)
                 } else {
                     None
                 }
@@ -523,7 +524,7 @@ pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> anyhow::Result<PullFeed
     }
 
     let num = bytes.len() / std::mem::size_of::<PullFeedAccountData>();
-    let mut vec: Vec<PullFeedAccountData> = Vec::with_capacity(num);
+    let mut vec: Vec<MaybeUninit<PullFeedAccountData>> = Vec::with_capacity(num);
 
     unsafe {
         vec.set_len(num);
@@ -532,9 +533,14 @@ pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> anyhow::Result<PullFeed
             vec.as_mut_ptr() as *mut u8,
             bytes.len(),
         );
-    }
 
-    Ok(vec[0])
+        let vec: Vec<PullFeedAccountData> = std::mem::transmute::<
+            Vec<MaybeUninit<PullFeedAccountData>>,
+            Vec<PullFeedAccountData>,
+        >(vec);
+
+        Ok(vec[0])
+    }
 }
 
 pub fn expand_tilde(path: &str) -> PathBuf {

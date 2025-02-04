@@ -10,6 +10,8 @@ pub struct MarginfiAccountWrapper {
     pub account: MarginfiAccount,
 }
 
+type Shares = Vec<(I80F48, Pubkey)>;
+
 impl MarginfiAccountWrapper {
     pub fn new(address: Pubkey, account: MarginfiAccount) -> Self {
         MarginfiAccountWrapper { address, account }
@@ -92,9 +94,7 @@ impl MarginfiAccountWrapper {
         Ok(balance)
     }
 
-    pub fn get_deposits_and_liabilities_shares(
-        &self,
-    ) -> (Vec<(I80F48, Pubkey)>, Vec<(I80F48, Pubkey)>) {
+    pub fn get_deposits_and_liabilities_shares(&self) -> (Shares, Shares) {
         let mut liabilities = Vec::new();
         let mut deposits = Vec::new();
 

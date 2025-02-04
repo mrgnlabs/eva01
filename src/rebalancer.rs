@@ -205,7 +205,7 @@ impl Rebalancer {
             while let Ok(mut msg) = self.geyser_receiver.recv() {
                 debug!("Received message {:?}", msg);
                 match msg.account_type {
-                    AccountType::OracleAccount => {
+                    AccountType::Oracle => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
                             let bank_to_update: &mut BankWrapper =
                                 self.banks.get_mut(bank_to_update_pk).unwrap();
@@ -281,7 +281,7 @@ impl Rebalancer {
                             bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                         }
                     }
-                    AccountType::MarginfiAccount => {
+                    AccountType::Marginfi => {
                         if msg.address == self.general_config.liquidator_account {
                             let marginfi_account =
                                 bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
@@ -289,7 +289,7 @@ impl Rebalancer {
                             self.liquidator_account.account_wrapper.account = *marginfi_account;
                         }
                     }
-                    AccountType::TokenAccount => {
+                    AccountType::Token => {
                         let mint = accessor::mint(&msg.account.data);
                         let balance = accessor::amount(&msg.account.data);
 
@@ -315,11 +315,10 @@ impl Rebalancer {
             .banks
             .values()
             .filter_map(|bank| {
-                if let Some(feed_hash) = &bank.oracle_adapter.swb_feed_hash {
-                    Some((bank.address, feed_hash.clone()))
-                } else {
-                    None
-                }
+                bank.oracle_adapter
+                    .swb_feed_hash
+                    .as_ref()
+                    .map(|feed_hash| (bank.address, feed_hash.clone()))
             })
             .collect::<Vec<_>>();
 
@@ -413,7 +412,7 @@ impl Rebalancer {
         let mut tracked_accounts: HashMap<Pubkey, AccountType> = HashMap::new();
 
         for token_account in self.token_accounts.values() {
-            tracked_accounts.insert(token_account.address, AccountType::TokenAccount);
+            tracked_accounts.insert(token_account.address, AccountType::Token);
         }
 
         tracked_accounts

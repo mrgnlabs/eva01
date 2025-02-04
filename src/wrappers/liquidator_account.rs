@@ -96,14 +96,14 @@ impl LiquidatorAccount {
 
     pub async fn liquidate(
         &mut self,
-        liquidate_account: &MarginfiAccountWrapper,
+        liquidatee_account: &MarginfiAccountWrapper,
         asset_bank: &BankWrapper,
         liab_bank: &BankWrapper,
         asset_amount: u64,
         banks: &HashMap<Pubkey, BankWrapper>,
     ) -> anyhow::Result<()> {
         let liquidator_account_address = self.account_wrapper.address;
-        let liquidatee_account_address = liquidate_account.address;
+        let liquidatee_account_address = liquidatee_account.address;
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
@@ -113,15 +113,12 @@ impl LiquidatorAccount {
             &self.program_id,
         );
 
-        let bank_liquidaity_vault = liab_bank.bank.liquidity_vault;
-        let bank_insurante_vault = liab_bank.bank.insurance_vault;
-
         let liquidator_observation_accounts =
             self.account_wrapper
                 .get_observation_accounts(&[], &[], banks);
 
         let liquidatee_observation_accounts =
-            liquidate_account.get_observation_accounts(&[], &[], banks);
+            liquidatee_account.get_observation_accounts(&[], &[], banks);
 
         let joined_observation_accounts = liquidator_observation_accounts
             .iter()
@@ -168,19 +165,13 @@ impl LiquidatorAccount {
             self.program_id,
             self.group,
             liquidator_account_address,
-            asset_bank.address,
-            liab_bank.address,
+            asset_bank,
+            liab_bank,
             signer_pk,
             liquidatee_account_address,
             bank_liquidaity_vault_authority,
-            bank_liquidaity_vault,
-            bank_insurante_vault,
             *self.token_program_per_mint.get(&liab_mint).unwrap(),
-            liquidator_observation_accounts,
-            liquidatee_observation_accounts,
-            asset_bank.oracle_adapter.address,
-            liab_bank.oracle_adapter.address,
-            liab_mint,
+            joined_observation_accounts,
             asset_amount,
         );
 
@@ -217,7 +208,7 @@ impl LiquidatorAccount {
             .await;
         println!(
             "Transaction sent without preflight check {:?} for address {:?}",
-            res, liquidate_account.address
+            res, liquidatee_account.address
         );
 
         bundle.push(RawTransaction::new(vec![liquidate_ix]));
@@ -257,7 +248,7 @@ impl LiquidatorAccount {
             self.group,
             marginfi_account,
             signer_pk,
-            bank.address,
+            bank,
             token_account,
             crate::utils::find_bank_vault_authority_pda(
                 &bank.address,
@@ -265,10 +256,8 @@ impl LiquidatorAccount {
                 &self.program_id,
             )
             .0,
-            bank.bank.liquidity_vault,
             token_program,
             observation_accounts,
-            mint,
             amount,
             withdraw_all,
         );
@@ -298,11 +287,9 @@ impl LiquidatorAccount {
             self.group,
             marginfi_account,
             signer_pk,
-            bank.address,
+            bank,
             *token_account,
-            bank.bank.liquidity_vault,
             token_program,
-            mint,
             amount,
             repay_all,
         );
@@ -338,11 +325,9 @@ impl LiquidatorAccount {
             self.group,
             marginfi_account,
             signer_pk,
-            bank.address,
+            bank,
             token_account,
-            bank.bank.liquidity_vault,
             token_program,
-            mint,
             amount,
         );
 

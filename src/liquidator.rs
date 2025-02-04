@@ -141,7 +141,7 @@ impl Liquidator {
             while let Ok(mut msg) = self.geyser_receiver.recv() {
                 debug!("Received message {:?}", msg);
                 match msg.account_type {
-                    AccountType::OracleAccount => {
+                    AccountType::Oracle => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
                             let bank_to_update: &mut BankWrapper =
                                 self.banks.get_mut(bank_to_update_pk).unwrap();
@@ -217,7 +217,7 @@ impl Liquidator {
                             bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                         }
                     }
-                    AccountType::MarginfiAccount => {
+                    AccountType::Marginfi => {
                         let marginfi_account =
                             bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
                         self.marginfi_accounts
@@ -280,11 +280,10 @@ impl Liquidator {
             .banks
             .values()
             .filter_map(|bank| {
-                if let Some(feed_hash) = &bank.oracle_adapter.swb_feed_hash {
-                    Some((bank.address, feed_hash.clone()))
-                } else {
-                    None
-                }
+                bank.oracle_adapter
+                    .swb_feed_hash
+                    .as_ref()
+                    .map(|feed_hash| (bank.address, feed_hash.clone()))
             })
             .collect::<Vec<_>>();
 
@@ -717,8 +716,7 @@ impl Liquidator {
 
         let oracle_keys = banks
             .iter()
-            .map(|(_, bank)| find_oracle_keys(&bank.config))
-            .flatten()
+            .flat_map(|(_, bank)| find_oracle_keys(&bank.config))
             .collect::<Vec<_>>();
 
         let mut oracle_accounts =
@@ -752,7 +750,7 @@ impl Liquidator {
                 let mut oracle_address = None;
 
                 for address in oracle_addresses.iter() {
-                    if let Some(Some(account)) = oracle_map.get(&address) {
+                    if let Some(Some(account)) = oracle_map.get(address) {
                         oracle_account = Some(account.clone());
                         oracle_address = Some(*address);
                         break;
@@ -867,7 +865,7 @@ impl Liquidator {
         let mut tracked_accounts: HashMap<Pubkey, AccountType> = HashMap::new();
 
         for bank in self.banks.values() {
-            tracked_accounts.insert(bank.oracle_adapter.address, AccountType::OracleAccount);
+            tracked_accounts.insert(bank.oracle_adapter.address, AccountType::Oracle);
         }
 
         tracked_accounts

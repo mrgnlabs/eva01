@@ -25,7 +25,7 @@ impl CrossbarMaintainer {
         // Create a fast lookup map from feed hash to oracle hash
         let feed_hash_to_oracle_hash_map: HashMap<String, Pubkey> = feeds
             .iter()
-            .map(|(address, feed_hash)| (feed_hash.clone(), address.clone()))
+            .map(|(address, feed_hash)| (feed_hash.clone(), *address))
             .collect();
 
         let feed_hashes: Vec<String> = feeds
@@ -56,21 +56,20 @@ impl CrossbarMaintainer {
 
         let mut prices = Vec::new();
 
-        for result in chunk_results {
-            if let Ok(chunk_result) = result {
-                for simulated_response in chunk_result {
-                    if let Some(price) = calculate_price(simulated_response.results) {
-                        prices.push((
-                            feed_hash_to_oracle_hash_map
-                                .get(&simulated_response.feedHash)
-                                .unwrap()
-                                .clone(),
-                            price,
-                        ));
-                    }
+        chunk_results
+            .into_iter()
+            .flatten()
+            .flatten()
+            .for_each(|simulated_response| {
+                if let Some(price) = calculate_price(simulated_response.results) {
+                    prices.push((
+                        *feed_hash_to_oracle_hash_map
+                            .get(&simulated_response.feedHash)
+                            .unwrap(),
+                        price,
+                    ));
                 }
-            }
-        }
+            });
 
         prices
     }

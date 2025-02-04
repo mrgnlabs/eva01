@@ -28,9 +28,9 @@ pub struct GeyserUpdate {
 /// TokenAccount -> Rebalancer
 #[derive(Clone, Debug)]
 pub enum AccountType {
-    OracleAccount,
-    MarginfiAccount,
-    TokenAccount,
+    Oracle,
+    Marginfi,
+    Token,
 }
 
 pub struct GeyserServiceConfig {
@@ -102,7 +102,7 @@ impl GeyserService {
                                     }
 
                                     let update = GeyserUpdate {
-                                        account_type: AccountType::MarginfiAccount,
+                                        account_type: AccountType::Marginfi,
                                         address,
                                         account: account.clone(),
                                     };
@@ -151,7 +151,7 @@ impl GeyserService {
         };
 
         match update.account_type {
-            AccountType::OracleAccount => {
+            AccountType::Oracle => {
                 if let Err(e) = liquidator_sender.send(update.clone()) {
                     error!("Error sending update to the liquidator sender: {:?}", e);
                 }
@@ -159,7 +159,7 @@ impl GeyserService {
                     error!("Error sending update to the rebalancer sender: {:?}", e);
                 }
             }
-            AccountType::TokenAccount => {
+            AccountType::Token => {
                 if let Err(e) = rebalancer_sender.send(update.clone()) {
                     error!("Error sending update to the rebalancer sender: {:?}", e);
                 }

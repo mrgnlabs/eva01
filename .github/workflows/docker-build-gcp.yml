@@ -58,12 +58,13 @@ jobs:
         with:
           version: 'latest'
 
-      - name: Set up Kubeconfig
+      - name: Set up & Validate Kubeconfig
         env:
           KUBECONFIG: ${{ secrets.KUBECONFIG }}
         run: |
           mkdir -p ~/.kube
           echo "$KUBECONFIG" > ~/.kube/config
+          kubectl config view --kubeconfig=~/.kube/config > /dev/null
 
       - name: Get all eva01-* deployments
         id: get-deployments
