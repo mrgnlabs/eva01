@@ -1,34 +1,9 @@
-use anchor_lang::{system_program, InstructionData, Key, ToAccountMetas};
+use anchor_lang::{InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
 use log::trace;
 use solana_sdk::instruction::AccountMeta;
-use solana_sdk::{
-    instruction::Instruction,
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-};
-
-pub fn make_initialize_ix(
-    marginfi_program_id: Pubkey,
-    marginfi_group: Pubkey,
-    signer: Pubkey,
-) -> Instruction {
-    let marginfi_account_key = Keypair::new();
-
-    Instruction {
-        program_id: marginfi_program_id,
-        accounts: marginfi::accounts::MarginfiAccountInitialize {
-            marginfi_group,
-            marginfi_account: marginfi_account_key.pubkey(),
-            system_program: system_program::ID,
-            authority: signer,
-            fee_payer: signer,
-        }
-        .to_account_metas(Some(true)),
-        data: marginfi::instruction::MarginfiAccountInitialize.data(),
-    }
-}
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
 pub fn make_deposit_ix(
     marginfi_program_id: Pubkey,

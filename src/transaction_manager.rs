@@ -7,10 +7,7 @@ use jito_protos::searcher::{
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
 use log::{debug, error};
 use solana_address_lookup_table_program::state::AddressLookupTable;
-use solana_client::{
-    nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc,
-    rpc_client::SerializableTransaction, rpc_config::RpcSimulateTransactionConfig,
-};
+use solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc};
 use solana_sdk::{
     address_lookup_table_account::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
@@ -18,15 +15,12 @@ use solana_sdk::{
     instruction::Instruction,
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair, Signature, Signer},
+    signature::{read_keypair_file, Keypair, Signer},
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use std::{error::Error, str::FromStr};
+use std::str::FromStr;
+use std::sync::{atomic::AtomicBool, Arc};
 use tonic::transport::Channel;
 
 /// The leadership threshold related to the jito block engine
@@ -195,53 +189,6 @@ impl TransactionManager {
         Ok(())
     }
 
-    /// Implements a alternative solution to jito transactions
-    /// Sends a transaction to the network and waits for confirmation (non-jito)
-    fn send_agressive_tx(&self, mut ixs: Vec<Instruction>) -> Result<Signature, Box<dyn Error>> {
-        let recent_blockhash = self.non_block_rpc.get_latest_blockhash()?;
-
-        ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(500_000));
-
-        let transaction = VersionedTransaction::try_new(
-            VersionedMessage::V0(v0::Message::try_compile(
-                &self.keypair.pubkey(),
-                &ixs,
-                &self.lookup_tables,
-                recent_blockhash,
-            )?),
-            &[&self.keypair],
-        )?;
-
-        let signature = *transaction.get_signature();
-
-        let simulation = self.non_block_rpc.simulate_transaction_with_config(
-            &transaction,
-            RpcSimulateTransactionConfig {
-                commitment: Some(CommitmentConfig::processed()),
-                ..Default::default()
-            },
-        )?;
-
-        if simulation.value.err.is_some() {
-            return Err(format!("Failed to simulate transaction {:?}", simulation.value).into());
-        }
-
-        (0..12).try_for_each(|_| {
-            self.non_block_rpc.send_transaction(&transaction)?;
-            Ok::<_, Box<dyn Error>>(())
-        })?;
-
-        let blockhash = transaction.get_recent_blockhash();
-
-        self.non_block_rpc.confirm_transaction_with_spinner(
-            &signature,
-            blockhash,
-            CommitmentConfig::confirmed(),
-        )?;
-
-        Ok(signature)
-    }
-
     /// Configures the instructions
     /// Adds the compute budget instruction to each instruction
     /// and compiles the instructions into transactions
@@ -253,7 +200,7 @@ impl TransactionManager {
         let blockhash = self.rpc.get_latest_blockhash().await?;
 
         let mut txs = Vec::new();
-        for mut raw_transaction in instructions {
+        for raw_transaction in instructions {
             let mut ixs = raw_transaction.instructions;
             ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(1_000_000));
             ixs.push(transfer(
@@ -277,22 +224,6 @@ impl TransactionManager {
             txs.push(transaction);
         }
         Ok(txs)
-    }
-
-    /// Listen for the next leader and update the AtomicBool accordingly
-    async fn listen_for_leader(&mut self) -> anyhow::Result<()> {
-        loop {
-            let next_leader = self
-                .searcher_client
-                .get_next_scheduled_leader(NextScheduledLeaderRequest {})
-                .await?
-                .into_inner();
-
-            let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
-
-            self.is_jito_leader
-                .store(num_slots <= LEADERSHIP_THRESHOLD, Ordering::Relaxed);
-        }
     }
 
     async fn get_tip_accounts(

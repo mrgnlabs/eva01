@@ -3,7 +3,7 @@ use fixed::types::I80F48;
 use marginfi::state::{
     marginfi_account::{calc_amount, calc_value, BalanceSide, RequirementType},
     marginfi_group::Bank,
-    price::{OraclePriceType, PriceAdapter, PriceBias},
+    price::{OraclePriceType, PriceBias},
 };
 use solana_program::pubkey::Pubkey;
 
@@ -83,26 +83,5 @@ impl BankWrapper {
             .unwrap();
 
         Ok(calc_value(amount, price, self.bank.mint_decimals, None)?)
-    }
-
-    pub fn calc_weighted_value(
-        &self,
-        amount: I80F48,
-        side: BalanceSide,
-        requirement_type: RequirementType,
-    ) -> anyhow::Result<I80F48> {
-        let (weight, price_bias, oracle_type) = self.get_pricing_params(side, requirement_type);
-
-        let price = self
-            .oracle_adapter
-            .get_price_of_type(oracle_type, price_bias)
-            .unwrap();
-
-        Ok(calc_value(
-            amount,
-            price,
-            self.bank.mint_decimals,
-            Some(weight),
-        )?)
     }
 }

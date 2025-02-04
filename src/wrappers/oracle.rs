@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use fixed::types::I80F48;
 use marginfi::state::price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias};
 use solana_program::pubkey::Pubkey;
-use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct OracleWrapper {

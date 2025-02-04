@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
 use fixed::types::I80F48;
 use marginfi::{
-    bank_authority_seed, bank_seed,
+    bank_authority_seed,
     constants::{PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID, PYTH_PUSH_PYTH_SPONSORED_SHARD_ID},
     prelude::MarginfiResult,
     state::{
@@ -18,7 +18,6 @@ use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::Account,
-    account_info::AccountInfo,
     signature::{read_keypair_file, Keypair},
 };
 use std::{
@@ -26,7 +25,7 @@ use std::{
     io::Write,
     path::PathBuf,
     str::FromStr,
-    sync::{atomic::AtomicUsize, Arc, RwLock},
+    sync::{atomic::AtomicUsize, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
 use url::Url;
@@ -138,7 +137,7 @@ pub fn batch_get_multiple_accounts(
 }
 
 // Field parsers to save compute. All account validation is assumed to be done
-// outside of these methods.
+// outside these methods.
 pub mod accessor {
     use super::*;
 
@@ -153,12 +152,6 @@ pub mod accessor {
         mint_bytes.copy_from_slice(&bytes[..32]);
         Pubkey::new_from_array(mint_bytes)
     }
-
-    pub fn authority(bytes: &[u8]) -> Pubkey {
-        let mut owner_bytes = [0u8; 32];
-        owner_bytes.copy_from_slice(&bytes[32..64]);
-        Pubkey::new_from_array(owner_bytes)
-    }
 }
 
 pub fn account_update_to_account(account_update: &SubscribeUpdateAccountInfo) -> Result<Account> {
@@ -171,7 +164,8 @@ pub fn account_update_to_account(account_update: &SubscribeUpdateAccountInfo) ->
         ..
     } = account_update;
 
-    let owner = Pubkey::try_from(owner.clone()).expect("Invalid pubkey");
+    let owner = Pubkey::try_from(owner.clone())
+        .map_err(|e| anyhow!("Invalid pubkey: {:?}, error: {:?}", owner, e))?;
 
     let account = Account {
         lamports: *lamports,
@@ -399,14 +393,6 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     }
 }
 
-pub fn find_bank_vault_pda(
-    bank_pk: &Pubkey,
-    vault_type: BankVaultType,
-    program_id: &Pubkey,
-) -> (Pubkey, u8) {
-    Pubkey::find_program_address(bank_seed!(vault_type, bank_pk), program_id)
-}
-
 pub fn find_bank_vault_authority_pda(
     bank_pk: &Pubkey,
     vault_type: BankVaultType,
@@ -454,46 +440,6 @@ pub fn calc_weighted_assets_new(
     )?)
 }
 
-pub fn calc_weighted_assets(
-    bank_rw_lock: Arc<RwLock<BankWrapper>>,
-    amount: I80F48,
-    requirement_type: RequirementType,
-) -> anyhow::Result<I80F48> {
-    let bank_wrapper_ref = bank_rw_lock.read().unwrap();
-    let oracle_adapter = &bank_wrapper_ref.oracle_adapter;
-    let mut asset_weight = bank_wrapper_ref
-        .bank
-        .config
-        .get_weight(requirement_type, BalanceSide::Assets);
-
-    let price_bias = if matches!(requirement_type, RequirementType::Equity) {
-        None
-    } else {
-        Some(PriceBias::Low)
-    };
-
-    let lower_price =
-        oracle_adapter.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
-
-    if matches!(requirement_type, RequirementType::Initial) {
-        if let Some(discount) = bank_wrapper_ref
-            .bank
-            .maybe_get_asset_weight_init_discount(lower_price)?
-        {
-            asset_weight = asset_weight
-                .checked_mul(discount)
-                .ok_or_else(|| anyhow!("math error"))?;
-        }
-    }
-
-    Ok(calc_value(
-        amount,
-        lower_price,
-        bank_wrapper_ref.bank.mint_decimals,
-        Some(asset_weight),
-    )?)
-}
-
 #[inline(always)]
 pub fn calc_weighted_liabs_new(
     bank: &BankWrapper,
@@ -519,36 +465,6 @@ pub fn calc_weighted_liabs_new(
         amount,
         higher_price,
         bank.bank.mint_decimals,
-        Some(liability_weight),
-    )?)
-}
-
-#[inline(always)]
-pub fn calc_weighted_liabs(
-    bank_rw_lock: Arc<RwLock<BankWrapper>>,
-    amount: I80F48,
-    requirement_type: RequirementType,
-) -> anyhow::Result<I80F48> {
-    let bank_wrapper_ref = bank_rw_lock.read().unwrap();
-    let bank = &bank_wrapper_ref.bank;
-    let oracle_adapter = &bank_wrapper_ref.oracle_adapter;
-    let liability_weight = bank
-        .config
-        .get_weight(requirement_type, BalanceSide::Liabilities);
-
-    let price_bias = if matches!(requirement_type, RequirementType::Equity) {
-        None
-    } else {
-        Some(PriceBias::High)
-    };
-
-    let higher_price =
-        oracle_adapter.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
-
-    Ok(calc_value(
-        amount,
-        higher_price,
-        bank.mint_decimals,
         Some(liability_weight),
     )?)
 }
@@ -595,12 +511,6 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
             })
             .collect::<Vec<_>>(),
     }
-}
-
-pub fn load_swb_pull_account(account_info: &AccountInfo) -> anyhow::Result<PullFeedAccountData> {
-    let bytes = &account_info.data.borrow().to_vec()[8..std::mem::size_of::<PullFeedAccountData>()];
-
-    Ok(load_swb_pull_account_from_bytes(bytes)?)
 }
 
 pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> anyhow::Result<PullFeedAccountData> {

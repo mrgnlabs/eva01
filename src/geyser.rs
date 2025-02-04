@@ -71,104 +71,100 @@ impl GeyserService {
             let (_, mut stream) = client.subscribe_with_request(Some(sub_req)).await?;
 
             while let Some(msg) = stream.next().await {
-                match msg {
-                    Ok(msg) => {
-                        if let Some(update_oneof) = msg.update_oneof {
-                            if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
-                                if let Some(update_account) = &account.account {
-                                    if let Ok(address) =
-                                        Pubkey::try_from(update_account.pubkey.clone())
-                                    {
-                                        if let Ok(account) =
-                                            account_update_to_account(update_account)
-                                        {
-                                            if let Ok(account_owner_pk) =
-                                                Pubkey::try_from(account.owner)
-                                            {
-                                                if account_owner_pk == marginfi_program_id
-                                                    && update_account.data.len()
-                                                        == MARGIN_ACCOUNT_SIZE
-                                                {
-                                                    let marginfi_account =
-                                                        MarginfiAccount::try_deserialize(
-                                                            &mut account.data.as_slice(),
-                                                        );
+                if let Err(e) = msg {
+                    error!("Error receiving message from geyser {:?}", e);
+                    break;
+                }
 
-                                                    match marginfi_account {
-                                                        Err(_) => {
-                                                            error!("Error deserializing marginfi account");
-                                                            continue;
-                                                        }
-                                                        Ok(marginfi_account) => {
-                                                            if marginfi_account.group
-                                                                != marginfi_group_pk
-                                                            {
-                                                                continue;
-                                                            }
-                                                        }
-                                                    }
+                if let Some(subscribe_update::UpdateOneof::Account(account)) =
+                    msg.unwrap().update_oneof
+                {
+                    if let Some(update_account) = &account.account {
+                        if let Ok(address) = Pubkey::try_from(update_account.pubkey.clone()) {
+                            if let Ok(account) = account_update_to_account(update_account) {
+                                if account.owner == marginfi_program_id
+                                    && update_account.data.len() == MARGIN_ACCOUNT_SIZE
+                                {
+                                    let marginfi_account = MarginfiAccount::try_deserialize(
+                                        &mut account.data.as_slice(),
+                                    );
 
-                                                    let update = GeyserUpdate {
-                                                        account_type: AccountType::MarginfiAccount,
-                                                        address,
-                                                        account: account.clone(),
-                                                    };
-                                                    if let Err(e) =
-                                                        liquidator_sender.send(update.clone())
-                                                    {
-                                                        error!("Error sending update to the liquidator sender: {:?}", e);
-                                                    }
-                                                    if let Err(e) =
-                                                        rebalancer_sender.send(update.clone())
-                                                    {
-                                                        error!("Error sending update to the rebalancer sender: {:?}", e);
-                                                    }
-                                                }
-                                            }
-                                            if let Some(account_type) =
-                                                tracked_accounts.get(&address)
-                                            {
-                                                let update = GeyserUpdate {
-                                                    account_type: account_type.clone(),
-                                                    address,
-                                                    account: account.clone(),
-                                                };
-
-                                                match account_type {
-                                                    AccountType::OracleAccount => {
-                                                        if let Err(e) =
-                                                            liquidator_sender.send(update.clone())
-                                                        {
-                                                            error!("Error sending update to the liquidator sender: {:?}", e);
-                                                        }
-                                                        if let Err(e) =
-                                                            rebalancer_sender.send(update.clone())
-                                                        {
-                                                            error!("Error sending update to the rebalancer sender: {:?}", e);
-                                                        }
-                                                    }
-                                                    AccountType::TokenAccount => {
-                                                        if let Err(e) =
-                                                            rebalancer_sender.send(update.clone())
-                                                        {
-                                                            error!("Error sending update to the rebalancer sender: {:?}", e);
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
+                                    match marginfi_account {
+                                        Err(_) => {
+                                            error!("Error deserializing marginfi account");
+                                            continue;
+                                        }
+                                        Ok(marginfi_account) => {
+                                            if marginfi_account.group != marginfi_group_pk {
+                                                continue;
                                             }
                                         }
                                     }
+
+                                    let update = GeyserUpdate {
+                                        account_type: AccountType::MarginfiAccount,
+                                        address,
+                                        account: account.clone(),
+                                    };
+                                    if let Err(e) = liquidator_sender.send(update.clone()) {
+                                        error!(
+                                            "Error sending update to the liquidator sender: {:?}",
+                                            e
+                                        );
+                                    }
+                                    if let Err(e) = rebalancer_sender.send(update.clone()) {
+                                        error!(
+                                            "Error sending update to the rebalancer sender: {:?}",
+                                            e
+                                        );
+                                    }
+                                }
+
+                                if let Some(account_type) = tracked_accounts.get(&address) {
+                                    Self::send_update(
+                                        &liquidator_sender,
+                                        &rebalancer_sender,
+                                        account_type.clone(),
+                                        address,
+                                        &account,
+                                    );
                                 }
                             }
                         }
                     }
-                    Err(e) => {
-                        error!("Error receiving message from geyser {:?}", e);
-                        break;
-                    }
                 }
             }
+        }
+    }
+
+    fn send_update(
+        liquidator_sender: &Sender<GeyserUpdate>,
+        rebalancer_sender: &Sender<GeyserUpdate>,
+        account_type: AccountType,
+        address: Pubkey,
+        account: &Account,
+    ) {
+        let update = GeyserUpdate {
+            account_type,
+            address,
+            account: account.clone(),
+        };
+
+        match update.account_type {
+            AccountType::OracleAccount => {
+                if let Err(e) = liquidator_sender.send(update.clone()) {
+                    error!("Error sending update to the liquidator sender: {:?}", e);
+                }
+                if let Err(e) = rebalancer_sender.send(update.clone()) {
+                    error!("Error sending update to the rebalancer sender: {:?}", e);
+                }
+            }
+            AccountType::TokenAccount => {
+                if let Err(e) = rebalancer_sender.send(update.clone()) {
+                    error!("Error sending update to the rebalancer sender: {:?}", e);
+                }
+            }
+            _ => {}
         }
     }
 

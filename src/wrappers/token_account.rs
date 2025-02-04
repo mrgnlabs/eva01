@@ -1,6 +1,6 @@
 use super::bank::BankWrapper;
 use fixed::types::I80F48;
-use marginfi::{constants::EXP_10_I80F48, state::price::PriceAdapter};
+use marginfi::constants::EXP_10_I80F48;
 use solana_program::pubkey::Pubkey;
 
 pub struct TokenAccountWrapper {
