@@ -286,7 +286,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     pub fn load(
         lending_account: &'a LendingAccount,
         banks: HashMap<Pubkey, BankWrapper>,
-    ) -> anyhow::Result<Vec<BankAccountWithPriceFeedEva>> {
+    ) -> anyhow::Result<Vec<BankAccountWithPriceFeedEva<'a>>> {
         let active_balances = lending_account
             .balances
             .iter()

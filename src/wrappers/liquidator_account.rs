@@ -4,16 +4,15 @@ use crate::{
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
     transaction_manager::{BatchTransactions, RawTransaction},
 };
-use anchor_spl::associated_token::spl_associated_token_account::instruction::create_associated_token_account;
 use crossbeam::channel::Sender;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
-use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
+    rpc_config::RpcSendTransactionConfig,
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::{
+    commitment_config::CommitmentConfig,
     instruction::Instruction,
     pubkey,
     signature::{read_keypair_file, Keypair},

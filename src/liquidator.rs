@@ -56,7 +56,6 @@ pub struct Liquidator {
     general_config: GeneralConfig,
     config: LiquidatorCfg,
     geyser_receiver: Receiver<GeyserUpdate>,
-    transaction_sender: Sender<BatchTransactions>,
     marginfi_accounts: HashMap<Pubkey, MarginfiAccountWrapper>,
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
@@ -65,35 +64,8 @@ pub struct Liquidator {
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
 }
 
-#[derive(Clone)]
-pub struct LiquidatableAccount<'a> {
-    account: &'a MarginfiAccountWrapper,
-    asset_bank_pk: Pubkey,
-    liab_bank_pk: Pubkey,
-    max_liquidation_amount: I80F48,
-    profit: I80F48,
-}
-
-impl<'a> LiquidatableAccount<'a> {
-    pub fn new(
-        account: &'a MarginfiAccountWrapper,
-        asset_bank_pk: Pubkey,
-        liab_bank_pk: Pubkey,
-        max_liquidation_amount: I80F48,
-        profit: I80F48,
-    ) -> LiquidatableAccount {
-        Self {
-            account,
-            asset_bank_pk,
-            liab_bank_pk,
-            max_liquidation_amount,
-            profit,
-        }
-    }
-}
-
 pub struct PreparedLiquidatableAccount {
-    liquidate_account: MarginfiAccountWrapper,
+    liquidatee_account: MarginfiAccountWrapper,
     asset_bank: BankWrapper,
     liab_bank: BankWrapper,
     asset_amount: u64,
@@ -113,7 +85,7 @@ impl Liquidator {
         let liquidator_account = LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
             general_config.liquidator_account,
-            transaction_sender.clone(),
+            transaction_sender,
             general_config.clone(),
         )
         .await
@@ -123,7 +95,6 @@ impl Liquidator {
             general_config,
             config: liquidator_config,
             geyser_receiver,
-            transaction_sender,
             marginfi_accounts: HashMap::new(),
             banks: HashMap::new(),
             liquidator_account,
@@ -275,12 +246,12 @@ impl Liquidator {
                         for account in accounts {
                             info!(
                                 "Liquidating account {:?}",
-                                account.liquidate_account.address
+                                account.liquidatee_account.address
                             );
                             if let Err(e) = self
                                 .liquidator_account
                                 .liquidate(
-                                    &account.liquidate_account,
+                                    &account.liquidatee_account,
                                     &account.asset_bank,
                                     &account.liab_bank,
                                     account.asset_amount,
@@ -290,7 +261,7 @@ impl Liquidator {
                             {
                                 info!(
                                     "Failed to liquidate account {:?}, error: {:?}",
-                                    account.liquidate_account.address, e
+                                    account.liquidatee_account.address, e
                                 );
                             }
                         }
@@ -332,7 +303,7 @@ impl Liquidator {
                     return None;
                 }
 
-                let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
+                let (deposit_shares, _) = account.get_deposits_and_liabilities_shares();
 
                 let deposit_values = match self.get_value_of_shares(
                     deposit_shares,
@@ -396,7 +367,7 @@ impl Liquidator {
                 let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.95);
 
                 Some(PreparedLiquidatableAccount {
-                    liquidate_account: account.clone(),
+                    liquidatee_account: account.clone(),
                     asset_bank: asset_bank.clone(),
                     liab_bank: liab_bank.clone(),
                     asset_amount: slippage_adjusted_asset_amount.to_num(),

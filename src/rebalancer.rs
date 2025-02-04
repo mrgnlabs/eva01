@@ -32,9 +32,7 @@ use marginfi::{
         price::{OraclePriceFeedAdapter, OracleSetup, PriceBias, SwitchboardPullPriceFeed},
     },
 };
-use solana_client::{
-    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
-};
+use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::Account, account_info::IntoAccountInfo, clock::Clock,
@@ -44,12 +42,11 @@ use solana_sdk::{
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    str::FromStr,
     sync::{atomic::AtomicBool, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
-use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed};
-use switchboard_on_demand_client::{QueueAccountData, SbContext};
+use switchboard_on_demand_client::SbContext;
+use switchboard_on_demand_client::{FetchUpdateManyParams, PullFeed};
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
 pub struct Rebalancer {
@@ -377,10 +374,10 @@ impl Rebalancer {
             }
         }
         debug!("Rebalancing accounts");
-        //self.sell_non_preferred_deposits().await?;
-        //self.repay_liabilities().await?;
-        //self.handle_tokens_in_token_accounts().await?;
-        //self.deposit_preferred_tokens().await?;
+        self.sell_non_preferred_deposits().await?;
+        self.repay_liabilities().await?;
+        self.handle_tokens_in_token_accounts().await?;
+        self.deposit_preferred_tokens().await?;
 
         Ok(())
     }

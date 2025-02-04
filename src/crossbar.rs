@@ -1,9 +1,5 @@
-use log::error;
 use solana_sdk::pubkey::Pubkey;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
 use switchboard_on_demand_client::CrossbarClient;
 
 const CHUNK_SIZE: usize = 20;
