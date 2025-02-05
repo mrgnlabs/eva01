@@ -31,7 +31,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // a channel is shared between the liquidator/rebalancer
     // and the transaction manager
     let mut transaction_manager =
-        TransactionManager::new(transaction_rx, config.general_config.clone()).await;
+        TransactionManager::new(transaction_rx, config.general_config.clone()).await?;
 
     // Create the liquidator
     let mut liquidator = Liquidator::new(

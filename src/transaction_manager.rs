@@ -73,7 +73,10 @@ impl RawTransaction {
 
 impl TransactionManager {
     /// Creates a new transaction manager
-    pub async fn new(rx: Receiver<BatchTransactions>, config: GeneralConfig) -> Self {
+    pub async fn new(
+        rx: Receiver<BatchTransactions>,
+        config: GeneralConfig,
+    ) -> anyhow::Result<Self> {
         let keypair = read_keypair_file(&config.keypair_path)
             .map_err(|e| {
                 error!("Failed to read keypair file: {:?}", e);
@@ -94,8 +97,8 @@ impl TransactionManager {
         // Loads the Address Lookup Table's accounts
         let mut lookup_tables = vec![];
         for table_address in &config.address_lookup_tables {
-            let raw_account = rpc.get_account(table_address).await.unwrap();
-            let address_lookup_table = AddressLookupTable::deserialize(&raw_account.data).unwrap();
+            let raw_account = rpc.get_account(table_address).await?;
+            let address_lookup_table = AddressLookupTable::deserialize(&raw_account.data)?;
             let lookup_table = AddressLookupTableAccount {
                 key: *table_address,
                 addresses: address_lookup_table.addresses.to_vec(),
@@ -105,7 +108,7 @@ impl TransactionManager {
 
         let tip_accounts = Self::get_tip_accounts(&mut searcher_client).await.unwrap();
 
-        Self {
+        Ok(Self {
             rx,
             keypair,
             rpc,
@@ -114,7 +117,7 @@ impl TransactionManager {
             is_jito_leader: AtomicBool::new(false),
             tip_accounts,
             lookup_tables,
-        }
+        })
     }
 
     /// Starts the transaction manager
