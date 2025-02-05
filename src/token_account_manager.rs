@@ -121,8 +121,7 @@ impl TokenAccountManager {
         {
             let addresses = tas
                 .iter()
-                .map(|(mint, address)| vec![*mint, *address])
-                .flatten()
+                .flat_map(|(mint, address)| vec![*mint, *address])
                 .collect::<Vec<_>>();
 
             let res = batch_get_multiple_accounts(

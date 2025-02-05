@@ -56,7 +56,6 @@ pub struct Liquidator {
     general_config: GeneralConfig,
     config: LiquidatorCfg,
     geyser_receiver: Receiver<GeyserUpdate>,
-    transaction_sender: Sender<BatchTransactions>,
     marginfi_accounts: HashMap<Pubkey, MarginfiAccountWrapper>,
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
@@ -65,35 +64,8 @@ pub struct Liquidator {
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
 }
 
-#[derive(Clone)]
-pub struct LiquidatableAccount<'a> {
-    account: &'a MarginfiAccountWrapper,
-    asset_bank_pk: Pubkey,
-    liab_bank_pk: Pubkey,
-    max_liquidation_amount: I80F48,
-    profit: I80F48,
-}
-
-impl<'a> LiquidatableAccount<'a> {
-    pub fn new(
-        account: &'a MarginfiAccountWrapper,
-        asset_bank_pk: Pubkey,
-        liab_bank_pk: Pubkey,
-        max_liquidation_amount: I80F48,
-        profit: I80F48,
-    ) -> LiquidatableAccount {
-        Self {
-            account,
-            asset_bank_pk,
-            liab_bank_pk,
-            max_liquidation_amount,
-            profit,
-        }
-    }
-}
-
 pub struct PreparedLiquidatableAccount {
-    liquidate_account: MarginfiAccountWrapper,
+    liquidatee_account: MarginfiAccountWrapper,
     asset_bank: BankWrapper,
     liab_bank: BankWrapper,
     asset_amount: u64,
@@ -113,7 +85,7 @@ impl Liquidator {
         let liquidator_account = LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
             general_config.liquidator_account,
-            transaction_sender.clone(),
+            transaction_sender,
             general_config.clone(),
         )
         .await
@@ -123,7 +95,6 @@ impl Liquidator {
             general_config,
             config: liquidator_config,
             geyser_receiver,
-            transaction_sender,
             marginfi_accounts: HashMap::new(),
             banks: HashMap::new(),
             liquidator_account,
@@ -170,7 +141,7 @@ impl Liquidator {
             while let Ok(mut msg) = self.geyser_receiver.recv() {
                 debug!("Received message {:?}", msg);
                 match msg.account_type {
-                    AccountType::OracleAccount => {
+                    AccountType::Oracle => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
                             let bank_to_update: &mut BankWrapper =
                                 self.banks.get_mut(bank_to_update_pk).unwrap();
@@ -246,7 +217,7 @@ impl Liquidator {
                             bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                         }
                     }
-                    AccountType::MarginfiAccount => {
+                    AccountType::Marginfi => {
                         let marginfi_account =
                             bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
                         self.marginfi_accounts
@@ -273,11 +244,14 @@ impl Liquidator {
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();
                         for account in accounts {
-                            info!("Liquidating account {:?}", account.liquidate_account.address);
+                            info!(
+                                "Liquidating account {:?}",
+                                account.liquidatee_account.address
+                            );
                             if let Err(e) = self
                                 .liquidator_account
                                 .liquidate(
-                                    &account.liquidate_account,
+                                    &account.liquidatee_account,
                                     &account.asset_bank,
                                     &account.liab_bank,
                                     account.asset_amount,
@@ -287,7 +261,7 @@ impl Liquidator {
                             {
                                 info!(
                                     "Failed to liquidate account {:?}, error: {:?}",
-                                    account.liquidate_account.address, e
+                                    account.liquidatee_account.address, e
                                 );
                             }
                         }
@@ -306,11 +280,10 @@ impl Liquidator {
             .banks
             .values()
             .filter_map(|bank| {
-                if let Some(feed_hash) = &bank.oracle_adapter.swb_feed_hash {
-                    Some((bank.address, feed_hash.clone()))
-                } else {
-                    None
-                }
+                bank.oracle_adapter
+                    .swb_feed_hash
+                    .as_ref()
+                    .map(|feed_hash| (bank.address, feed_hash.clone()))
             })
             .collect::<Vec<_>>();
 
@@ -329,15 +302,16 @@ impl Liquidator {
                     return None;
                 }
 
-                let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
+                let (deposit_shares, _) = account.get_deposits_and_liabilities_shares();
 
-                let deposit_values = self
-                    .get_value_of_shares(
-                        deposit_shares,
-                        &BalanceSide::Assets,
-                        RequirementType::Maintenance,
-                    )
-                    .unwrap();
+                let deposit_values = match self.get_value_of_shares(
+                    deposit_shares,
+                    &BalanceSide::Assets,
+                    RequirementType::Maintenance,
+                ) {
+                    Ok(values) => values,
+                    Err(_) => return None,
+                };
 
                 if deposit_values
                     .iter()
@@ -392,7 +366,7 @@ impl Liquidator {
                 let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.95);
 
                 Some(PreparedLiquidatableAccount {
-                    liquidate_account: account.clone(),
+                    liquidatee_account: account.clone(),
                     asset_bank: asset_bank.clone(),
                     liab_bank: liab_bank.clone(),
                     asset_amount: slippage_adjusted_asset_amount.to_num(),
@@ -742,8 +716,7 @@ impl Liquidator {
 
         let oracle_keys = banks
             .iter()
-            .map(|(_, bank)| find_oracle_keys(&bank.config))
-            .flatten()
+            .flat_map(|(_, bank)| find_oracle_keys(&bank.config))
             .collect::<Vec<_>>();
 
         let mut oracle_accounts =
@@ -756,13 +729,28 @@ impl Liquidator {
             .collect();
 
         for (bank_address, bank) in banks.iter() {
+            if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
+                continue;
+            }
+
+            let oracle_keys_excluded_default = bank
+                .config
+                .oracle_keys
+                .iter()
+                .filter(|key| *key != &Pubkey::default())
+                .collect::<Vec<_>>();
+
+            if oracle_keys_excluded_default.len() > 1 {
+                continue;
+            }
+
             let (oracle_address, mut oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
                 let mut oracle_address = None;
 
                 for address in oracle_addresses.iter() {
-                    if let Some(Some(account)) = oracle_map.get(&address) {
+                    if let Some(Some(account)) = oracle_map.get(address) {
                         oracle_account = Some(account.clone());
                         oracle_address = Some(*address);
                         break;
@@ -877,7 +865,7 @@ impl Liquidator {
         let mut tracked_accounts: HashMap<Pubkey, AccountType> = HashMap::new();
 
         for bank in self.banks.values() {
-            tracked_accounts.insert(bank.oracle_adapter.address, AccountType::OracleAccount);
+            tracked_accounts.insert(bank.oracle_adapter.address, AccountType::Oracle);
         }
 
         tracked_accounts
