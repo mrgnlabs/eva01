@@ -4,7 +4,6 @@ use crate::{
         fixed_from_float, fixed_to_float, from_option_vec_pubkey_string, from_pubkey_string,
         from_vec_str_to_pubkey, pubkey_to_str, vec_pubkey_to_option_vec_str, vec_pubkey_to_str,
     },
-    wrappers::marginfi_account::TxConfig,
 };
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
@@ -159,12 +158,6 @@ impl GeneralConfig {
             pubkey!("HGmknUTUmeovMc9ryERNWG6UFZDFDVr9xrum3ZhyL4fC"),
             pubkey!("5FuKF7C1tJji2mXZuJ14U9oDb37is5mmvYLf4KwojoF1"),
         ]
-    }
-
-    pub fn get_tx_config(&self) -> TxConfig {
-        TxConfig {
-            compute_unit_price_micro_lamports: self.compute_unit_price_micro_lamports,
-        }
     }
 }
 

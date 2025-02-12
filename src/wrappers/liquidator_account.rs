@@ -4,16 +4,15 @@ use crate::{
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
     transaction_manager::{BatchTransactions, RawTransaction},
 };
-use solana_sdk::commitment_config::CommitmentConfig;
-use anchor_spl::associated_token::spl_associated_token_account::instruction::create_associated_token_account;
 use crossbeam::channel::Sender;
 use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
-use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
+    rpc_config::RpcSendTransactionConfig,
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
+    commitment_config::CommitmentConfig,
     instruction::Instruction,
     pubkey,
     signature::{read_keypair_file, Keypair},
@@ -21,7 +20,9 @@ use solana_sdk::{
     system_instruction::transfer,
 };
 use std::{collections::HashMap, str::FromStr, sync::Arc};
-use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData};
+use switchboard_on_demand_client::{
+    FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
+};
 
 /// Wraps the liquidator account into a dedicated strecture
 pub struct LiquidatorAccount {
@@ -95,14 +96,14 @@ impl LiquidatorAccount {
 
     pub async fn liquidate(
         &mut self,
-        liquidate_account: &MarginfiAccountWrapper,
+        liquidatee_account: &MarginfiAccountWrapper,
         asset_bank: &BankWrapper,
         liab_bank: &BankWrapper,
         asset_amount: u64,
         banks: &HashMap<Pubkey, BankWrapper>,
     ) -> anyhow::Result<()> {
         let liquidator_account_address = self.account_wrapper.address;
-        let liquidatee_account_address = liquidate_account.address;
+        let liquidatee_account_address = liquidatee_account.address;
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
@@ -112,15 +113,12 @@ impl LiquidatorAccount {
             &self.program_id,
         );
 
-        let bank_liquidaity_vault = liab_bank.bank.liquidity_vault;
-        let bank_insurante_vault = liab_bank.bank.insurance_vault;
-
         let liquidator_observation_accounts =
             self.account_wrapper
                 .get_observation_accounts(&[], &[], banks);
 
         let liquidatee_observation_accounts =
-            liquidate_account.get_observation_accounts(&[], &[], banks);
+            liquidatee_account.get_observation_accounts(&[], &[], banks);
 
         let joined_observation_accounts = liquidator_observation_accounts
             .iter()
@@ -143,6 +141,7 @@ impl LiquidatorAccount {
 
         let crank_data = if !observation_swb_oracles.is_empty() {
             if let Ok((ix, luts)) = PullFeed::fetch_update_many_ix(
+                SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
                     feeds: observation_swb_oracles,
@@ -166,19 +165,13 @@ impl LiquidatorAccount {
             self.program_id,
             self.group,
             liquidator_account_address,
-            asset_bank.address,
-            liab_bank.address,
+            asset_bank,
+            liab_bank,
             signer_pk,
             liquidatee_account_address,
             bank_liquidaity_vault_authority,
-            bank_liquidaity_vault,
-            bank_insurante_vault,
             *self.token_program_per_mint.get(&liab_mint).unwrap(),
-            liquidator_observation_accounts,
-            liquidatee_observation_accounts,
-            asset_bank.oracle_adapter.address,
-            liab_bank.oracle_adapter.address,
-            liab_mint,
+            joined_observation_accounts,
             asset_amount,
         );
 
@@ -215,7 +208,7 @@ impl LiquidatorAccount {
             .await;
         println!(
             "Transaction sent without preflight check {:?} for address {:?}",
-            res, liquidate_account.address
+            res, liquidatee_account.address
         );
 
         bundle.push(RawTransaction::new(vec![liquidate_ix]));
@@ -255,7 +248,7 @@ impl LiquidatorAccount {
             self.group,
             marginfi_account,
             signer_pk,
-            bank.address,
+            bank,
             token_account,
             crate::utils::find_bank_vault_authority_pda(
                 &bank.address,
@@ -263,10 +256,8 @@ impl LiquidatorAccount {
                 &self.program_id,
             )
             .0,
-            bank.bank.liquidity_vault,
             token_program,
             observation_accounts,
-            mint,
             amount,
             withdraw_all,
         );
@@ -296,11 +287,9 @@ impl LiquidatorAccount {
             self.group,
             marginfi_account,
             signer_pk,
-            bank.address,
+            bank,
             *token_account,
-            bank.bank.liquidity_vault,
             token_program,
-            mint,
             amount,
             repay_all,
         );
@@ -336,11 +325,9 @@ impl LiquidatorAccount {
             self.group,
             marginfi_account,
             signer_pk,
-            bank.address,
+            bank,
             token_account,
-            bank.bank.liquidity_vault,
             token_program,
-            mint,
             amount,
         );
 

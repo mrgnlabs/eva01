@@ -28,6 +28,7 @@ WORKDIR /app
 COPY --from=builder /usr/src/app/target/release/eva01 .
 
 ENV RUST_LOG=eva01=info
+ENV PRETTY_LOGS=1
 
 # Set the startup command
 CMD ["./eva01", "run", "/config/config.toml"]

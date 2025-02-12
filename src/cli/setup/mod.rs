@@ -17,9 +17,6 @@ use solana_program::pubkey::Pubkey;
 use solana_sdk::signature::{read_keypair_file, Signer};
 use std::{ops::Not, path::PathBuf, str::FromStr};
 
-/// Helper for initializing Marginfi Account
-pub mod initialize;
-
 lazy_static! {
     static ref DEFAULT_CONFIG_PATH: PathBuf = {
         let mut path = dirs::home_dir().expect("Couldn't find the config directory");
