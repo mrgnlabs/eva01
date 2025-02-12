@@ -63,6 +63,8 @@ switchboard-on-demand-client = "0.2.9"
 chrono = "0.4.38"
 hex = "0.4.3"
 url = "2.5.2"
+warp = "0.3.7"
+prometheus = "0.13.4"
 
 [profile.release]
 opt-level = 3
