@@ -8,22 +8,21 @@ pub mod app;
 /// Entrypoints for the Eva
 pub mod entrypoints;
 
-/// A wizard like setup menu for creating the liquidator configuration
+/// A wizard-like setup menu for creating the liquidator configuration
 pub mod setup;
 
 use lazy_static::lazy_static;
 use prometheus::{Counter, Encoder, Registry, TextEncoder};
 use warp::Filter;
+use tokio::task;
 
 lazy_static! {
     static ref REQUEST_COUNTER: Counter =
         Counter::new("eva01_requests_total", "Total number of requests received").unwrap();
 }
 
-/// Main entrypoint for the Eva
-pub async fn main_entry() -> anyhow::Result<()> {
-    let args = app::Args::parse();
-
+/// Starts the metrics server asynchronously
+async fn start_metrics_server() {
     let registry = Registry::new();
     registry
         .register(Box::new(REQUEST_COUNTER.clone()))
@@ -47,7 +46,16 @@ pub async fn main_entry() -> anyhow::Result<()> {
 
     println!("Starting eva01 metrics server on port 8080...");
     warp::serve(routes).run(([0, 0, 0, 0], 8080)).await;
+}
 
+/// Main entrypoint for Eva
+pub async fn main_entry() -> anyhow::Result<()> {
+    let args = app::Args::parse();
+
+    // Start the metrics server in a separate task
+    task::spawn(start_metrics_server());
+
+    // Proceed with the main program
     match args.cmd {
         app::Commands::Run { path } => {
             let config = Eva01Config::try_load_from_file(path)?;
