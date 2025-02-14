@@ -243,6 +243,7 @@ impl Liquidator {
                         // Accounts are sorted from the highest profit to the lowest
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();
+                        info!("Accounts to liquidate: {:?}", accounts.len());
                         for account in accounts {
                             info!(
                                 "Liquidating account {:?}",
@@ -263,7 +264,9 @@ impl Liquidator {
                                     "Failed to liquidate account {:?}, error: {:?}",
                                     account.liquidatee_account.address, e
                                 );
+                                // TODO: publish update to Grafana - how many accounts are NOT liquidated
                             }
+                            // TODO: publish update to Grafana - how many accounts are liquidated
                         }
                     }
                     break;

@@ -11,16 +11,13 @@ pub mod entrypoints;
 /// A wizard like setup menu for creating the liquidator configuration
 pub mod setup;
 
-use prometheus::{Encoder, TextEncoder, Counter, Registry};
-use warp::Filter;
 use lazy_static::lazy_static;
-use std::sync::Arc;
+use prometheus::{Counter, Encoder, Registry, TextEncoder};
+use warp::Filter;
 
 lazy_static! {
-    static ref REQUEST_COUNTER: Counter = Counter::new(
-        "eva01_requests_total",
-        "Total number of requests received"
-    ).unwrap();
+    static ref REQUEST_COUNTER: Counter =
+        Counter::new("eva01_requests_total", "Total number of requests received").unwrap();
 }
 
 /// Main entrypoint for the Eva
@@ -28,7 +25,9 @@ pub async fn main_entry() -> anyhow::Result<()> {
     let args = app::Args::parse();
 
     let registry = Registry::new();
-    registry.register(Box::new(REQUEST_COUNTER.clone())).unwrap();
+    registry
+        .register(Box::new(REQUEST_COUNTER.clone()))
+        .unwrap();
 
     let metrics_route = warp::path("metrics").map(move || {
         let encoder = TextEncoder::new();

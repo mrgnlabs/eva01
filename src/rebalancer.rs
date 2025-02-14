@@ -296,6 +296,7 @@ impl Rebalancer {
                         let token_to_update = self.token_accounts.get_mut(&mint).unwrap();
 
                         token_to_update.balance = balance;
+                        // TODO: publish update to Grafana
                     }
                 }
 
