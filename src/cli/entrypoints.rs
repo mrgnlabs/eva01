@@ -2,6 +2,7 @@ use crate::{
     config::Eva01Config,
     geyser::{GeyserService, GeyserUpdate},
     liquidator::Liquidator,
+    metrics::{metrics_handler, register_metrics},
     rebalancer::Rebalancer,
     transaction_manager::{BatchTransactions, TransactionManager},
 };
@@ -10,8 +11,24 @@ use std::{
     collections::HashMap,
     sync::{atomic::AtomicBool, Arc},
 };
+use warp::Filter;
 
 pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
+    register_metrics();
+
+    let metrics_route = warp::path("metrics").map(move || {
+        warp::reply::with_header(
+            metrics_handler(),
+            "Content-Type",
+            "text/plain; version=0.0.4",
+        )
+    });
+
+    // Start the metrics server in a separate task
+    tokio::spawn(async move {
+        warp::serve(metrics_route).run(([0, 0, 0, 0], 8080)).await;
+    });
+
     info!("Starting eva01 liquidator! {:#?}", &config);
 
     // Create two channels
