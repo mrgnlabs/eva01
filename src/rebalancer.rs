@@ -2,6 +2,7 @@ use crate::{
     config::{GeneralConfig, RebalancerCfg},
     crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
+    metrics::update_balance,
     sender::{SenderCfg, TransactionSender},
     token_account_manager::TokenAccountManager,
     transaction_manager::{BatchTransactions, RawTransaction},
@@ -296,7 +297,7 @@ impl Rebalancer {
                         let token_to_update = self.token_accounts.get_mut(&mint).unwrap();
 
                         token_to_update.balance = balance;
-                        // TODO: publish update to Grafana
+                        update_balance(&token_to_update.mint.to_string(), balance as f64).await;
                     }
                 }
 

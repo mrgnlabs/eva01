@@ -1,4 +1,4 @@
-use crate::config::GeneralConfig;
+use crate::{config::GeneralConfig, metrics::ERROR_COUNT};
 use crossbeam::channel::Receiver;
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
@@ -126,6 +126,7 @@ impl TransactionManager {
             let transactions = match self.configure_instructions(instructions).await {
                 Ok(txs) => txs,
                 Err(e) => {
+                    ERROR_COUNT.inc();
                     error!("Failed to configure instructions: {:?}", e);
                     continue;
                 }
@@ -139,6 +140,7 @@ impl TransactionManager {
                 {
                     Ok(response) => response.into_inner(),
                     Err(e) => {
+                        ERROR_COUNT.inc();
                         error!("Failed to get next scheduled leader: {:?}", e);
                         continue;
                     }
@@ -160,6 +162,7 @@ impl TransactionManager {
             );
             tokio::spawn(async move {
                 if let Err(e) = transaction.await {
+                    ERROR_COUNT.inc();
                     error!("Failed to send transaction: {:?}", e);
                 }
             });

@@ -2,6 +2,7 @@ use crate::{
     config::{GeneralConfig, LiquidatorCfg},
     crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
+    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
     transaction_manager::BatchTransactions,
     utils::{
         batch_get_multiple_accounts, find_oracle_keys, BankAccountWithPriceFeedEva,
@@ -45,6 +46,7 @@ use std::{
     cmp::min,
     collections::HashMap,
     sync::{atomic::AtomicBool, Arc},
+    time::Instant,
 };
 use switchboard_on_demand::PullFeedAccountData;
 
@@ -243,12 +245,14 @@ impl Liquidator {
                         // Accounts are sorted from the highest profit to the lowest
                         accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                         accounts.reverse();
-                        info!("Accounts to liquidate: {:?}", accounts.len());
                         for account in accounts {
+                            LIQUIDATION_ATTEMPTS.inc();
                             info!(
                                 "Liquidating account {:?}",
                                 account.liquidatee_account.address
                             );
+
+                            let start = Instant::now();
                             if let Err(e) = self
                                 .liquidator_account
                                 .liquidate(
@@ -264,9 +268,11 @@ impl Liquidator {
                                     "Failed to liquidate account {:?}, error: {:?}",
                                     account.liquidatee_account.address, e
                                 );
-                                // TODO: publish update to Grafana - how many accounts are NOT liquidated
+                                FAILED_LIQUIDATIONS.inc();
+                                ERROR_COUNT.inc();
                             }
-                            // TODO: publish update to Grafana - how many accounts are liquidated
+                            let duration = start.elapsed().as_secs_f64();
+                            LIQUIDATION_LATENCY.observe(duration);
                         }
                     }
                     break;
@@ -331,6 +337,7 @@ impl Liquidator {
                         Ok(None) => return None,
                         Err(e) => {
                             error!("Error finding liquidation bank candidates: {:?}", e);
+                            ERROR_COUNT.inc();
                             return None;
                         }
                     };
@@ -343,6 +350,7 @@ impl Liquidator {
                     )
                     .map_err(|e| {
                         error!("Error computing max liquidatable asset amount: {:?}", e);
+                        ERROR_COUNT.inc();
                     })
                     .ok()?;
 
@@ -890,6 +898,7 @@ impl Liquidator {
             let bank = match self.banks.get(&share.1) {
                 Some(bank) => bank,
                 None => {
+                    ERROR_COUNT.inc();
                     return Err(anyhow::anyhow!("Bank with pubkey {} not found", share.1));
                 }
             };

@@ -5,9 +5,9 @@ use tokio::sync::Mutex;
 
 lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
-    pub static ref SUCCESSFUL_LIQUIDATIONS: Counter = Counter::new(
-        "eva01_successful_liquidations_total",
-        "Total number of successful liquidations"
+    pub static ref LIQUIDATION_ATTEMPTS: Counter = Counter::new(
+        "eva01_liquidation_attempts_total",
+        "Total number of liquidation attempts"
     )
     .unwrap();
     pub static ref FAILED_LIQUIDATIONS: Counter = Counter::new(
@@ -27,7 +27,7 @@ lazy_static! {
 
 pub fn register_metrics() {
     REGISTRY
-        .register(Box::new(SUCCESSFUL_LIQUIDATIONS.clone()))
+        .register(Box::new(LIQUIDATION_ATTEMPTS.clone()))
         .unwrap();
     REGISTRY
         .register(Box::new(FAILED_LIQUIDATIONS.clone()))
@@ -44,4 +44,24 @@ pub fn metrics_handler() -> String {
     let metric_families = REGISTRY.gather();
     encoder.encode(&metric_families, &mut buffer).unwrap();
     String::from_utf8(buffer).unwrap()
+}
+
+pub async fn update_balance(coin: &str, new_balance: f64) {
+    let mut balances = BALANCES.lock().await;
+
+    if let Some(gauge) = balances.get(coin) {
+        gauge.set(new_balance);
+    } else {
+        // If the coin is not already being tracked, create a new Gauge
+        let gauge = Gauge::new(
+            format!("eva01_balance_{}", coin),
+            format!("Balance of {}", coin),
+        )
+        .unwrap();
+        gauge.set(new_balance);
+
+        // Insert it into the registry and the HashMap
+        balances.insert(coin.to_string(), gauge.clone());
+        crate::metrics::REGISTRY.register(Box::new(gauge)).unwrap();
+    }
 }
