@@ -19,8 +19,8 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::str::FromStr;
 use std::sync::{atomic::AtomicBool, Arc};
+use std::{ops::Mul, str::FromStr};
 use tonic::transport::Channel;
 
 /// The leadership threshold related to the jito block engine
@@ -132,6 +132,7 @@ impl TransactionManager {
                 }
             };
             debug!("Waiting for Jito leader...");
+            let mut multiplier = 1u32;
             loop {
                 let next_leader = match self
                     .searcher_client
@@ -142,7 +143,17 @@ impl TransactionManager {
                     Err(e) => {
                         ERROR_COUNT.inc();
                         error!("Failed to get next scheduled leader: {:?}", e);
-                        tokio::time::sleep(SLEEP_DURATION).await;
+                        if e.code() == tonic::Code::ResourceExhausted {
+                            let sleep_for = SLEEP_DURATION.mul(multiplier);
+                            debug!(
+                                "Resource exhausted, sleeping for {} seconds",
+                                sleep_for.as_secs()
+                            );
+                            tokio::time::sleep(sleep_for).await;
+                            if multiplier < 128 {
+                                multiplier *= 2;
+                            }
+                        }
                         continue;
                     }
                 };
