@@ -28,7 +28,7 @@ const LEADERSHIP_THRESHOLD: u64 = 2;
 
 /// The sleep duration for the transaction manager
 /// to wait before checking for the next leader
-const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
+const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(1000);
 
 /// Manages transactions for the liquidator and rebalancer
 #[allow(dead_code)]
@@ -142,6 +142,7 @@ impl TransactionManager {
                     Err(e) => {
                         ERROR_COUNT.inc();
                         error!("Failed to get next scheduled leader: {:?}", e);
+                        tokio::time::sleep(SLEEP_DURATION).await;
                         continue;
                     }
                 };
