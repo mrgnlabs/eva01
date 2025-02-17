@@ -145,7 +145,7 @@ impl TransactionManager {
                         error!("Failed to get next scheduled leader: {:?}", e);
                         if e.code() == tonic::Code::ResourceExhausted {
                             let sleep_for = SLEEP_DURATION.mul(multiplier);
-                            debug!(
+                            error!(
                                 "Resource exhausted, sleeping for {} seconds",
                                 sleep_for.as_secs()
                             );
