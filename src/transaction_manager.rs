@@ -5,7 +5,7 @@ use jito_protos::searcher::{
     NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
 };
 use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
-use log::{debug, error};
+use log::{debug, error, info};
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc};
 use solana_sdk::{
@@ -21,10 +21,12 @@ use solana_sdk::{
 };
 use std::sync::{atomic::AtomicBool, Arc};
 use std::{ops::Mul, str::FromStr};
+use tokio::sync::Semaphore;
 use tonic::transport::Channel;
 
 /// The leadership threshold related to the jito block engine
 const LEADERSHIP_THRESHOLD: u64 = 2;
+const CONCURRENCY_LIMIT: usize = 1usize;
 
 /// The sleep duration for the transaction manager
 /// to wait before checking for the next leader
@@ -122,7 +124,15 @@ impl TransactionManager {
 
     /// Starts the transaction manager
     pub async fn start(&mut self) {
+        let semaphore = Arc::new(Semaphore::new(CONCURRENCY_LIMIT));
+
         for instructions in self.rx.clone().iter() {
+            let semaphore = semaphore.clone();
+            let available_permits = semaphore.available_permits();
+            info!("Available permits before acquire: {}", available_permits);
+
+            let permit = semaphore.acquire_owned().await.unwrap();
+
             let transactions = match self.configure_instructions(instructions).await {
                 Ok(txs) => txs,
                 Err(e) => {
@@ -132,7 +142,7 @@ impl TransactionManager {
                 }
             };
             debug!("Waiting for Jito leader...");
-            let mut multiplier = 1u32;
+            let mut multiplier = 4u32;
             loop {
                 let next_leader = match self
                     .searcher_client
@@ -167,16 +177,17 @@ impl TransactionManager {
 
                 tokio::time::sleep(SLEEP_DURATION).await;
             }
-            let transaction = Self::send_transactions(
+            let result = Self::send_transactions(
                 transactions,
                 self.searcher_client.clone(),
                 self.rpc.clone(),
             );
             tokio::spawn(async move {
-                if let Err(e) = transaction.await {
+                if let Err(e) = result.await {
                     ERROR_COUNT.inc();
                     error!("Failed to send transaction: {:?}", e);
                 }
+                drop(permit);
             });
         }
     }
@@ -201,7 +212,11 @@ impl TransactionManager {
         )
         .await
         {
-            return Err(anyhow::anyhow!("Failed to send transaction: {:?}", e));
+            return Err(anyhow::anyhow!(
+                "Failed to send a bundle of {} transactions: {:?}",
+                transactions.len(),
+                e
+            ));
         }
 
         Ok(())
