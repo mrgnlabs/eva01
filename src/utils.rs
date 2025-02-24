@@ -578,3 +578,25 @@ pub fn ask_keypair_until_valid() -> anyhow::Result<(PathBuf, Keypair)> {
         }
     }
 }
+
+#[macro_export]
+macro_rules! ward {
+    ($res:expr) => {
+        match $res {
+            Some(value) => value,
+            None => return,
+        }
+    };
+    ($res:expr, break) => {
+        match $res {
+            Some(value) => value,
+            None => break,
+        }
+    };
+    ($res:expr, continue) => {
+        match $res {
+            Some(value) => value,
+            None => continue,
+        }
+    };
+}

@@ -7,7 +7,7 @@ use jito_protos::searcher::{
 use jito_searcher_client::{
     get_searcher_client_no_auth, send_bundle_with_confirmation, BundleRejectionError,
 };
-use log::{debug, error, info};
+use log::{debug, error};
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc};
 use solana_sdk::{
@@ -131,7 +131,7 @@ impl TransactionManager {
         for instructions in self.rx.clone().iter() {
             let semaphore = semaphore.clone();
             let available_permits = semaphore.available_permits();
-            info!("Available permits before acquire: {}", available_permits);
+            debug!("Available permits before acquire: {}", available_permits);
 
             let permit = semaphore.acquire_owned().await.unwrap();
 
@@ -221,16 +221,7 @@ impl TransactionManager {
                     .as_ref()
                     .is_some_and(|m| m.contains("custom program error: 0x1781"))
                 {
-                    error!(
-                        "Illegal Liquidation: {:?}",
-                        transactions
-                            .first()
-                            .unwrap()
-                            .message
-                            .instructions()
-                            .first()
-                            .unwrap()
-                    );
+                    error!("Illegal Liquidation");
                 } else {
                     error!("SimulationFailure: {:?}", msg);
                 }

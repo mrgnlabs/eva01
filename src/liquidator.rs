@@ -134,151 +134,144 @@ impl Liquidator {
         Ok(())
     }
 
-    /// Liquidator starts, receiving messages and process them,
-    /// a "timeout" is awaiting for accounts to be evaluated
+    /// Liquidator starts receiving messages and processing them
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(5);
-        loop {
-            let start = std::time::Instant::now();
-            while let Ok(mut msg) = self.geyser_receiver.recv() {
-                debug!("Received message {:?}", msg);
-                match msg.account_type {
-                    AccountType::Oracle => {
-                        if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
-                            let bank_to_update: &mut BankWrapper =
-                                self.banks.get_mut(bank_to_update_pk).unwrap();
+        while let Ok(mut msg) = self.geyser_receiver.recv() {
+            debug!("Received message {:?}", msg);
+            match msg.account_type {
+                AccountType::Oracle => {
+                    if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
+                        let bank_to_update: &mut BankWrapper =
+                            self.banks.get_mut(bank_to_update_pk).unwrap();
 
-                            let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup
-                            {
-                                OracleSetup::SwitchboardPull => {
-                                    let mut offsets_data =
-                                        [0u8; std::mem::size_of::<PullFeedAccountData>()];
-                                    offsets_data.copy_from_slice(
-                                        &msg.account.data
-                                            [8..std::mem::size_of::<PullFeedAccountData>() + 8],
-                                    );
-                                    let swb_feed = crate::utils::load_swb_pull_account_from_bytes(
-                                        &offsets_data,
-                                    )
-                                    .unwrap();
-
-                                    let feed_hash = hex::encode(swb_feed.feed_hash);
-                                    bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
-
-                                    OraclePriceFeedAdapter::SwitchboardPull(
-                                        SwitchboardPullPriceFeed {
-                                            feed: Box::new((&swb_feed).into()),
-                                        },
-                                    )
-                                }
-                                OracleSetup::StakedWithPythPush => {
-                                    let keys = &bank_to_update.bank.config.oracle_keys[1..3];
-
-                                    let mut accounts_info =
-                                        vec![(&msg.address, &mut msg.account).into_account_info()];
-
-                                    let mut owned_accounts: Vec<_> = keys
-                                        .iter()
-                                        .map(|key| {
-                                            self.cache_oracle_needed_accounts
-                                                .iter()
-                                                .find(|(k, _)| *k == key)
-                                                .unwrap()
-                                                .1
-                                                .clone()
-                                        })
-                                        .collect();
-
-                                    accounts_info.extend(
-                                        keys.iter().zip(owned_accounts.iter_mut()).map(
-                                            |(key, account)| (key, account).into_account_info(),
-                                        ),
-                                    );
-
-                                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                                        &bank_to_update.bank.config,
-                                        &accounts_info,
-                                        &Clock::default(),
-                                        i64::MAX as u64,
-                                    )
-                                    .unwrap()
-                                }
-                                _ => {
-                                    let oracle_account_info =
-                                        (&msg.address, &mut msg.account).into_account_info();
-                                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                                        &bank_to_update.bank.config,
-                                        &[oracle_account_info],
-                                        &Clock::default(),
-                                        i64::MAX as u64,
-                                    )
-                                    .unwrap()
-                                }
-                            };
-
-                            bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
-                        }
-                    }
-                    AccountType::Marginfi => {
-                        let marginfi_account =
-                            bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
-                        self.marginfi_accounts
-                            .entry(msg.address)
-                            .and_modify(|mrgn_account| {
-                                mrgn_account.account = *marginfi_account;
-                            })
-                            .or_insert_with(|| {
-                                MarginfiAccountWrapper::new(msg.address, *marginfi_account)
-                            });
-                    }
-                    _ => {}
-                };
-
-                if start.elapsed() > max_duration {
-                    if self
-                        .stop_liquidation
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        break;
-                    }
-                    if let Ok(mut accounts) = self.process_all_accounts().await {
-                        // Accounts are sorted from the highest profit to the lowest
-                        accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
-                        accounts.reverse();
-                        for account in accounts {
-                            LIQUIDATION_ATTEMPTS.inc();
-                            info!(
-                                "Liquidating account {:?}",
-                                account.liquidatee_account.address
-                            );
-
-                            let start = Instant::now();
-                            if let Err(e) = self
-                                .liquidator_account
-                                .liquidate(
-                                    &account.liquidatee_account,
-                                    &account.asset_bank,
-                                    &account.liab_bank,
-                                    account.asset_amount,
-                                    &account.banks,
-                                )
-                                .await
-                            {
-                                info!(
-                                    "Failed to liquidate account {:?}, error: {:?}",
-                                    account.liquidatee_account.address, e
+                        let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup {
+                            OracleSetup::SwitchboardPull => {
+                                let mut offsets_data =
+                                    [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                                offsets_data.copy_from_slice(
+                                    &msg.account.data
+                                        [8..std::mem::size_of::<PullFeedAccountData>() + 8],
                                 );
-                                FAILED_LIQUIDATIONS.inc();
-                                ERROR_COUNT.inc();
+                                let swb_feed =
+                                    crate::utils::load_swb_pull_account_from_bytes(&offsets_data)
+                                        .unwrap();
+
+                                let feed_hash = hex::encode(swb_feed.feed_hash);
+                                bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
+
+                                OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
+                                    feed: Box::new((&swb_feed).into()),
+                                })
                             }
-                            let duration = start.elapsed().as_secs_f64();
-                            LIQUIDATION_LATENCY.observe(duration);
-                        }
+                            OracleSetup::StakedWithPythPush => {
+                                let keys = &bank_to_update.bank.config.oracle_keys[1..3];
+
+                                let mut accounts_info =
+                                    vec![(&msg.address, &mut msg.account).into_account_info()];
+
+                                let mut owned_accounts: Vec<_> = keys
+                                    .iter()
+                                    .map(|key| {
+                                        self.cache_oracle_needed_accounts
+                                            .iter()
+                                            .find(|(k, _)| *k == key)
+                                            .unwrap()
+                                            .1
+                                            .clone()
+                                    })
+                                    .collect();
+
+                                accounts_info.extend(
+                                    keys.iter()
+                                        .zip(owned_accounts.iter_mut())
+                                        .map(|(key, account)| (key, account).into_account_info()),
+                                );
+
+                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                    &bank_to_update.bank.config,
+                                    &accounts_info,
+                                    &Clock::default(),
+                                    i64::MAX as u64,
+                                )
+                                .unwrap()
+                            }
+                            _ => {
+                                let oracle_account_info =
+                                    (&msg.address, &mut msg.account).into_account_info();
+                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                    &bank_to_update.bank.config,
+                                    &[oracle_account_info],
+                                    &Clock::default(),
+                                    i64::MAX as u64,
+                                )
+                                .unwrap()
+                            }
+                        };
+
+                        bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                     }
-                    break;
+                }
+                AccountType::Marginfi => {
+                    let marginfi_account =
+                        bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
+                    self.marginfi_accounts
+                        .entry(msg.address)
+                        .and_modify(|mrgn_account| {
+                            mrgn_account.account = *marginfi_account;
+                        })
+                        .or_insert_with(|| {
+                            MarginfiAccountWrapper::new(msg.address, *marginfi_account)
+                        });
+                }
+                _ => {}
+            };
+
+            if self
+                .stop_liquidation
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
+            }
+            if let Ok(mut accounts) = self.process_all_accounts().await {
+                // Accounts are sorted from the highest profit to the lowest
+                accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
+                accounts.reverse();
+                for account in accounts {
+                    LIQUIDATION_ATTEMPTS.inc();
+                    info!(
+                        "Liquidating account {:?}, asset_bank: {:?}, liab_bank: {:?}, amount: {:?}",
+                        account.liquidatee_account.address,
+                        account.asset_bank.address,
+                        account.liab_bank.address,
+                        account.asset_amount
+                    );
+
+                    let start = Instant::now();
+                    if let Err(e) = self
+                        .liquidator_account
+                        .liquidate(
+                            &account.liquidatee_account,
+                            &account.asset_bank,
+                            &account.liab_bank,
+                            account.asset_amount,
+                            &account.banks,
+                        )
+                        .await
+                    {
+                        info!(
+                            "Failed to liquidate account {:?}, error: {:?}",
+                            account.liquidatee_account.address, e
+                        );
+                        FAILED_LIQUIDATIONS.inc();
+                        ERROR_COUNT.inc();
+                    }
+                    let duration = start.elapsed().as_secs_f64();
+                    LIQUIDATION_LATENCY.observe(duration);
                 }
             }
         }
+        error!("Stopped getting messages from geyser");
+        Ok(())
     }
 
     /// Checks if liquidation is needed for each account, one by one
