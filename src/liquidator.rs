@@ -281,8 +281,7 @@ impl Liquidator {
         }
     }
 
-    /// Starts processing/evaluate all account, checking
-    /// if a liquidation is necessary/needed
+    /// Checks if liquidation is needed for each account, one by one
     async fn process_all_accounts(&mut self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
         // Update switchboard pull prices with crossbar
         let swb_feed_hashes = self
@@ -614,9 +613,9 @@ impl Liquidator {
         Ok(balance)
     }
 
-    /// Will load marginfi accounts into the liquidator itself
+    /// Loading marginfi accounts into the liquidator itself
     /// makes it easier and better, than holding it in a shared
-    /// state engine, as it shouldn't be blocked by another threads
+    /// state engine, as it shouldn't be blocked by other threads
     pub async fn load_marginfi_accounts(
         &mut self,
         rpc_client: Arc<RpcClient>,
@@ -653,7 +652,6 @@ impl Liquidator {
         Ok(())
     }
 
-    /// Loads all marginfi account address into a [`Vec`]
     async fn load_marginfi_account_addresses(
         &self,
         rpc_client: Arc<RpcClient>,

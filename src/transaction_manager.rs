@@ -4,7 +4,9 @@ use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
     NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
 };
-use jito_searcher_client::{get_searcher_client_no_auth, send_bundle_with_confirmation};
+use jito_searcher_client::{
+    get_searcher_client_no_auth, send_bundle_with_confirmation, BundleRejectionError,
+};
 use log::{debug, error, info};
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc};
@@ -185,7 +187,7 @@ impl TransactionManager {
             tokio::spawn(async move {
                 if let Err(e) = result.await {
                     ERROR_COUNT.inc();
-                    error!("Failed to send transaction: {:?}", e);
+                    debug!("Failed to send transaction: {:?}", e);
                 }
                 drop(permit);
             });
@@ -204,22 +206,38 @@ impl TransactionManager {
             .await?
             .into_inner();
 
-        if let Err(e) = send_bundle_with_confirmation(
+        send_bundle_with_confirmation(
             &transactions,
             &rpc,
             &mut searcher_client,
             &mut bundle_results_subscription,
         )
         .await
-        {
-            return Err(anyhow::anyhow!(
-                "Failed to send a bundle of {} transactions: {:?}",
-                transactions.len(),
-                e
-            ));
-        }
+        .map_err(|e| {
+            if let Some(BundleRejectionError::SimulationFailure(_, msg)) =
+                e.downcast_ref::<BundleRejectionError>()
+            {
+                if msg
+                    .as_ref()
+                    .is_some_and(|m| m.contains("custom program error: 0x1781"))
+                {
+                    error!(
+                        "Illegal Liquidation: {:?}",
+                        transactions
+                            .first()
+                            .unwrap()
+                            .message
+                            .instructions()
+                            .first()
+                            .unwrap()
+                    );
+                } else {
+                    error!("SimulationFailure: {:?}", msg);
+                }
+            };
 
-        Ok(())
+            anyhow::anyhow!("{:?}", e)
+        })
     }
 
     /// Configures the instructions
