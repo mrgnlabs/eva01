@@ -177,18 +177,15 @@ impl Rebalancer {
             let bank = self
                 .banks
                 .get(self.mint_to_bank.get(mint).unwrap())
-                .unwrap();
-
-            let mint_decimals = bank.bank.mint_decimals;
+                .unwrap()
+                .clone();
 
             self.token_accounts.insert(
                 **mint,
                 TokenAccountWrapper {
                     address: **token_account_addresses,
-                    mint: **mint,
                     balance,
-                    mint_decimals,
-                    bank_address: bank.address,
+                    bank,
                 },
             );
         }
@@ -295,10 +292,14 @@ impl Rebalancer {
                         let mint = accessor::mint(&msg.account.data);
                         let balance = accessor::amount(&msg.account.data);
 
-                        let token_to_update = self.token_accounts.get_mut(&mint).unwrap();
+                        let account_to_update = self.token_accounts.get_mut(&mint).unwrap();
 
-                        token_to_update.balance = balance;
-                        update_balance(&token_to_update.mint.to_string(), balance as f64).await;
+                        account_to_update.balance = balance;
+                        update_balance(
+                            &account_to_update.bank.bank.mint.to_string(),
+                            balance as f64,
+                        )
+                        .await;
                     }
                 }
 
@@ -598,8 +599,7 @@ impl Rebalancer {
 
     fn has_tokens_in_token_accounts(&self) -> bool {
         let has_tokens_in_tas = self.token_accounts.values().any(|account| {
-            let bank = self.banks.get(&account.bank_address).unwrap();
-            let value = account.get_value(bank).unwrap();
+            let value = account.get_value().unwrap();
             value > self.config.token_account_dust_threshold
         });
         has_tokens_in_tas
@@ -633,31 +633,19 @@ impl Rebalancer {
     }
 
     async fn handle_tokens_in_token_accounts(&mut self) -> anyhow::Result<()> {
-        // Step 1: Collect necessary data into a Vec to avoid borrowing issues
-        let accounts_data: Vec<(I80F48, I80F48, Pubkey, Pubkey)> = self
-            .token_accounts
-            .values()
-            .filter_map(|account| {
-                if account.mint == self.config.swap_mint {
-                    return None;
-                }
-                let bank = self.banks.get(&account.bank_address).unwrap();
-                let value = account.get_value(bank).unwrap();
-                Some((
-                    value,
-                    account.get_amount(),
-                    account.bank_address,
-                    account.mint,
-                ))
-            })
-            .collect();
+        let token_accounts: Vec<TokenAccountWrapper> =
+            self.token_accounts.values().cloned().collect();
+        for account in token_accounts {
+            if account.bank.bank.mint == self.config.swap_mint {
+                continue;
+            }
 
-        // Step 2: Iterate over the collected data
-        for (value, amount, bank_address, _) in accounts_data {
+            let value = account.get_value().unwrap();
+
             if value > self.config.token_account_dust_threshold {
                 self.swap(
-                    amount.to_num(),
-                    &bank_address,
+                    account.get_amount().to_num(),
+                    &account.bank.address,
                     &self.swap_mint_bank_pk.unwrap(),
                 )
                 .await?;

@@ -91,8 +91,32 @@ pub mod test_utils {
 
     pub type TestBankWrapper = BankWrapperT<TestOracleWrapper>;
 
-    impl Default for TestBankWrapper {
-        fn default() -> Self {
+    impl TestBankWrapper {
+        pub fn test_sol() -> Self {
+            let bank = Bank::new(
+                Pubkey::new_unique(),
+                BankConfig::default(),
+                Pubkey::new_unique(),
+                6u8,
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                0i64,
+                0u8,
+                0u8,
+                0u8,
+                0u8,
+                0u8,
+                0u8,
+            );
+            let oracle = TestOracleWrapper {
+                price: 200.0,
+                bias: 10.0,
+            };
+            BankWrapperT::new(Pubkey::new_unique(), bank, oracle)
+        }
+
+        pub fn test_usdc() -> Self {
             let bank = Bank::new(
                 Pubkey::new_unique(),
                 BankConfig::default(),
@@ -109,58 +133,70 @@ pub mod test_utils {
                 0u8,
                 0u8,
             );
-            BankWrapperT::new(Pubkey::new_unique(), bank, TestOracleWrapper::default())
+            let oracle = TestOracleWrapper {
+                price: 1.0,
+                bias: 0.1,
+            };
+            BankWrapperT::new(Pubkey::new_unique(), bank, oracle)
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use marginfi::assert_eq_with_tolerance;
+
     use super::test_utils::*;
     use super::*;
 
     #[test]
     fn test_bank_wrapper() {
-        let wrapper = TestBankWrapper::default();
-        assert_eq!(
-            wrapper
+        let usdc_bank = TestBankWrapper::test_usdc();
+        assert_eq_with_tolerance!(
+            usdc_bank
                 .calc_amount(
-                    I80F48::from_num(3700.0),
+                    I80F48::from_num(9000.0),
                     BalanceSide::Assets,
                     RequirementType::Initial
                 )
                 .unwrap(),
-            I80F48::from_num(10000.0)
+            I80F48::from_num(1000000.0),
+            1e-6
         );
-        assert_eq!(
-            wrapper
+        assert_eq_with_tolerance!(
+            usdc_bank
                 .calc_value(
                     I80F48::from_num(20000.0),
                     BalanceSide::Assets,
                     RequirementType::Initial
                 )
                 .unwrap(),
-            I80F48::from_num(7400.0)
+            I80F48::from_num(180.0),
+            1e-6
         );
-        assert_eq!(
-            wrapper
+
+        let sol_bank = TestBankWrapper::test_sol();
+        assert_eq_with_tolerance!(
+            sol_bank
                 .calc_amount(
-                    I80F48::from_num(2350.0),
+                    I80F48::from_num(1050.0),
                     BalanceSide::Liabilities,
                     RequirementType::Initial
                 )
                 .unwrap(),
-            I80F48::from_num(5000.0)
+            I80F48::from_num(5000000.0),
+            1e-6
         );
-        assert_eq!(
-            wrapper
+        assert_eq_with_tolerance!(
+            sol_bank
                 .calc_value(
-                    I80F48::from_num(2000.0),
+                    I80F48::from_num(30000000.0),
                     BalanceSide::Liabilities,
                     RequirementType::Initial
                 )
                 .unwrap(),
-            I80F48::from_num(940.0)
+            I80F48::from_num(6300.0),
+            1e-6
         );
     }
 }
