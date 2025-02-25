@@ -1,33 +1,34 @@
 use super::bank::BankWrapper;
 use fixed::types::I80F48;
-use marginfi::state::marginfi_account::{BalanceSide, MarginfiAccount};
+use marginfi::state::marginfi_account::{BalanceSide, LendingAccount};
 use solana_program::pubkey::Pubkey;
 use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct MarginfiAccountWrapper {
     pub address: Pubkey,
-    pub account: MarginfiAccount,
+    pub lending_account: LendingAccount,
 }
 
 type Shares = Vec<(I80F48, Pubkey)>;
 
 impl MarginfiAccountWrapper {
-    pub fn new(address: Pubkey, account: MarginfiAccount) -> Self {
-        MarginfiAccountWrapper { address, account }
+    pub fn new(address: Pubkey, lending_account: LendingAccount) -> Self {
+        MarginfiAccountWrapper {
+            address,
+            lending_account,
+        }
     }
 
     pub fn has_liabs(&self) -> bool {
-        self.account
-            .lending_account
+        self.lending_account
             .balances
             .iter()
             .any(|a| a.active && matches!(a.get_side(), Some(BalanceSide::Liabilities)))
     }
 
     pub fn get_liabilities_shares(&self) -> Vec<(I80F48, Pubkey)> {
-        self.account
-            .lending_account
+        self.lending_account
             .balances
             .iter()
             .filter(|b| matches!(b.get_side(), Some(BalanceSide::Liabilities)) && b.active)
@@ -43,7 +44,6 @@ impl MarginfiAccountWrapper {
         let mut deposits = vec![];
 
         for deposit_balance in self
-            .account
             .lending_account
             .balances
             .iter()
@@ -71,7 +71,6 @@ impl MarginfiAccountWrapper {
         bank: &BankWrapper,
     ) -> anyhow::Result<Option<(I80F48, BalanceSide)>> {
         let balance = self
-            .account
             .lending_account
             .balances
             .iter()
@@ -98,7 +97,7 @@ impl MarginfiAccountWrapper {
         let mut liabilities = Vec::new();
         let mut deposits = Vec::new();
 
-        for balance in &self.account.lending_account.balances {
+        for balance in &self.lending_account.balances {
             if balance.active {
                 match balance.get_side() {
                     Some(BalanceSide::Liabilities) => {
@@ -116,8 +115,7 @@ impl MarginfiAccountWrapper {
     }
 
     pub fn get_active_banks(&self) -> Vec<Pubkey> {
-        self.account
-            .lending_account
+        self.lending_account
             .balances
             .clone()
             .iter()
@@ -133,7 +131,6 @@ impl MarginfiAccountWrapper {
         banks: &HashMap<Pubkey, BankWrapper>,
     ) -> Vec<Pubkey> {
         let mut ordered_active_banks = self
-            .account
             .lending_account
             .balances
             .iter()

@@ -24,7 +24,6 @@ use switchboard_on_demand_client::{
     FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
 };
 
-/// Wraps the liquidator account into a dedicated strecture
 pub struct LiquidatorAccount {
     pub account_wrapper: MarginfiAccountWrapper,
     pub signer_keypair: Arc<Keypair>,
@@ -47,8 +46,8 @@ impl LiquidatorAccount {
 
         let account = rpc_client.get_account(&liquidator_pubkey)?;
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-        let account_wrapper = MarginfiAccountWrapper::new(liquidator_pubkey, *marginfi_account);
-        let group = account_wrapper.account.group;
+        let account_wrapper =
+            MarginfiAccountWrapper::new(liquidator_pubkey, marginfi_account.lending_account);
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
 
@@ -68,7 +67,7 @@ impl LiquidatorAccount {
             account_wrapper,
             signer_keypair,
             program_id: config.marginfi_program_id,
-            group,
+            group: marginfi_account.group,
             transaction_tx,
             token_program_per_mint: HashMap::new(),
             swb_gateway,

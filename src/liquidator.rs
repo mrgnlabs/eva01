@@ -219,10 +219,13 @@ impl Liquidator {
                     self.marginfi_accounts
                         .entry(msg.address)
                         .and_modify(|mrgn_account| {
-                            mrgn_account.account = *marginfi_account;
+                            mrgn_account.lending_account = marginfi_account.lending_account;
                         })
                         .or_insert_with(|| {
-                            MarginfiAccountWrapper::new(msg.address, *marginfi_account)
+                            MarginfiAccountWrapper::new(
+                                msg.address,
+                                marginfi_account.lending_account,
+                            )
                         });
                 }
                 _ => {}
@@ -580,9 +583,8 @@ impl Liquidator {
         account: &MarginfiAccountWrapper,
         requirement_type: RequirementType,
     ) -> (I80F48, I80F48) {
-        let baws =
-            BankAccountWithPriceFeedEva::load(&account.account.lending_account, self.banks.clone())
-                .unwrap();
+        let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.banks.clone())
+            .unwrap();
 
         baws.iter().fold(
             (I80F48::ZERO, I80F48::ZERO),
@@ -607,7 +609,6 @@ impl Liquidator {
             .ok_or_else(|| anyhow::anyhow!("Bank {} not bound", bank_pk))?;
 
         let balance = account
-            .account
             .lending_account
             .balances
             .iter()
@@ -660,7 +661,7 @@ impl Liquidator {
             let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
             let maw = MarginfiAccountWrapper {
                 address: *address,
-                account: *marginfi_account,
+                lending_account: marginfi_account.lending_account,
             };
             self.marginfi_accounts.insert(*address, maw);
         }

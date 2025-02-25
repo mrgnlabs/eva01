@@ -285,7 +285,8 @@ impl Rebalancer {
                             let marginfi_account =
                                 bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
 
-                            self.liquidator_account.account_wrapper.account = *marginfi_account;
+                            self.liquidator_account.account_wrapper.lending_account =
+                                marginfi_account.lending_account;
                         }
                     }
                     AccountType::Token => {
@@ -609,7 +610,6 @@ impl Rebalancer {
         let has_non_preferred_deposits = self
             .liquidator_account
             .account_wrapper
-            .account
             .lending_account
             .balances
             .iter()
@@ -834,9 +834,8 @@ impl Rebalancer {
         account: &MarginfiAccountWrapper,
         requirement_type: RequirementType,
     ) -> (I80F48, I80F48) {
-        let baws =
-            BankAccountWithPriceFeedEva::load(&account.account.lending_account, self.banks.clone())
-                .unwrap();
+        let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.banks.clone())
+            .unwrap();
 
         baws.iter().fold(
             (I80F48::ZERO, I80F48::ZERO),
