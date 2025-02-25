@@ -53,36 +53,64 @@ impl OracleWrapperTrait for OracleWrapper {
 }
 
 #[cfg(test)]
-pub struct TestOracleWrapper {
-    pub simulated_price: f64,
-}
+pub mod test_utils {
+    use super::*;
 
-#[cfg(test)]
-impl OracleWrapperTrait for TestOracleWrapper {
-    fn get_price_of_type(
-        &self,
-        _: OraclePriceType,
-        _: Option<PriceBias>,
-    ) -> anyhow::Result<I80F48> {
-        Ok(I80F48::from_num(self.simulated_price))
+    pub struct TestOracleWrapper {
+        pub price: f64,
+        pub bias: f64,
+    }
+
+    impl Default for TestOracleWrapper {
+        fn default() -> Self {
+            TestOracleWrapper {
+                price: 42.0,
+                bias: 5.0,
+            }
+        }
+    }
+
+    impl OracleWrapperTrait for TestOracleWrapper {
+        fn get_price_of_type(
+            &self,
+            _: OraclePriceType,
+            price_bias: Option<PriceBias>,
+        ) -> anyhow::Result<I80F48> {
+            match price_bias {
+                Some(PriceBias::Low) => Ok(I80F48::from_num(self.price - self.bias)),
+                Some(PriceBias::High) => Ok(I80F48::from_num(self.price + self.bias)),
+                None => Ok(I80F48::from_num(self.price)),
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::test_utils::*;
     use super::*;
 
     #[test]
     fn test_oracle() {
-        let oracle = TestOracleWrapper {
-            simulated_price: 42.0,
-        };
+        let oracle = TestOracleWrapper::default();
 
         assert_eq!(
             oracle
                 .get_price_of_type(OraclePriceType::RealTime, None)
                 .unwrap(),
             I80F48::from_num(42.0)
+        );
+        assert_eq!(
+            oracle
+                .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low))
+                .unwrap(),
+            I80F48::from_num(37.0)
+        );
+        assert_eq!(
+            oracle
+                .get_price_of_type(OraclePriceType::RealTime, Some(PriceBias::High))
+                .unwrap(),
+            I80F48::from_num(47.0)
         );
     }
 }
