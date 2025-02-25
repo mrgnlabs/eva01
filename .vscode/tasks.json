@@ -10,6 +10,16 @@
                 "kind": "build",
                 "isDefault": true
             }
+        },
+        {
+            "label": "Test",
+            "type": "shell",
+            "command": "cargo fmt && cargo clippy -- -D warnings && cargo test",
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": false
+            }
         }
     ]
 }

@@ -1,4 +1,4 @@
-use super::oracle::OracleWrapper;
+use super::oracle::{OracleWrapper, OracleWrapperTrait};
 use fixed::types::I80F48;
 use marginfi::state::{
     marginfi_account::{calc_amount, calc_value, BalanceSide, RequirementType},
@@ -8,18 +8,20 @@ use marginfi::state::{
 use solana_program::pubkey::Pubkey;
 
 #[derive(Clone)]
-pub struct BankWrapper {
+pub struct BankWrapperT<T: OracleWrapperTrait> {
     pub address: Pubkey,
     pub bank: Bank,
-    pub oracle_adapter: OracleWrapper,
+    pub oracle_adapter: T,
 }
 
-impl BankWrapper {
-    pub fn new(address: Pubkey, bank: Bank, oracle_adapter_wrapper: OracleWrapper) -> Self {
+pub type BankWrapper = BankWrapperT<OracleWrapper>;
+
+impl<T: OracleWrapperTrait> BankWrapperT<T> {
+    pub fn new(address: Pubkey, bank: Bank, oracle_adapter: T) -> Self {
         Self {
             address,
             bank,
-            oracle_adapter: oracle_adapter_wrapper,
+            oracle_adapter,
         }
     }
 
@@ -83,5 +85,62 @@ impl BankWrapper {
             .unwrap();
 
         Ok(calc_value(amount, price, self.bank.mint_decimals, None)?)
+    }
+}
+
+#[cfg(test)]
+use super::oracle::TestOracleWrapper;
+
+#[cfg(test)]
+mod tests {
+    use marginfi::state::marginfi_group::BankConfig;
+
+    use super::*;
+
+    #[test]
+    fn test_bank_wrapper() {
+        let bank = Bank::new(
+            Pubkey::new_unique(),
+            BankConfig::default(),
+            Pubkey::new_unique(),
+            2u8,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            0i64,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+        );
+        let wrapper = BankWrapperT::new(
+            Pubkey::new_unique(),
+            bank,
+            TestOracleWrapper {
+                simulated_price: 42.0,
+            },
+        );
+        assert_eq!(
+            wrapper
+                .calc_amount(
+                    I80F48::from_num(4200.0),
+                    BalanceSide::Assets,
+                    RequirementType::Initial
+                )
+                .unwrap(),
+            I80F48::from_num(10000.0)
+        );
+        assert_eq!(
+            wrapper
+                .calc_value(
+                    I80F48::from_num(10000.0),
+                    BalanceSide::Assets,
+                    RequirementType::Initial
+                )
+                .unwrap(),
+            I80F48::from_num(4200.0)
+        );
     }
 }

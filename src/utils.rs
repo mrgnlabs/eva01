@@ -32,7 +32,7 @@ use switchboard_on_demand::PullFeedAccountData;
 use url::Url;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
-use crate::wrappers::bank::BankWrapper;
+use crate::wrappers::{bank::BankWrapper, oracle::OracleWrapperTrait};
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,

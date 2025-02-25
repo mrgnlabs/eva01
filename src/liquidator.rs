@@ -9,8 +9,10 @@ use crate::{
         BatchLoadingConfig,
     },
     wrappers::{
-        bank::BankWrapper, liquidator_account::LiquidatorAccount,
-        marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapper,
+        bank::BankWrapper,
+        liquidator_account::LiquidatorAccount,
+        marginfi_account::MarginfiAccountWrapper,
+        oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
 use anchor_client::Program;
@@ -238,12 +240,21 @@ impl Liquidator {
                 accounts.reverse();
                 for account in accounts {
                     LIQUIDATION_ATTEMPTS.inc();
+                    // info!(
+                    //     "Liquidating account {:?}, asset_bank: {:?}, liab_bank: {:?}, amount: {:?}",
+                    //     account.liquidatee_account.address,
+                    //     account.asset_bank.address,
+                    //     account.liab_bank.address,
+                    //     account.asset_amount
+                    // );
+
+                    let (assets, liabs) = self.calc_health(
+                        &self.liquidator_account.account_wrapper,
+                        RequirementType::Maintenance,
+                    );
                     info!(
-                        "Liquidating account {:?}, asset_bank: {:?}, liab_bank: {:?}, amount: {:?}",
-                        account.liquidatee_account.address,
-                        account.asset_bank.address,
-                        account.liab_bank.address,
-                        account.asset_amount
+                        "Liquidator account: assets: {:?}, liabs: {:?}",
+                        assets, liabs
                     );
 
                     let start = Instant::now();
@@ -334,7 +345,7 @@ impl Liquidator {
                         }
                     };
 
-                let (max_liquidation_amount, profit) = self
+                let (max_liquidatable_amount, profit) = self
                     .compute_max_liquidatble_asset_amount_with_banks(
                         account,
                         &asset_bank_pk,
@@ -346,7 +357,7 @@ impl Liquidator {
                     })
                     .ok()?;
 
-                if max_liquidation_amount.is_zero() || profit < self.config.min_profit {
+                if max_liquidatable_amount.is_zero() || profit < self.config.min_profit {
                     return None;
                 }
 
@@ -362,9 +373,13 @@ impl Liquidator {
                         RequirementType::Initial,
                     )
                     .ok()?;
+                info!(
+                    "Liquidation asset amount capacity: {:?}",
+                    liquidation_asset_amount_capacity
+                );
 
                 let asset_amount_to_liquidate =
-                    min(max_liquidation_amount, liquidation_asset_amount_capacity);
+                    min(max_liquidatable_amount, liquidation_asset_amount_capacity);
 
                 let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.95);
 
@@ -541,9 +556,19 @@ impl Liquidator {
         )?;
 
         if liquidator_profit > self.config.min_profit {
-            debug!("Account {:?}", account.address);
-            debug!("Health {:?}", maintenance_health);
-            debug!("Liquidator profit {:?}", liquidator_profit);
+            info!("Account {:?}", account.address);
+            info!("Asset Bank {:?}", asset_bank.bank);
+            info!("Assets {:?}", assets);
+            info!("Asset Value (USD) {:?}", asset_value);
+            info!("Liab Bank {:?}", liab_bank.bank);
+            info!("Liabs {:?}", liabs);
+            info!("Liab Value (USD) {:?}", liab_value);
+            info!("Max Liquidatable Value {:?}", max_liquidatable_value);
+            info!(
+                "Max Liquidatable Asset Amount {:?}",
+                max_liquidatable_asset_amount
+            );
+            info!("Liquidator profit (USD) {:?}", liquidator_profit);
         }
 
         Ok((max_liquidatable_asset_amount, liquidator_profit))
@@ -879,13 +904,13 @@ impl Liquidator {
 
     fn get_value_of_shares(
         &self,
-        tshares: Vec<(I80F48, Pubkey)>,
+        shares: Vec<(I80F48, Pubkey)>,
         balance_side: &BalanceSide,
         requirement_type: RequirementType,
     ) -> anyhow::Result<Vec<(I80F48, Pubkey)>> {
         let mut values: Vec<(I80F48, Pubkey)> = Vec::new();
 
-        for share in tshares {
+        for share in shares {
             let bank = match self.banks.get(&share.1) {
                 Some(bank) => bank,
                 None => {

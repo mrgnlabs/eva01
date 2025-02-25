@@ -1,4 +1,4 @@
-use super::bank::BankWrapper;
+use super::{bank::BankWrapper, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
 use marginfi::constants::EXP_10_I80F48;
 use solana_program::pubkey::Pubkey;

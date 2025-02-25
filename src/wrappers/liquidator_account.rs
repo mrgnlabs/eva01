@@ -107,7 +107,7 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
-        let (bank_liquidaity_vault_authority, _) = crate::utils::find_bank_vault_authority_pda(
+        let (bank_liquidity_vault_authority, _) = crate::utils::find_bank_vault_authority_pda(
             &liab_bank.address,
             BankVaultType::Liquidity,
             &self.program_id,
@@ -169,7 +169,7 @@ impl LiquidatorAccount {
             liab_bank,
             signer_pk,
             liquidatee_account_address,
-            bank_liquidaity_vault_authority,
+            bank_liquidity_vault_authority,
             *self.token_program_per_mint.get(&liab_mint).unwrap(),
             joined_observation_accounts,
             asset_amount,

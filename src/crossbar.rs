@@ -74,6 +74,7 @@ impl CrossbarMaintainer {
         prices
     }
 }
+
 fn calculate_price(mut numbers: Vec<f64>) -> Option<f64> {
     if numbers.is_empty() {
         return None;
@@ -86,5 +87,25 @@ fn calculate_price(mut numbers: Vec<f64>) -> Option<f64> {
         Some((numbers[mid - 1] + numbers[mid]) / 2.0)
     } else {
         Some(numbers[mid])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_price() {
+        // Test empty vector
+        assert_eq!(calculate_price(vec![]), None);
+
+        // Test single element vector
+        assert_eq!(calculate_price(vec![5.0]), Some(5.0));
+
+        // Test odd number of elements
+        assert_eq!(calculate_price(vec![3.0, 1.0, 2.0]), Some(2.0));
+
+        // Test even number of elements
+        assert_eq!(calculate_price(vec![4.0, 1.0, 3.0, 2.0]), Some(2.5));
     }
 }

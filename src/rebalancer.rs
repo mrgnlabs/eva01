@@ -12,7 +12,8 @@ use crate::{
     },
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
-        marginfi_account::MarginfiAccountWrapper, token_account::TokenAccountWrapper,
+        marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait,
+        token_account::TokenAccountWrapper,
     },
 };
 use anyhow::anyhow;

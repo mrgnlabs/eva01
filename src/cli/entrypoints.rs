@@ -31,7 +31,6 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     info!("Starting eva01 liquidator! {:#?}", &config);
 
-    // Create two channels
     // Geyser -> Liquidator
     // Geyser -> Rebalancer
     // Liquidator/Rebalancer -> TransactionManager
@@ -39,18 +38,12 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<BatchTransactions>();
 
-    // Creates an atomicbool that will be shared between the liquidator and the rebalancer
-    // to stop the liquidator when the rebalancer ask for it
-
+    // This is to stop liquidator when rebalancer asks for it
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
-    // Creates the transaction manager
-    // a channel is shared between the liquidator/rebalancer
-    // and the transaction manager
     let mut transaction_manager =
         TransactionManager::new(transaction_rx, config.general_config.clone()).await?;
 
-    // Create the liquidator
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         config.liquidator_config.clone(),
@@ -60,7 +53,6 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     )
     .await;
 
-    // Create the rebalancer
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
         config.rebalancer_config.clone(),
