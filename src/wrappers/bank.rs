@@ -85,11 +85,16 @@ use super::oracle::test_utils::TestOracleWrapper;
 
 #[cfg(test)]
 pub mod test_utils {
+    use std::str::FromStr;
+
     use super::*;
 
     use marginfi::state::marginfi_group::BankConfig;
 
     pub type TestBankWrapper = BankWrapperT<TestOracleWrapper>;
+
+    const SOL_BANK_ADDRESS: &str = "1111111Bs8Haw3nAsWf5hmLfKzc6PMEzcxUCKkVYK";
+    const USDC_BANK_ADDRESS: &str = "11111117353mdUKehx9GW6JNHznGt5oSZs9fWkVkB";
 
     impl TestBankWrapper {
         pub fn test_sol() -> Self {
@@ -113,7 +118,7 @@ pub mod test_utils {
                 price: 200.0,
                 bias: 10.0,
             };
-            BankWrapperT::new(Pubkey::new_unique(), bank, oracle)
+            BankWrapperT::new(Pubkey::from_str(SOL_BANK_ADDRESS).unwrap(), bank, oracle)
         }
 
         pub fn test_usdc() -> Self {
@@ -137,7 +142,7 @@ pub mod test_utils {
                 price: 1.0,
                 bias: 0.1,
             };
-            BankWrapperT::new(Pubkey::new_unique(), bank, oracle)
+            BankWrapperT::new(Pubkey::from_str(USDC_BANK_ADDRESS).unwrap(), bank, oracle)
         }
     }
 }

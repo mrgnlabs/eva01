@@ -56,6 +56,7 @@ impl OracleWrapperTrait for OracleWrapper {
 pub mod test_utils {
     use super::*;
 
+    #[derive(Clone)]
     pub struct TestOracleWrapper {
         pub price: f64,
         pub bias: f64,
