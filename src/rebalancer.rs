@@ -478,7 +478,7 @@ impl Rebalancer {
         let balance = self
             .liquidator_account
             .account_wrapper
-            .get_balance_for_bank(&bank_pk, bank)?;
+            .get_balance_for_bank(bank)?;
 
         if balance.is_none() || matches!(balance, Some((_, BalanceSide::Assets))) {
             return Ok(());
@@ -657,10 +657,11 @@ impl Rebalancer {
 
     /// Withdraw and sells a given asset
     async fn withdraw_and_sell_deposit(&mut self, bank_pk: &Pubkey) -> anyhow::Result<()> {
+        let bank = self.banks.get(bank_pk).unwrap();
         let balance = self
             .liquidator_account
             .account_wrapper
-            .get_balance_for_bank(bank_pk, self.banks.get(bank_pk).unwrap())?;
+            .get_balance_for_bank(bank)?;
 
         if !matches!(&balance, Some((_, BalanceSide::Assets))) {
             return Ok(());
@@ -669,8 +670,6 @@ impl Rebalancer {
         let (withdraw_amount, withdrawl_all) = self.get_max_withdraw_for_bank(bank_pk)?;
 
         let amount = withdraw_amount.to_num::<u64>();
-
-        let bank = self.banks.get(bank_pk).unwrap();
 
         self.liquidator_account.withdraw(
             bank,
@@ -755,7 +754,7 @@ impl Rebalancer {
         let balance = self
             .liquidator_account
             .account_wrapper
-            .get_balance_for_bank(bank_pk, self.banks.get(bank_pk).unwrap())?;
+            .get_balance_for_bank(self.banks.get(bank_pk).unwrap())?;
         Ok(match balance {
             Some((balance, BalanceSide::Assets)) => {
                 let value = self.get_value(

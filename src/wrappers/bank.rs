@@ -114,10 +114,7 @@ pub mod test_utils {
                 0u8,
                 0u8,
             );
-            let oracle = TestOracleWrapper {
-                price: 200.0,
-                bias: 10.0,
-            };
+            let oracle = TestOracleWrapper::test_sol();
             BankWrapperT::new(Pubkey::from_str(SOL_BANK_ADDRESS).unwrap(), bank, oracle)
         }
 
@@ -138,10 +135,7 @@ pub mod test_utils {
                 0u8,
                 0u8,
             );
-            let oracle = TestOracleWrapper {
-                price: 1.0,
-                bias: 0.1,
-            };
+            let oracle = TestOracleWrapper::test_usdc();
             BankWrapperT::new(Pubkey::from_str(USDC_BANK_ADDRESS).unwrap(), bank, oracle)
         }
     }

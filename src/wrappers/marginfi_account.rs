@@ -1,7 +1,4 @@
-use super::{
-    bank::{BankWrapper, BankWrapperT},
-    oracle::OracleWrapperTrait,
-};
+use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
 use marginfi::state::marginfi_account::{BalanceSide, LendingAccount};
 use solana_program::pubkey::Pubkey;
@@ -68,16 +65,15 @@ impl MarginfiAccountWrapper {
         Ok(deposits)
     }
 
-    pub fn get_balance_for_bank(
+    pub fn get_balance_for_bank<T: OracleWrapperTrait>(
         &self,
-        bank_pk: &Pubkey,
-        bank: &BankWrapper,
+        bank: &BankWrapperT<T>,
     ) -> anyhow::Result<Option<(I80F48, BalanceSide)>> {
         let balance = self
             .lending_account
             .balances
             .iter()
-            .find(|b| b.bank_pk == *bank_pk)
+            .find(|b| b.bank_pk == bank.address)
             .map(|b| match b.get_side()? {
                 BalanceSide::Assets => {
                     let amount = bank.bank.get_asset_amount(b.asset_shares.into()).ok()?;
@@ -127,11 +123,11 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_observation_accounts(
+    pub fn get_observation_accounts<T: OracleWrapperTrait>(
         &self,
         banks_to_include: &[Pubkey],
         banks_to_exclude: &[Pubkey],
-        banks: &HashMap<Pubkey, BankWrapper>,
+        banks: &HashMap<Pubkey, BankWrapperT<T>>,
     ) -> Vec<Pubkey> {
         let mut ordered_active_banks = self
             .lending_account
@@ -147,7 +143,7 @@ impl MarginfiAccountWrapper {
             }
         }
 
-        let bank_accounts_and_oracles = ordered_active_banks
+        ordered_active_banks
             .iter()
             .flat_map(|b| {
                 let bank = banks.get(b).unwrap();
@@ -157,17 +153,15 @@ impl MarginfiAccountWrapper {
                 {
                     vec![
                         bank.address,
-                        bank.oracle_adapter.address,
+                        bank.oracle_adapter.get_address(),
                         bank.bank.config.oracle_keys[1],
                         bank.bank.config.oracle_keys[2],
                     ]
                 } else {
-                    vec![bank.address, bank.oracle_adapter.address]
+                    vec![bank.address, bank.oracle_adapter.get_address()]
                 }
             })
-            .collect::<Vec<_>>();
-
-        bank_accounts_and_oracles
+            .collect::<Vec<_>>()
     }
 }
 
@@ -269,7 +263,7 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use crate::wrappers::bank::test_utils::TestBankWrapper;
+    use crate::wrappers::bank::{self, test_utils::TestBankWrapper};
 
     use super::*;
 
@@ -291,6 +285,40 @@ mod tests {
             healthy.get_deposits(&[], &banks).unwrap(),
             vec![(I80F48::from_num(100), sol_bank.address)]
         );
+        let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap().unwrap();
+        assert_eq!(balance, I80F48::from_num(100));
+        match side {
+            BalanceSide::Assets => assert!(true, "Side is Assets"),
+            BalanceSide::Liabilities => assert!(false, "Side is Liabilities"),
+        }
+        let (balance, side) = healthy.get_balance_for_bank(&usdc_bank).unwrap().unwrap();
+        assert_eq!(balance, I80F48::from_num(100));
+        match side {
+            BalanceSide::Assets => assert!(false, "Side is Assets"),
+            BalanceSide::Liabilities => assert!(true, "Side is Liabilities"),
+        }
+        assert_eq!(
+            healthy.get_deposits_and_liabilities_shares(),
+            (
+                vec![(I80F48::from_num(100), sol_bank.address)],
+                vec![(I80F48::from_num(100), usdc_bank.address)]
+            )
+        );
+        assert_eq!(
+            healthy.get_active_banks(),
+            vec![sol_bank.address, usdc_bank.address]
+        );
+        let banks_to_include = vec![];
+        let banks_to_exclude = vec![];
+        assert_eq!(
+            healthy.get_observation_accounts(&banks_to_include, &banks_to_exclude, &banks),
+            vec![
+                sol_bank.address,
+                sol_bank.oracle_adapter.get_address(),
+                usdc_bank.address,
+                usdc_bank.oracle_adapter.get_address()
+            ]
+        );
 
         let unhealthy = MarginfiAccountWrapper::test_unhealthy();
         assert!(unhealthy.has_liabs());
@@ -301,6 +329,35 @@ mod tests {
         assert_eq!(
             unhealthy.get_deposits(&[], &banks).unwrap(),
             vec![(I80F48::from_num(100), usdc_bank.address)]
+        );
+        let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap().unwrap();
+        assert_eq!(balance, I80F48::from_num(100));
+        match side {
+            BalanceSide::Assets => assert!(false, "Side is Assets"),
+            BalanceSide::Liabilities => assert!(true, "Side is Liabilities"),
+        }
+        let (balance, side) = unhealthy.get_balance_for_bank(&usdc_bank).unwrap().unwrap();
+        assert_eq!(balance, I80F48::from_num(100));
+        match side {
+            BalanceSide::Assets => assert!(true, "Side is Assets"),
+            BalanceSide::Liabilities => assert!(false, "Side is Liabilities"),
+        }
+        assert_eq!(
+            unhealthy.get_deposits_and_liabilities_shares(),
+            (
+                vec![(I80F48::from_num(100), usdc_bank.address)],
+                vec![(I80F48::from_num(100), sol_bank.address)]
+            )
+        );
+        assert_eq!(
+            unhealthy.get_active_banks(),
+            vec![usdc_bank.address, sol_bank.address]
+        );
+        let banks_to_include = vec![];
+        let banks_to_exclude = vec![sol_bank.address, usdc_bank.address];
+        assert_eq!(
+            unhealthy.get_observation_accounts(&banks_to_include, &banks_to_exclude, &banks),
+            vec![]
         );
     }
 }

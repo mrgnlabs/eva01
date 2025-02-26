@@ -8,6 +8,8 @@ pub trait OracleWrapperTrait {
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48>;
+
+    fn get_address(&self) -> Pubkey;
 }
 
 #[derive(Clone)]
@@ -50,23 +52,52 @@ impl OracleWrapperTrait for OracleWrapper {
                 .get_price_of_type(oracle_type, price_bias)?),
         }
     }
+
+    fn get_address(&self) -> Pubkey {
+        self.address
+    }
 }
 
 #[cfg(test)]
 pub mod test_utils {
+    use std::str::FromStr;
+
     use super::*;
 
     #[derive(Clone)]
     pub struct TestOracleWrapper {
         pub price: f64,
         pub bias: f64,
+        pub address: Pubkey,
     }
+
+    const SOL_ORACLE_ADDRESS: &str = "11111119rSGfPZLcyCGzY4uYEL1fkzJr6fke9qKxb";
+    const USDC_ORACLE_ADDRESS: &str = "1111111Af7Udc9v3L82dQM5b4zee1Xt77Be4czzbH";
 
     impl Default for TestOracleWrapper {
         fn default() -> Self {
             TestOracleWrapper {
                 price: 42.0,
                 bias: 5.0,
+                address: Pubkey::new_unique(),
+            }
+        }
+    }
+
+    impl TestOracleWrapper {
+        pub fn test_sol() -> Self {
+            Self {
+                price: 200.0,
+                bias: 10.0,
+                address: Pubkey::from_str(SOL_ORACLE_ADDRESS).unwrap(),
+            }
+        }
+
+        pub fn test_usdc() -> Self {
+            Self {
+                price: 1.0,
+                bias: 0.1,
+                address: Pubkey::from_str(USDC_ORACLE_ADDRESS).unwrap(),
             }
         }
     }
@@ -82,6 +113,10 @@ pub mod test_utils {
                 Some(PriceBias::High) => Ok(I80F48::from_num(self.price + self.bias)),
                 None => Ok(I80F48::from_num(self.price)),
             }
+        }
+
+        fn get_address(&self) -> Pubkey {
+            self.address
         }
     }
 }
