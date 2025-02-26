@@ -394,12 +394,12 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     }
 }
 
-pub fn find_bank_vault_authority_pda(
-    bank_pk: &Pubkey,
-    vault_type: BankVaultType,
-    program_id: &Pubkey,
-) -> (Pubkey, u8) {
-    Pubkey::find_program_address(bank_authority_seed!(vault_type, bank_pk), program_id)
+pub fn find_bank_liquidity_vault_authority(bank_pk: &Pubkey, program_id: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        bank_authority_seed!(BankVaultType::Liquidity, bank_pk),
+        program_id,
+    )
+    .0
 }
 
 pub fn calc_weighted_assets_new(

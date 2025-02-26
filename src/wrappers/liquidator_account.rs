@@ -5,7 +5,8 @@ use crate::{
     transaction_manager::{BatchTransactions, RawTransaction},
 };
 use crossbeam::channel::Sender;
-use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::BankVaultType};
+use log::info;
+use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
     rpc_config::RpcSendTransactionConfig,
@@ -106,18 +107,11 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
-        let (bank_liquidity_vault_authority, _) = crate::utils::find_bank_vault_authority_pda(
-            &liab_bank.address,
-            BankVaultType::Liquidity,
-            &self.program_id,
-        );
-
         let liquidator_observation_accounts =
-            self.account_wrapper
-                .get_observation_accounts(&[], &[], banks);
+            self.account_wrapper.get_observation_accounts(&[], banks);
 
         let liquidatee_observation_accounts =
-            liquidatee_account.get_observation_accounts(&[], &[], banks);
+            liquidatee_account.get_observation_accounts(&[], banks);
 
         let joined_observation_accounts = liquidator_observation_accounts
             .iter()
@@ -127,8 +121,8 @@ impl LiquidatorAccount {
 
         let observation_swb_oracles = joined_observation_accounts
             .iter()
-            .filter_map(|&pk| {
-                banks.get(&pk).and_then(|bank| {
+            .filter_map(|pk| {
+                banks.get(pk).and_then(|bank| {
                     if bank.oracle_adapter.is_switchboard_pull() {
                         Some(bank.oracle_adapter.address)
                     } else {
@@ -137,6 +131,11 @@ impl LiquidatorAccount {
                 })
             })
             .collect::<Vec<_>>();
+
+        info!(
+            "liquidate: observation_swb_oracles length: {:?}",
+            observation_swb_oracles.len()
+        );
 
         let crank_data = if !observation_swb_oracles.is_empty() {
             if let Ok((ix, luts)) = PullFeed::fetch_update_many_ix(
@@ -168,13 +167,12 @@ impl LiquidatorAccount {
             liab_bank,
             signer_pk,
             liquidatee_account_address,
-            bank_liquidity_vault_authority,
             *self.token_program_per_mint.get(&liab_mint).unwrap(),
             joined_observation_accounts,
             asset_amount,
         );
 
-        println!("liquidate_ix: {:?}", liquidate_ix);
+        info!("liquidate_ix: {:?}", liquidate_ix);
 
         let mut bundle = vec![];
         if let Some((crank_ix, crank_lut)) = crank_data {
@@ -235,9 +233,9 @@ impl LiquidatorAccount {
             vec![]
         };
 
-        let observation_accounts =
-            self.account_wrapper
-                .get_observation_accounts(&[], &banks_to_exclude, banks);
+        let observation_accounts = self
+            .account_wrapper
+            .get_observation_accounts(&banks_to_exclude, banks);
 
         let mint = bank.bank.mint;
         let token_program = *self.token_program_per_mint.get(&mint).unwrap();
@@ -249,12 +247,6 @@ impl LiquidatorAccount {
             signer_pk,
             bank,
             token_account,
-            crate::utils::find_bank_vault_authority_pda(
-                &bank.address,
-                BankVaultType::Liquidity,
-                &self.program_id,
-            )
-            .0,
             token_program,
             observation_accounts,
             amount,

@@ -2,10 +2,12 @@ use anchor_lang::{InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
 use log::trace;
-use solana_sdk::instruction::AccountMeta;
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use solana_sdk::{
+    instruction::{AccountMeta, Instruction},
+    pubkey::Pubkey,
+};
 
-use crate::wrappers::bank::BankWrapper;
+use crate::{utils::find_bank_liquidity_vault_authority, wrappers::bank::BankWrapper};
 
 #[allow(clippy::too_many_arguments)]
 pub fn make_deposit_ix(
@@ -78,7 +80,6 @@ pub fn make_withdraw_ix(
     signer: Pubkey,
     bank: &BankWrapper,
     destination_token_account: Pubkey,
-    bank_liquidity_vault_authority: Pubkey,
     token_program: Pubkey,
     observation_accounts: Vec<Pubkey>,
     amount: u64,
@@ -90,7 +91,10 @@ pub fn make_withdraw_ix(
         signer,
         bank: bank.address,
         destination_token_account,
-        bank_liquidity_vault_authority,
+        bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
+            &bank.address,
+            &marginfi_program_id,
+        ),
         bank_liquidity_vault: bank.bank.liquidity_vault,
         token_program,
     }
@@ -129,7 +133,6 @@ pub fn make_liquidate_ix(
     liab_bank: &BankWrapper,
     signer: Pubkey,
     liquidatee_marginfi_account: Pubkey,
-    bank_liquidity_vault_authority: Pubkey,
     token_program: Pubkey,
     observation_accounts: Vec<Pubkey>,
     asset_amount: u64,
@@ -139,7 +142,10 @@ pub fn make_liquidate_ix(
         liquidator_marginfi_account: marginfi_account,
         signer,
         liquidatee_marginfi_account,
-        bank_liquidity_vault_authority,
+        bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
+            &liab_bank.address,
+            &marginfi_program_id,
+        ),
         bank_liquidity_vault: liab_bank.bank.liquidity_vault,
         bank_insurance_vault: liab_bank.bank.insurance_vault,
         token_program,

@@ -116,7 +116,6 @@ impl MarginfiAccountWrapper {
     pub fn get_active_banks(&self) -> Vec<Pubkey> {
         self.lending_account
             .balances
-            .clone()
             .iter()
             .filter(|b| b.active)
             .map(|b| b.bank_pk)
@@ -125,28 +124,15 @@ impl MarginfiAccountWrapper {
 
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
         &self,
-        banks_to_include: &[Pubkey],
         banks_to_exclude: &[Pubkey],
         banks: &HashMap<Pubkey, BankWrapperT<T>>,
     ) -> Vec<Pubkey> {
-        let mut ordered_active_banks = self
-            .lending_account
+        self.lending_account
             .balances
             .iter()
             .filter(|b| b.active && !banks_to_exclude.contains(&b.bank_pk))
-            .map(|b| b.bank_pk)
-            .collect::<Vec<_>>();
-
-        for bank_pk in banks_to_include {
-            if !ordered_active_banks.contains(bank_pk) {
-                ordered_active_banks.push(*bank_pk);
-            }
-        }
-
-        ordered_active_banks
-            .iter()
             .flat_map(|b| {
-                let bank = banks.get(b).unwrap();
+                let bank = banks.get(&b.bank_pk).unwrap();
 
                 if bank.bank.config.oracle_keys[1] != Pubkey::default()
                     && bank.bank.config.oracle_keys[2] != Pubkey::default()
@@ -263,7 +249,7 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use crate::wrappers::bank::{self, test_utils::TestBankWrapper};
+    use crate::wrappers::bank::test_utils::TestBankWrapper;
 
     use super::*;
 
@@ -308,10 +294,9 @@ mod tests {
             healthy.get_active_banks(),
             vec![sol_bank.address, usdc_bank.address]
         );
-        let banks_to_include = vec![];
         let banks_to_exclude = vec![];
         assert_eq!(
-            healthy.get_observation_accounts(&banks_to_include, &banks_to_exclude, &banks),
+            healthy.get_observation_accounts(&banks_to_exclude, &banks),
             vec![
                 sol_bank.address,
                 sol_bank.oracle_adapter.get_address(),
@@ -353,10 +338,9 @@ mod tests {
             unhealthy.get_active_banks(),
             vec![usdc_bank.address, sol_bank.address]
         );
-        let banks_to_include = vec![];
         let banks_to_exclude = vec![sol_bank.address, usdc_bank.address];
         assert_eq!(
-            unhealthy.get_observation_accounts(&banks_to_include, &banks_to_exclude, &banks),
+            unhealthy.get_observation_accounts(&banks_to_exclude, &banks),
             vec![]
         );
     }
