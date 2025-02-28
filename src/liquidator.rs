@@ -251,14 +251,11 @@ impl Liquidator {
                     //     account.asset_amount
                     // );
 
-                    let (assets, liabs) = self.calc_health(
+                    let maintenance_health = self.calc_health(
                         &self.liquidator_account.account_wrapper,
                         RequirementType::Maintenance,
                     );
-                    info!(
-                        "Liquidator account: assets: {:?}, liabs: {:?}",
-                        assets, liabs
-                    );
+                    info!("Liquidator account health: {:?}", maintenance_health);
 
                     let start = Instant::now();
                     if let Err(e) = self
@@ -288,7 +285,7 @@ impl Liquidator {
         Ok(())
     }
 
-    /// Checks if liquidation is needed for each account, one by one
+    /// Checks if liquidation is needed, for each account one by one
     async fn process_all_accounts(&mut self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
         // Update switchboard pull prices with crossbar
         let swb_feed_hashes = self
@@ -312,92 +309,89 @@ impl Liquidator {
         let accounts = self
             .marginfi_accounts
             .par_iter()
-            .filter_map(|(_, account)| {
-                if !account.has_liabs() {
-                    return None;
-                }
-
-                let (deposit_shares, _) = account.get_deposits_and_liabilities_shares();
-
-                let deposit_values = match self.get_value_of_shares(
-                    deposit_shares,
-                    &BalanceSide::Assets,
-                    RequirementType::Maintenance,
-                ) {
-                    Ok(values) => values,
-                    Err(_) => return None,
-                };
-
-                if deposit_values
-                    .iter()
-                    .map(|(v, _)| v.to_num::<f64>())
-                    .sum::<f64>()
-                    < BANKRUPT_THRESHOLD
-                {
-                    return None;
-                }
-
-                let (asset_bank_pk, liab_bank_pk) =
-                    match self.find_liquidation_bank_candidates(account) {
-                        Ok(Some((asset_bank_pk, liab_bank_pk))) => (asset_bank_pk, liab_bank_pk),
-                        Ok(None) => return None,
-                        Err(e) => {
-                            error!("Error finding liquidation bank candidates: {:?}", e);
-                            ERROR_COUNT.inc();
-                            return None;
-                        }
-                    };
-
-                let (max_liquidatable_amount, profit) = self
-                    .compute_max_liquidatble_asset_amount_with_banks(
-                        account,
-                        &asset_bank_pk,
-                        &liab_bank_pk,
-                    )
-                    .map_err(|e| {
-                        error!("Error computing max liquidatable asset amount: {:?}", e);
-                        ERROR_COUNT.inc();
-                    })
-                    .ok()?;
-
-                if max_liquidatable_amount.is_zero() || profit < self.config.min_profit {
-                    return None;
-                }
-
-                let max_liab_coverage_amount = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
-
-                let liab_bank = self.banks.get(&liab_bank_pk).unwrap();
-                let asset_bank = self.banks.get(&asset_bank_pk).unwrap();
-
-                let liquidation_asset_amount_capacity = asset_bank
-                    .calc_amount(
-                        max_liab_coverage_amount,
-                        BalanceSide::Assets,
-                        RequirementType::Initial,
-                    )
-                    .ok()?;
-                info!(
-                    "Liquidation asset amount capacity: {:?}",
-                    liquidation_asset_amount_capacity
-                );
-
-                let asset_amount_to_liquidate =
-                    min(max_liquidatable_amount, liquidation_asset_amount_capacity);
-
-                let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.95);
-
-                Some(PreparedLiquidatableAccount {
-                    liquidatee_account: account.clone(),
-                    asset_bank: asset_bank.clone(),
-                    liab_bank: liab_bank.clone(),
-                    asset_amount: slippage_adjusted_asset_amount.to_num(),
-                    banks: self.banks.clone(),
-                    profit: profit.to_num(),
-                })
-            })
+            .filter_map(|(_, account)| self.process_account(account))
             .collect::<Vec<_>>();
 
         Ok(accounts)
+    }
+
+    fn process_account(
+        &self,
+        account: &MarginfiAccountWrapper,
+    ) -> Option<PreparedLiquidatableAccount> {
+        let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
+
+        let deposit_values = self
+            .get_value_of_shares(
+                deposit_shares,
+                &BalanceSide::Assets,
+                RequirementType::Maintenance,
+            )
+            .ok()?;
+
+        let liab_values = self
+            .get_value_of_shares(
+                liabs_shares,
+                &BalanceSide::Liabilities,
+                RequirementType::Maintenance,
+            )
+            .ok()?;
+
+        let (asset_bank_pk, liab_bank_pk) = self
+            .find_liquidation_bank_candidates(deposit_values, liab_values)
+            .inspect_err(|e| {
+                error!("Error finding liquidation bank candidates: {:?}", e);
+                ERROR_COUNT.inc();
+            })
+            .ok()
+            .flatten()?;
+
+        let (max_liquidatable_amount, profit) = self
+            .compute_max_liquidatable_asset_amount_with_banks(
+                account,
+                &asset_bank_pk,
+                &liab_bank_pk,
+            )
+            .map_err(|e| {
+                error!("Error computing max liquidatable asset amount: {:?}", e);
+                ERROR_COUNT.inc();
+            })
+            .ok()?;
+
+        if max_liquidatable_amount.is_zero() || profit < self.config.min_profit {
+            return None;
+        }
+
+        let max_liab_coverage_amount = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
+
+        let liab_bank = self.banks.get(&liab_bank_pk).unwrap();
+        let asset_bank = self.banks.get(&asset_bank_pk).unwrap();
+
+        let liquidation_asset_amount_capacity = asset_bank
+            .calc_amount(
+                max_liab_coverage_amount,
+                BalanceSide::Assets,
+                RequirementType::Initial,
+            )
+            .ok()?;
+        info!(
+            "Liquidation asset amount capacity: {:?}",
+            liquidation_asset_amount_capacity
+        );
+
+        let asset_amount_to_liquidate =
+            min(max_liquidatable_amount, liquidation_asset_amount_capacity);
+
+        let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.95);
+
+        Some(PreparedLiquidatableAccount {
+            liquidatee_account: account.clone(),
+            asset_bank: asset_bank.clone(),
+            liab_bank: liab_bank.clone(),
+            asset_amount: slippage_adjusted_asset_amount.to_num(),
+            banks: self.banks.clone(),
+            profit: profit.to_num(),
+        })
     }
 
     fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> anyhow::Result<I80F48> {
@@ -444,37 +438,32 @@ impl Liquidator {
     }
 
     fn get_free_collateral(&self) -> anyhow::Result<I80F48> {
-        let (assets, liabs) = self.calc_health(
+        let collateral = self.calc_health(
             &self.liquidator_account.account_wrapper,
             RequirementType::Initial,
         );
-        if assets > liabs {
-            Ok(assets - liabs)
+        if collateral > I80F48::ZERO {
+            Ok(collateral)
         } else {
             Ok(I80F48::ZERO)
         }
     }
 
-    /// Finds banks that are candidates for liquidations
     fn find_liquidation_bank_candidates(
         &self,
-        account: &MarginfiAccountWrapper,
+        deposit_values: Vec<(I80F48, Pubkey)>,
+        liab_values: Vec<(I80F48, Pubkey)>,
     ) -> anyhow::Result<Option<(Pubkey, Pubkey)>> {
-        let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
-
-        let deposit_values = self.get_value_of_shares(
-            deposit_shares,
-            &BalanceSide::Assets,
-            RequirementType::Maintenance,
-        )?;
-
-        let liab_values = self.get_value_of_shares(
-            liabs_shares,
-            &BalanceSide::Liabilities,
-            RequirementType::Maintenance,
-        )?;
-
         if deposit_values.is_empty() || liab_values.is_empty() {
+            return Ok(None);
+        }
+
+        if deposit_values
+            .iter()
+            .map(|(v, _)| v.to_num::<f64>())
+            .sum::<f64>()
+            < BANKRUPT_THRESHOLD
+        {
             return Ok(None);
         }
 
@@ -491,17 +480,13 @@ impl Liquidator {
         Ok(Some((*asset_bank, *liab_bank)))
     }
 
-    /// Computes the max liquidatable asset amount
-    fn compute_max_liquidatble_asset_amount_with_banks(
+    fn compute_max_liquidatable_asset_amount_with_banks(
         &self,
         account: &MarginfiAccountWrapper,
         asset_bank_pk: &Pubkey,
         liab_bank_pk: &Pubkey,
     ) -> anyhow::Result<(I80F48, I80F48)> {
-        let (assets, liabs) = self.calc_health(account, RequirementType::Maintenance);
-
-        let maintenance_health = assets - liabs;
-
+        let maintenance_health = self.calc_health(account, RequirementType::Maintenance);
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
@@ -526,6 +511,10 @@ impl Liquidator {
         if all == I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
+        info!(
+            "Account {:?} is unhealthy: {:?}",
+            account.address, maintenance_health
+        );
 
         let underwater_maint_value =
             maintenance_health / (asset_weight_maint - liab_weight_maint * liquidation_discount);
@@ -548,6 +537,10 @@ impl Liquidator {
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
+        info!(
+            "Account {:?}, liquidator_profit: {:?}, asset_value: {:?}, liab_value: {:?}, underwater_maint_value: {:?}",
+            account.address, liquidator_profit, asset_value, liab_value, underwater_maint_value
+        );
         if liquidator_profit <= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
@@ -561,10 +554,8 @@ impl Liquidator {
         if liquidator_profit > self.config.min_profit {
             info!("Account {:?}", account.address);
             info!("Asset Bank {:?}", asset_bank.bank);
-            info!("Assets {:?}", assets);
             info!("Asset Value (USD) {:?}", asset_value);
             info!("Liab Bank {:?}", liab_bank.bank);
-            info!("Liabs {:?}", liabs);
             info!("Liab Value (USD) {:?}", liab_value);
             info!("Max Liquidatable Value {:?}", max_liquidatable_value);
             info!(
@@ -577,16 +568,15 @@ impl Liquidator {
         Ok((max_liquidatable_asset_amount, liquidator_profit))
     }
 
-    /// Calculates the health of a given account
     fn calc_health(
         &self,
         account: &MarginfiAccountWrapper,
         requirement_type: RequirementType,
-    ) -> (I80F48, I80F48) {
+    ) -> I80F48 {
         let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.banks.clone())
             .unwrap();
 
-        baws.iter().fold(
+        let (total_weighted_assets, total_weighted_liabilities) = baws.iter().fold(
             (I80F48::ZERO, I80F48::ZERO),
             |(total_assets, total_liabs), baw| {
                 let (assets, liabs) = baw
@@ -594,7 +584,15 @@ impl Liquidator {
                     .unwrap();
                 (total_assets + assets, total_liabs + liabs)
             },
-        )
+        );
+
+        info!("total_weighted_assets {:?}", total_weighted_assets);
+        info!(
+            "total_weighted_liabilities {:?}",
+            total_weighted_liabilities
+        );
+
+        total_weighted_assets - total_weighted_liabilities
     }
 
     /// Gets the balance for a given [`MarginfiAccount`] and [`Bank`]
@@ -911,12 +909,12 @@ impl Liquidator {
     ) -> anyhow::Result<Vec<(I80F48, Pubkey)>> {
         let mut values: Vec<(I80F48, Pubkey)> = Vec::new();
 
-        for share in shares {
-            let bank = match self.banks.get(&share.1) {
+        for (shares_amount, bank_pk) in shares {
+            let bank = match self.banks.get(&bank_pk) {
                 Some(bank) => bank,
                 None => {
                     ERROR_COUNT.inc();
-                    return Err(anyhow::anyhow!("Bank with pubkey {} not found", share.1));
+                    return Err(anyhow::anyhow!("Bank with pubkey {} not found", bank_pk));
                 }
             };
 
@@ -934,15 +932,24 @@ impl Liquidator {
             }
 
             let value = match balance_side {
-                BalanceSide::Liabilities => bank
-                    .calc_value(share.0, BalanceSide::Liabilities, requirement_type)
-                    .unwrap(),
-                BalanceSide::Assets => bank
-                    .calc_value(share.0, BalanceSide::Assets, requirement_type)
-                    .unwrap(),
+                BalanceSide::Liabilities => {
+                    let liabilities =
+                        bank.bank.get_liability_amount(shares_amount).map_err(|e| {
+                            anyhow::anyhow!("Couldn't calculate liability amount for: {}", e)
+                        })?;
+                    bank.calc_value(liabilities, BalanceSide::Liabilities, requirement_type)
+                        .unwrap()
+                }
+                BalanceSide::Assets => {
+                    let assets = bank.bank.get_asset_amount(shares_amount).map_err(|e| {
+                        anyhow::anyhow!("Couldn't calculate asset amount for: {}", e)
+                    })?;
+                    bank.calc_value(assets, BalanceSide::Assets, requirement_type)
+                        .unwrap()
+                }
             };
 
-            values.push((value, share.1));
+            values.push((value, bank_pk));
         }
 
         Ok(values)
