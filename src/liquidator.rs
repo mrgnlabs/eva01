@@ -358,7 +358,7 @@ impl Liquidator {
             })
             .ok()?;
 
-        if max_liquidatable_amount.is_zero() || profit < self.config.min_profit {
+        if max_liquidatable_amount.is_zero() {
             return None;
         }
 
@@ -501,23 +501,10 @@ impl Liquidator {
             .get(liab_bank_pk)
             .ok_or_else(|| anyhow::anyhow!("Liab bank {} not found", liab_bank_pk))?;
 
-        let asset_weight_maint: I80F48 = asset_bank.bank.config.asset_weight_maint.into();
-        let liab_weight_maint: I80F48 = liab_bank.bank.config.asset_weight_maint.into();
-
-        let liquidation_discount = fixed_macro::types::I80F48!(0.95);
-
-        let all = asset_weight_maint - liab_weight_maint * liquidation_discount;
-
-        if all == I80F48::ZERO {
-            return Ok((I80F48::ZERO, I80F48::ZERO));
-        }
-        info!(
-            "Account {:?} is unhealthy: {:?}",
-            account.address, maintenance_health
-        );
-
-        let underwater_maint_value =
-            maintenance_health / (asset_weight_maint - liab_weight_maint * liquidation_discount);
+        // info!(
+        //     "Account {:?} is unhealthy: {:?}",
+        //     account.address, maintenance_health
+        // );
 
         let (asset_amount, _) = self.get_balance_for_bank(account, asset_bank_pk)?;
         let (_, liab_amount) = self.get_balance_for_bank(account, liab_bank_pk)?;
@@ -534,16 +521,16 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
+        let max_liquidatable_value = min(asset_value, liab_value);
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
-        info!(
-            "Account {:?}, liquidator_profit: {:?}, asset_value: {:?}, liab_value: {:?}, underwater_maint_value: {:?}",
-            account.address, liquidator_profit, asset_value, liab_value, underwater_maint_value
-        );
-        if liquidator_profit <= I80F48::ZERO {
+        if liquidator_profit <= self.config.min_profit {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
+        info!(
+            "Account {:?}, liquidator_profit: {:?}, asset_value: {:?}, liab_value: {:?}",
+            account.address, liquidator_profit, asset_value, liab_value
+        );
 
         let max_liquidatable_asset_amount = asset_bank.calc_amount(
             max_liquidatable_value,
@@ -584,12 +571,6 @@ impl Liquidator {
                     .unwrap();
                 (total_assets + assets, total_liabs + liabs)
             },
-        );
-
-        info!("total_weighted_assets {:?}", total_weighted_assets);
-        info!(
-            "total_weighted_liabilities {:?}",
-            total_weighted_liabilities
         );
 
         total_weighted_assets - total_weighted_liabilities
