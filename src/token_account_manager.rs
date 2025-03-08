@@ -121,7 +121,13 @@ impl TokenAccountManager {
         {
             let addresses = tas
                 .iter()
-                .flat_map(|(mint, address)| vec![*mint, *address])
+                .flat_map(|(mint, address)| {
+                    info!(
+                        "Checking token account for mint: {:?}, address: {:?}",
+                        mint, address
+                    );
+                    vec![*mint, *address]
+                })
                 .collect::<Vec<_>>();
 
             let res = batch_get_multiple_accounts(
