@@ -137,7 +137,7 @@ pub fn make_liquidate_ix(
     observation_accounts: Vec<Pubkey>,
     asset_amount: u64,
 ) -> Instruction {
-    let mut accounts = marginfi::accounts::LendingAccountLiquidate {
+    let accounts_raw = marginfi::accounts::LendingAccountLiquidate {
         group: marginfi_group,
         liquidator_marginfi_account: marginfi_account,
         signer,
@@ -151,21 +151,37 @@ pub fn make_liquidate_ix(
         token_program,
         asset_bank: asset_bank.address,
         liab_bank: liab_bank.address,
-    }
-    .to_account_metas(Some(true));
+    };
+    let mut accounts = accounts_raw.to_account_metas(Some(true));
+    println!("Length initially: {:?}", accounts.len());
 
+    println!(
+        "LendingAccountLiquidate {{ group: {:?}, liquidator_marginfi_account: {:?}, signer: {:?}, liquidatee_marginfi_account: {:?}, bank_liquidity_vault_authority: {:?}, bank_liquidity_vault: {:?}, bank_insurance_vault: {:?}, token_program: {:?}, asset_bank: {:?}, liab_bank: {:?} }}",
+        accounts_raw.group,
+        accounts_raw.liquidator_marginfi_account,
+        accounts_raw.signer,
+        accounts_raw.liquidatee_marginfi_account,
+        accounts_raw.bank_liquidity_vault_authority,
+        accounts_raw.bank_liquidity_vault,
+        accounts_raw.bank_insurance_vault,
+        accounts_raw.token_program,
+        accounts_raw.asset_bank,
+        accounts_raw.liab_bank
+    );
     maybe_add_bank_mint(&mut accounts, liab_bank.bank.mint, &token_program);
 
     accounts.extend([
         AccountMeta::new_readonly(asset_bank.oracle_adapter.address, false),
         AccountMeta::new_readonly(liab_bank.oracle_adapter.address, false),
     ]);
+    println!("Length after oracles: {:?}", accounts.len());
 
     accounts.extend(
         observation_accounts
             .iter()
             .map(|a| AccountMeta::new_readonly(a.key(), false)),
     );
+    println!("Length after observation: {:?}", accounts.len());
 
     Instruction {
         program_id: marginfi_program_id,

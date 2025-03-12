@@ -124,15 +124,29 @@ impl MarginfiAccountWrapper {
 
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
         &self,
-        banks_to_exclude: &[Pubkey],
+        include_banks: &[Pubkey],
+        exclude_banks: &[Pubkey],
         banks: &HashMap<Pubkey, BankWrapperT<T>>,
     ) -> Vec<Pubkey> {
-        self.lending_account
+        let mut bank_pks = self
+            .lending_account
             .balances
             .iter()
-            .filter(|b| b.active && !banks_to_exclude.contains(&b.bank_pk))
-            .flat_map(|b| {
-                let bank = banks.get(&b.bank_pk).unwrap();
+            .filter_map(|balance| balance.active.then_some(balance.bank_pk))
+            .collect::<Vec<_>>();
+
+        for bank_pk in include_banks {
+            if !bank_pks.contains(bank_pk) {
+                bank_pks.push(*bank_pk);
+            }
+        }
+
+        bank_pks.retain(|bank_pk| !exclude_banks.contains(bank_pk));
+
+        bank_pks
+            .iter()
+            .flat_map(|bank_pk| {
+                let bank = banks.get(bank_pk).unwrap();
 
                 if bank.bank.config.oracle_keys[1] != Pubkey::default()
                     && bank.bank.config.oracle_keys[2] != Pubkey::default()
@@ -296,7 +310,7 @@ mod tests {
         );
         let banks_to_exclude = vec![];
         assert_eq!(
-            healthy.get_observation_accounts(&banks_to_exclude, &banks),
+            healthy.get_observation_accounts(&[], &banks_to_exclude, &banks),
             vec![
                 sol_bank.address,
                 sol_bank.oracle_adapter.get_address(),
@@ -340,7 +354,7 @@ mod tests {
         );
         let banks_to_exclude = vec![sol_bank.address, usdc_bank.address];
         assert_eq!(
-            unhealthy.get_observation_accounts(&banks_to_exclude, &banks),
+            unhealthy.get_observation_accounts(&[], &banks_to_exclude, &banks),
             vec![]
         );
     }

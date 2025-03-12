@@ -107,11 +107,23 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
-        let liquidator_observation_accounts =
-            self.account_wrapper.get_observation_accounts(&[], banks);
+        let liquidator_observation_accounts = self.account_wrapper.get_observation_accounts(
+            &[asset_bank.address, liab_bank.address],
+            &[],
+            banks,
+        );
+        info!(
+            "liquidate: liquidator_observation_accounts length: {:?}",
+            liquidator_observation_accounts.len()
+        );
 
         let liquidatee_observation_accounts =
-            liquidatee_account.get_observation_accounts(&[], banks);
+            liquidatee_account.get_observation_accounts(&[], &[], banks);
+
+        info!(
+            "liquidate: liquidatee_observation_accounts length: {:?}",
+            liquidatee_observation_accounts.len()
+        );
 
         let joined_observation_accounts = liquidator_observation_accounts
             .iter()
@@ -172,12 +184,19 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
-        info!("liquidate_ix: {:?}", liquidate_ix);
+        info!(
+            "asset bank oracle setup: {:?}",
+            asset_bank.bank.config.oracle_setup
+        );
+        info!(
+            "liab bank oracle setup: {:?}",
+            liab_bank.bank.config.oracle_setup
+        );
 
-        let mut bundle = vec![];
-        if let Some((crank_ix, crank_lut)) = crank_data {
-            bundle.push(RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut));
-        }
+        // first liquidator's bank
+        //liquidate_ix.accounts[12] = liquidate_ix.accounts[13].clone();
+
+        info!("liquidate_ix: {:?}", liquidate_ix);
 
         let recent_blockhash = self
             .non_blocking_rpc_client
@@ -185,32 +204,63 @@ impl LiquidatorAccount {
             .await
             .unwrap();
 
-        let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
-            &[liquidate_ix.clone()],
-            Some(&signer_pk),
-            &[&self.signer_keypair],
-            recent_blockhash,
-        );
+        let mut bundle = vec![];
+        if let Some((crank_ix, crank_lut)) = crank_data {
+            bundle.push(RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut));
 
-        let res = self
-            .non_blocking_rpc_client
-            .send_and_confirm_transaction_with_spinner_and_config(
-                &tx,
-                CommitmentConfig::confirmed(),
-                RpcSendTransactionConfig {
-                    skip_preflight: true,
-                    ..Default::default()
-                },
-            )
-            .await;
-        println!(
-            "Transaction sent without preflight check {:?} for address {:?}",
-            res, liquidatee_account.address
-        );
+            // let transaction = VersionedTransaction::try_new(
+            //     VersionedMessage::V0(v0::Message::try_compile(
+            //         &signer_pk,
+            //         &[crank_ix, liquidate_ix.clone()],
+            //         &crank_lut,
+            //         recent_blockhash,
+            //     )?),
+            //     &[&self.signer_keypair],
+            // )?;
 
-        bundle.push(RawTransaction::new(vec![liquidate_ix]));
+            // let res = self
+            //     .non_blocking_rpc_client
+            //     .send_and_confirm_transaction_with_spinner_and_config(
+            //         &transaction,
+            //         CommitmentConfig::confirmed(),
+            //         RpcSendTransactionConfig {
+            //             skip_preflight: true,
+            //             ..Default::default()
+            //         },
+            //     )
+            //     .await;
+            // println!(
+            //     "Double Transaction sent without preflight check {:?} for address {:?}",
+            //     res, liquidatee_account.address
+            // );
+            bundle.push(RawTransaction::new(vec![liquidate_ix]));
 
-        self.transaction_tx.send(bundle)?;
+            self.transaction_tx.send(bundle)?;
+        } else {
+            let tx: solana_sdk::transaction::Transaction =
+                solana_sdk::transaction::Transaction::new_signed_with_payer(
+                    &[liquidate_ix.clone()],
+                    Some(&signer_pk),
+                    &[&self.signer_keypair],
+                    recent_blockhash,
+                );
+
+            let res = self
+                .non_blocking_rpc_client
+                .send_and_confirm_transaction_with_spinner_and_config(
+                    &tx,
+                    CommitmentConfig::confirmed(),
+                    RpcSendTransactionConfig {
+                        skip_preflight: true,
+                        ..Default::default()
+                    },
+                )
+                .await;
+            println!(
+                "Single Transaction sent without preflight check {:?} for address {:?}",
+                res, liquidatee_account.address
+            );
+        }
 
         Ok(())
     }
@@ -233,9 +283,9 @@ impl LiquidatorAccount {
             vec![]
         };
 
-        let observation_accounts = self
-            .account_wrapper
-            .get_observation_accounts(&banks_to_exclude, banks);
+        let observation_accounts =
+            self.account_wrapper
+                .get_observation_accounts(&[], &banks_to_exclude, banks);
 
         let mint = bank.bank.mint;
         let token_program = *self.token_program_per_mint.get(&mint).unwrap();

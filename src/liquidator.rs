@@ -5,9 +5,10 @@ use crate::{
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
     transaction_manager::BatchTransactions,
     utils::{
-        batch_get_multiple_accounts, find_oracle_keys, BankAccountWithPriceFeedEva,
-        BatchLoadingConfig,
+        batch_get_multiple_accounts, fetch_clock_sysvar, find_oracle_keys,
+        BankAccountWithPriceFeedEva, BatchLoadingConfig,
     },
+    ward,
     wrappers::{
         bank::BankWrapper,
         liquidator_account::LiquidatorAccount,
@@ -21,7 +22,7 @@ use core::panic;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, error, info};
+use log::{error, info};
 use marginfi::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
     state::{
@@ -41,9 +42,7 @@ use solana_client::{
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{
-    account::Account, account_info::IntoAccountInfo, bs58, clock::Clock, signature::Keypair,
-};
+use solana_sdk::{account::Account, account_info::IntoAccountInfo, bs58, signature::Keypair};
 use std::{
     cmp::min,
     collections::HashMap,
@@ -138,8 +137,9 @@ impl Liquidator {
 
     /// Liquidator starts receiving messages and processing them
     pub async fn start(&mut self) -> anyhow::Result<()> {
+        let rpc_client = RpcClient::new(self.general_config.rpc_url.clone());
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            debug!("Received message {:?}", msg);
+            let clock = fetch_clock_sysvar(&rpc_client)?;
             match msg.account_type {
                 AccountType::Oracle => {
                     if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
@@ -189,27 +189,35 @@ impl Liquidator {
                                         .map(|(key, account)| (key, account).into_account_info()),
                                 );
 
-                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
+                                OraclePriceFeedAdapter::try_from_bank_config(
                                     &bank_to_update.bank.config,
                                     &accounts_info,
-                                    &Clock::default(),
-                                    i64::MAX as u64,
+                                    &clock,
                                 )
                                 .unwrap()
                             }
                             _ => {
+                                // info!(
+                                //     "Getting update for oracle: {:?} for bank: {:?}",
+                                //     msg.address, bank_to_update_pk
+                                // );
                                 let oracle_account_info =
                                     (&msg.address, &mut msg.account).into_account_info();
-                                OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                                    &bank_to_update.bank.config,
-                                    &[oracle_account_info],
-                                    &Clock::default(),
-                                    i64::MAX as u64,
+                                ward!(
+                                    OraclePriceFeedAdapter::try_from_bank_config(
+                                        &bank_to_update.bank.config,
+                                        &[oracle_account_info],
+                                        &clock,
+                                    )
+                                    .map_err(|_| {
+                                        //error!("Error creating oracle price feed adapter: {:?}", e);
+                                        ERROR_COUNT.inc();
+                                    })
+                                    .ok(),
+                                    continue
                                 )
-                                .unwrap()
                             }
                         };
-
                         bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                     }
                 }
@@ -251,10 +259,12 @@ impl Liquidator {
                     //     account.asset_amount
                     // );
 
-                    let maintenance_health = self.calc_health(
-                        &self.liquidator_account.account_wrapper,
-                        RequirementType::Maintenance,
-                    );
+                    let maintenance_health = self
+                        .calc_health(
+                            &self.liquidator_account.account_wrapper,
+                            RequirementType::Maintenance,
+                        )
+                        .unwrap();
                     info!("Liquidator account health: {:?}", maintenance_health);
 
                     let start = Instant::now();
@@ -352,8 +362,8 @@ impl Liquidator {
                 &asset_bank_pk,
                 &liab_bank_pk,
             )
-            .map_err(|e| {
-                error!("Error computing max liquidatable asset amount: {:?}", e);
+            .map_err(|_| {
+                //error!("Error computing max liquidatable asset amount: {:?}", e);
                 ERROR_COUNT.inc();
             })
             .ok()?;
@@ -395,16 +405,24 @@ impl Liquidator {
     }
 
     fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> anyhow::Result<I80F48> {
-        let free_collateral = self.get_free_collateral()?;
+        let free_collateral = self.get_free_collateral();
 
         let bank = self.banks.get(bank_pk).unwrap();
 
         let (asset_amount, _) =
             self.get_balance_for_bank(&self.liquidator_account.account_wrapper, bank_pk)?;
+        info!(
+            "LIQUIDATOR Asset amount: {:?}, free collateral: {:?}",
+            asset_amount, free_collateral
+        );
 
         let untied_collateral_for_bank = min(
             free_collateral,
             bank.calc_value(asset_amount, BalanceSide::Assets, RequirementType::Initial)?,
+        );
+        info!(
+            "LIQUIDATOR Untied collateral for bank: {:?}",
+            untied_collateral_for_bank
         );
 
         let asset_weight: I80F48 = bank.bank.config.asset_weight_init.into();
@@ -420,7 +438,7 @@ impl Liquidator {
 
         let token_decimals = bank.bank.mint_decimals as usize;
 
-        let max_borrow_ammount = if asset_weight == I80F48::ZERO {
+        let max_borrow_amount = if asset_weight == I80F48::ZERO {
             let max_additional_borrow_ui =
                 (free_collateral - untied_collateral_for_bank) / (higher_price * liab_weight);
 
@@ -433,19 +451,25 @@ impl Liquidator {
 
             ui_amount * EXP_10_I80F48[token_decimals]
         };
+        info!("LIQUIDATOR asset_weight: {:?}", asset_weight);
+        info!("LIQUIDATOR Max borrow amount: {:?}", max_borrow_amount);
 
-        Ok(max_borrow_ammount)
+        Ok(max_borrow_amount)
     }
 
-    fn get_free_collateral(&self) -> anyhow::Result<I80F48> {
-        let collateral = self.calc_health(
-            &self.liquidator_account.account_wrapper,
-            RequirementType::Initial,
-        );
+    fn get_free_collateral(&self) -> I80F48 {
+        info!("Calculating free collateral for liquidator account");
+        let collateral = self
+            .calc_health(
+                &self.liquidator_account.account_wrapper,
+                RequirementType::Initial,
+            )
+            .unwrap();
+
         if collateral > I80F48::ZERO {
-            Ok(collateral)
+            collateral
         } else {
-            Ok(I80F48::ZERO)
+            I80F48::ZERO
         }
     }
 
@@ -486,7 +510,7 @@ impl Liquidator {
         asset_bank_pk: &Pubkey,
         liab_bank_pk: &Pubkey,
     ) -> anyhow::Result<(I80F48, I80F48)> {
-        let maintenance_health = self.calc_health(account, RequirementType::Maintenance);
+        let maintenance_health = self.calc_health(account, RequirementType::Maintenance)?;
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
@@ -559,9 +583,8 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
         requirement_type: RequirementType,
-    ) -> I80F48 {
-        let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.banks.clone())
-            .unwrap();
+    ) -> anyhow::Result<I80F48> {
+        let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.banks.clone())?;
 
         let (total_weighted_assets, total_weighted_liabilities) = baws.iter().fold(
             (I80F48::ZERO, I80F48::ZERO),
@@ -573,7 +596,7 @@ impl Liquidator {
             },
         );
 
-        total_weighted_assets - total_weighted_liabilities
+        Ok(total_weighted_assets - total_weighted_liabilities)
     }
 
     /// Gets the balance for a given [`MarginfiAccount`] and [`Bank`]
@@ -591,7 +614,7 @@ impl Liquidator {
             .lending_account
             .balances
             .iter()
-            .find(|b| b.bank_pk == *bank_pk)
+            .find(|b| b.bank_pk == *bank_pk && b.active)
             .map(|b| match b.get_side()? {
                 BalanceSide::Assets => {
                     let amount = bank.bank.get_asset_amount(b.asset_shares.into()).ok()?;
@@ -726,14 +749,19 @@ impl Liquidator {
             .flat_map(|(_, bank)| find_oracle_keys(&bank.config))
             .collect::<Vec<_>>();
 
-        let mut oracle_accounts =
-            batch_get_multiple_accounts(rpc_client, &oracle_keys, BatchLoadingConfig::DEFAULT)?;
+        let mut oracle_accounts = batch_get_multiple_accounts(
+            rpc_client.clone(),
+            &oracle_keys,
+            BatchLoadingConfig::DEFAULT,
+        )?;
 
         let oracle_map: HashMap<Pubkey, Option<Account>> = oracle_keys
             .iter()
             .zip(oracle_accounts.iter_mut())
             .map(|(pk, account)| (*pk, account.take()))
             .collect();
+
+        let clock = fetch_clock_sysvar(&rpc_client)?;
 
         for (bank_address, bank) in banks.iter() {
             if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
@@ -792,13 +820,15 @@ impl Liquidator {
                 OracleSetup::PythPushOracle => {
                     let oracle_account_info =
                         (&oracle_address, &mut oracle_account).into_account_info();
-                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                        &bank.config,
-                        &[oracle_account_info],
-                        &Clock::default(),
-                        i64::MAX as u64,
+                    ward!(
+                        OraclePriceFeedAdapter::try_from_bank_config(
+                            &bank.config,
+                            &[oracle_account_info],
+                            &clock,
+                        )
+                        .ok(),
+                        continue
                     )
-                    .unwrap()
                 }
                 OracleSetup::StakedWithPythPush => {
                     let keys = find_oracle_keys(&bank.config);
@@ -839,16 +869,17 @@ impl Liquidator {
                         keys.iter().position(|key| key == address)
                     });
 
-                    OraclePriceFeedAdapter::try_from_bank_config_with_max_age(
-                        &bank.config,
-                        &oracle_account_infos,
-                        &Clock::default(),
-                        i64::MAX as u64,
+                    ward!(
+                        OraclePriceFeedAdapter::try_from_bank_config(
+                            &bank.config,
+                            &oracle_account_infos,
+                            &clock,
+                        )
+                        .ok(),
+                        continue
                     )
-                    .unwrap()
                 }
                 _ => {
-                    println!("Unknown oracle setup {:?}", bank.config.oracle_setup);
                     panic!("Unknown oracle setup {:?}", bank.config.oracle_setup);
                 }
             };

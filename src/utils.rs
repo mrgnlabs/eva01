@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
+use bincode::deserialize;
 use fixed::types::I80F48;
 use marginfi::{
     bank_authority_seed,
@@ -14,11 +15,12 @@ use marginfi::{
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serializer};
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::rpc_config::RpcAccountInfoConfig;
-use solana_program::pubkey::Pubkey;
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig};
+use solana_program::{pubkey::Pubkey, sysvar::clock::Clock};
 use solana_sdk::{
     account::Account,
     signature::{read_keypair_file, Keypair},
+    sysvar,
 };
 use std::{
     collections::HashMap,
@@ -273,7 +275,7 @@ where
 }
 
 pub struct BankAccountWithPriceFeedEva<'a> {
-    bank: BankWrapper,
+    pub bank: BankWrapper,
     balance: &'a Balance,
 }
 
@@ -577,6 +579,12 @@ pub fn ask_keypair_until_valid() -> anyhow::Result<(PathBuf, Keypair)> {
             }
         }
     }
+}
+
+pub fn fetch_clock_sysvar(rpc_client: &RpcClient) -> anyhow::Result<Clock> {
+    let clock_account = rpc_client.get_account(&sysvar::clock::id())?;
+    let clock: Clock = deserialize(&clock_account.data)?;
+    Ok(clock)
 }
 
 #[macro_export]

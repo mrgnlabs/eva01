@@ -2960,8 +2960,8 @@ dependencies = [
 
 [[package]]
 name = "marginfi"
-version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2#933e11ee9b49fbb2d98ec12c6f48189c43168dd6"
+version = "0.1.1"
+source = "git+https://github.com/mrgnlabs/marginfi-v2#3a4273d3a07694f99cc998eeaaad0618d95c09d9"
 dependencies = [
  "anchor-lang 0.29.0",
  "anchor-lang 0.30.1",
