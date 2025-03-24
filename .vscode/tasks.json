@@ -4,7 +4,7 @@
         {
             "label": "Run (with all checks)",
             "type": "shell",
-            "command": "cargo fmt && cargo clippy -- -D warnings && cargo build && cargo run -- run config.toml",
+            "command": "cargo fmt && cargo clippy -- -D warnings && cargo build && RUST_LOG=eva01=debug cargo run -- run config.toml",
             "problemMatcher": [],
             "group": {
                 "kind": "build",

@@ -63,8 +63,11 @@ impl GeyserService {
         info!("Connected to geyser");
 
         while let Some(msg) = stream.next().await {
-            let msg =
-                msg.map_err(|e| anyhow::anyhow!("Error receiving message from geyser {:?}", e))?;
+            let msg = ward!(
+                msg.map_err(|e| error!("Error receiving message from geyser {:?}", e))
+                    .ok(),
+                continue
+            );
 
             let update_oneof = ward!(msg.update_oneof, continue);
 

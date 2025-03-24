@@ -121,13 +121,7 @@ impl TokenAccountManager {
         {
             let addresses = tas
                 .iter()
-                .flat_map(|(mint, address)| {
-                    info!(
-                        "Checking token account for mint: {:?}, address: {:?}",
-                        mint, address
-                    );
-                    vec![*mint, *address]
-                })
+                .flat_map(|(mint, address)| vec![*mint, *address])
                 .collect::<Vec<_>>();
 
             let res = batch_get_multiple_accounts(
@@ -152,11 +146,11 @@ impl TokenAccountManager {
                     let maybe_token_account = address_to_account_map.get(address).unwrap();
 
                     let program_id = mint_account.owner;
-                    debug!("Token account {} for mint {} program {}, exists {}", address, mint, program_id, maybe_token_account.is_some());
                     if maybe_token_account.is_none() {
-                        info!("Creating token account for mint: {:?}, program_id: {}", mint, program_id);
+                        info!("Creating token account {} for mint {}", address, mint);
                         Some((address, mint, program_id))
                     } else {
+                        debug!("Token account {} for mint {} exists", address, mint);
                         None
                     }
 

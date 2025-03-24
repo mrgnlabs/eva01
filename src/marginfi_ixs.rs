@@ -1,7 +1,7 @@
 use anchor_lang::{InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
-use log::trace;
+use log::{debug, info, trace};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -139,6 +139,8 @@ pub fn make_liquidate_ix(
 ) -> Instruction {
     let accounts_raw = marginfi::accounts::LendingAccountLiquidate {
         group: marginfi_group,
+        asset_bank: asset_bank.address,
+        liab_bank: liab_bank.address,
         liquidator_marginfi_account: marginfi_account,
         signer,
         liquidatee_marginfi_account,
@@ -149,13 +151,10 @@ pub fn make_liquidate_ix(
         bank_liquidity_vault: liab_bank.bank.liquidity_vault,
         bank_insurance_vault: liab_bank.bank.insurance_vault,
         token_program,
-        asset_bank: asset_bank.address,
-        liab_bank: liab_bank.address,
     };
     let mut accounts = accounts_raw.to_account_metas(Some(true));
-    println!("Length initially: {:?}", accounts.len());
 
-    println!(
+    info!(
         "LendingAccountLiquidate {{ group: {:?}, liquidator_marginfi_account: {:?}, signer: {:?}, liquidatee_marginfi_account: {:?}, bank_liquidity_vault_authority: {:?}, bank_liquidity_vault: {:?}, bank_insurance_vault: {:?}, token_program: {:?}, asset_bank: {:?}, liab_bank: {:?} }}",
         accounts_raw.group,
         accounts_raw.liquidator_marginfi_account,
@@ -174,14 +173,12 @@ pub fn make_liquidate_ix(
         AccountMeta::new_readonly(asset_bank.oracle_adapter.address, false),
         AccountMeta::new_readonly(liab_bank.oracle_adapter.address, false),
     ]);
-    println!("Length after oracles: {:?}", accounts.len());
 
     accounts.extend(
         observation_accounts
             .iter()
             .map(|a| AccountMeta::new_readonly(a.key(), false)),
     );
-    println!("Length after observation: {:?}", accounts.len());
 
     Instruction {
         program_id: marginfi_program_id,
@@ -192,6 +189,7 @@ pub fn make_liquidate_ix(
 
 fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_program: &Pubkey) {
     if token_program == &token_2022::ID {
+        debug!("!!!Adding mint account to accounts!!!");
         accounts.push(AccountMeta::new_readonly(mint, false));
     }
 }

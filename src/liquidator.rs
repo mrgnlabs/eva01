@@ -3,10 +3,10 @@ use crate::{
     crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
-    transaction_manager::BatchTransactions,
+    transaction_manager::TransactionData,
     utils::{
-        batch_get_multiple_accounts, fetch_clock_sysvar, find_oracle_keys,
-        BankAccountWithPriceFeedEva, BatchLoadingConfig,
+        batch_get_multiple_accounts, clock::CachedClock, find_oracle_keys,
+        load_swb_pull_account_from_bytes, BankAccountWithPriceFeedEva, BatchLoadingConfig,
     },
     ward,
     wrappers::{
@@ -22,7 +22,7 @@ use core::panic;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{error, info};
+use log::{debug, error, info};
 use marginfi::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
     state::{
@@ -47,7 +47,7 @@ use std::{
     cmp::min,
     collections::HashMap,
     sync::{atomic::AtomicBool, Arc},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use switchboard_on_demand::PullFeedAccountData;
 
@@ -82,13 +82,14 @@ impl Liquidator {
         general_config: GeneralConfig,
         liquidator_config: LiquidatorCfg,
         geyser_receiver: Receiver<GeyserUpdate>,
-        transaction_sender: Sender<BatchTransactions>,
+        transaction_sender: Sender<TransactionData>,
+        ack_rx: Receiver<Pubkey>,
         stop_liquidation: Arc<AtomicBool>,
     ) -> Liquidator {
         let liquidator_account = LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
-            general_config.liquidator_account,
             transaction_sender,
+            ack_rx,
             general_config.clone(),
         )
         .await
@@ -138,8 +139,8 @@ impl Liquidator {
     /// Liquidator starts receiving messages and processing them
     pub async fn start(&mut self) -> anyhow::Result<()> {
         let rpc_client = RpcClient::new(self.general_config.rpc_url.clone());
+        let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            let clock = fetch_clock_sysvar(&rpc_client)?;
             match msg.account_type {
                 AccountType::Oracle => {
                     if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
@@ -155,8 +156,7 @@ impl Liquidator {
                                         [8..std::mem::size_of::<PullFeedAccountData>() + 8],
                                 );
                                 let swb_feed =
-                                    crate::utils::load_swb_pull_account_from_bytes(&offsets_data)
-                                        .unwrap();
+                                    load_swb_pull_account_from_bytes(&offsets_data).unwrap();
 
                                 let feed_hash = hex::encode(swb_feed.feed_hash);
                                 bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
@@ -166,6 +166,8 @@ impl Liquidator {
                                 })
                             }
                             OracleSetup::StakedWithPythPush => {
+                                let clock =
+                                    ward!(cached_clock.get_clock(&rpc_client).await.ok(), continue);
                                 let keys = &bank_to_update.bank.config.oracle_keys[1..3];
 
                                 let mut accounts_info =
@@ -197,6 +199,8 @@ impl Liquidator {
                                 .unwrap()
                             }
                             _ => {
+                                let clock =
+                                    ward!(cached_clock.get_clock(&rpc_client).await.ok(), continue);
                                 // info!(
                                 //     "Getting update for oracle: {:?} for bank: {:?}",
                                 //     msg.address, bank_to_update_pk
@@ -209,10 +213,9 @@ impl Liquidator {
                                         &[oracle_account_info],
                                         &clock,
                                     )
-                                    .map_err(|_| {
-                                        //error!("Error creating oracle price feed adapter: {:?}", e);
-                                        ERROR_COUNT.inc();
-                                    })
+                                    // .map_err(|_| {
+                                    //     //debug!("Error creating oracle price feed adapter: {:?}", e);
+                                    // })
                                     .ok(),
                                     continue
                                 )
@@ -250,23 +253,11 @@ impl Liquidator {
                 accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                 accounts.reverse();
                 for account in accounts {
+                    info!(
+                        "Liquidating account {:?}",
+                        account.liquidatee_account.address
+                    );
                     LIQUIDATION_ATTEMPTS.inc();
-                    // info!(
-                    //     "Liquidating account {:?}, asset_bank: {:?}, liab_bank: {:?}, amount: {:?}",
-                    //     account.liquidatee_account.address,
-                    //     account.asset_bank.address,
-                    //     account.liab_bank.address,
-                    //     account.asset_amount
-                    // );
-
-                    let maintenance_health = self
-                        .calc_health(
-                            &self.liquidator_account.account_wrapper,
-                            RequirementType::Maintenance,
-                        )
-                        .unwrap();
-                    info!("Liquidator account health: {:?}", maintenance_health);
-
                     let start = Instant::now();
                     if let Err(e) = self
                         .liquidator_account
@@ -279,7 +270,7 @@ impl Liquidator {
                         )
                         .await
                     {
-                        info!(
+                        error!(
                             "Failed to liquidate account {:?}, error: {:?}",
                             account.liquidatee_account.address, e
                         );
@@ -329,6 +320,16 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
     ) -> Option<PreparedLiquidatableAccount> {
+        if self
+            .liquidator_account
+            .pending_liquidations
+            .read()
+            .unwrap()
+            .contains(&account.address)
+        {
+            return None;
+        }
+
         let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
 
         let deposit_values = self
@@ -372,27 +373,35 @@ impl Liquidator {
             return None;
         }
 
-        let max_liab_coverage_amount = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
+        let max_liab_coverage_value = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
 
         let liab_bank = self.banks.get(&liab_bank_pk).unwrap();
         let asset_bank = self.banks.get(&asset_bank_pk).unwrap();
 
         let liquidation_asset_amount_capacity = asset_bank
             .calc_amount(
-                max_liab_coverage_amount,
+                max_liab_coverage_value,
                 BalanceSide::Assets,
                 RequirementType::Initial,
             )
             .ok()?;
-        info!(
-            "Liquidation asset amount capacity: {:?}",
-            liquidation_asset_amount_capacity
-        );
 
         let asset_amount_to_liquidate =
             min(max_liquidatable_amount, liquidation_asset_amount_capacity);
 
-        let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.95);
+        let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.90);
+
+        debug!(
+                "Liquidation asset amount capacity: {:?}, asset_amount_to_liquidate: {:?}, slippage_adjusted_asset_amount: {:?}",
+                liquidation_asset_amount_capacity, asset_amount_to_liquidate, slippage_adjusted_asset_amount
+            );
+
+        debug!(
+            "Account {:?} health = {:?}",
+            account.address,
+            self.calc_health(account, RequirementType::Maintenance, true)
+                .unwrap()
+        );
 
         Some(PreparedLiquidatableAccount {
             liquidatee_account: account.clone(),
@@ -411,8 +420,8 @@ impl Liquidator {
 
         let (asset_amount, _) =
             self.get_balance_for_bank(&self.liquidator_account.account_wrapper, bank_pk)?;
-        info!(
-            "LIQUIDATOR Asset amount: {:?}, free collateral: {:?}",
+        debug!(
+            "Liquidator Asset amount: {:?}, free collateral: {:?}",
             asset_amount, free_collateral
         );
 
@@ -420,8 +429,8 @@ impl Liquidator {
             free_collateral,
             bank.calc_value(asset_amount, BalanceSide::Assets, RequirementType::Initial)?,
         );
-        info!(
-            "LIQUIDATOR Untied collateral for bank: {:?}",
+        debug!(
+            "Liquidator Untied collateral for bank: {:?}",
             untied_collateral_for_bank
         );
 
@@ -451,18 +460,26 @@ impl Liquidator {
 
             ui_amount * EXP_10_I80F48[token_decimals]
         };
-        info!("LIQUIDATOR asset_weight: {:?}", asset_weight);
-        info!("LIQUIDATOR Max borrow amount: {:?}", max_borrow_amount);
+        let max_borrow_value = bank.calc_value(
+            max_borrow_amount,
+            BalanceSide::Liabilities,
+            RequirementType::Initial,
+        )?;
 
-        Ok(max_borrow_amount)
+        debug!(
+            "Liquidator asset_weight: {:?}, max borrow amount: {:?}, max borrow value: {:?}",
+            asset_weight, max_borrow_amount, max_borrow_value
+        );
+
+        Ok(max_borrow_value)
     }
 
     fn get_free_collateral(&self) -> I80F48 {
-        info!("Calculating free collateral for liquidator account");
         let collateral = self
             .calc_health(
                 &self.liquidator_account.account_wrapper,
                 RequirementType::Initial,
+                false,
             )
             .unwrap();
 
@@ -493,12 +510,19 @@ impl Liquidator {
 
         let (_, asset_bank) = deposit_values
             .iter()
-            .max_by(|a, b| a.0.cmp(&b.0))
+            .max_by(|a, b| {
+                //debug!("Asset Bank {:?} value: {:?}", a.1, a.0);
+                a.0.cmp(&b.0)
+            })
             .ok_or_else(|| anyhow::anyhow!("No asset bank found"))?;
 
         let (_, liab_bank) = liab_values
             .iter()
-            .max_by(|a, b| a.0.cmp(&b.0))
+            .max_by(|a, b| {
+                //debug!("Liab Bank {:?} value: {:?}", a.1, a.0);
+
+                a.0.cmp(&b.0)
+            })
             .ok_or_else(|| anyhow::anyhow!("No liability bank found"))?;
 
         Ok(Some((*asset_bank, *liab_bank)))
@@ -510,7 +534,7 @@ impl Liquidator {
         asset_bank_pk: &Pubkey,
         liab_bank_pk: &Pubkey,
     ) -> anyhow::Result<(I80F48, I80F48)> {
-        let maintenance_health = self.calc_health(account, RequirementType::Maintenance)?;
+        let maintenance_health = self.calc_health(account, RequirementType::Maintenance, false)?;
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
@@ -525,10 +549,20 @@ impl Liquidator {
             .get(liab_bank_pk)
             .ok_or_else(|| anyhow::anyhow!("Liab bank {} not found", liab_bank_pk))?;
 
-        // info!(
-        //     "Account {:?} is unhealthy: {:?}",
-        //     account.address, maintenance_health
-        // );
+        let asset_weight_maint: I80F48 = asset_bank.bank.config.asset_weight_maint.into();
+        let liab_weight_maint: I80F48 = liab_bank.bank.config.liability_weight_maint.into();
+
+        let liquidation_discount = fixed_macro::types::I80F48!(0.95);
+
+        let all = asset_weight_maint - liab_weight_maint * liquidation_discount;
+
+        if all >= I80F48::ZERO {
+            error!("Account {:?} has no liquidatable amount: {:?}, asset_weight_maint: {:?}, liab_weight_maint: {:?}", account.address, all, asset_weight_maint, liab_weight_maint);
+            return Ok((I80F48::ZERO, I80F48::ZERO));
+        }
+
+        let underwater_maint_value =
+            maintenance_health / (asset_weight_maint - liab_weight_maint * liquidation_discount);
 
         let (asset_amount, _) = self.get_balance_for_bank(account, asset_bank_pk)?;
         let (_, liab_amount) = self.get_balance_for_bank(account, liab_bank_pk)?;
@@ -545,16 +579,12 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        let max_liquidatable_value = min(asset_value, liab_value);
+        let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
         if liquidator_profit <= self.config.min_profit {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
-        info!(
-            "Account {:?}, liquidator_profit: {:?}, asset_value: {:?}, liab_value: {:?}",
-            account.address, liquidator_profit, asset_value, liab_value
-        );
 
         let max_liquidatable_asset_amount = asset_bank.calc_amount(
             max_liquidatable_value,
@@ -563,17 +593,8 @@ impl Liquidator {
         )?;
 
         if liquidator_profit > self.config.min_profit {
-            info!("Account {:?}", account.address);
-            info!("Asset Bank {:?}", asset_bank.bank);
-            info!("Asset Value (USD) {:?}", asset_value);
-            info!("Liab Bank {:?}", liab_bank.bank);
-            info!("Liab Value (USD) {:?}", liab_value);
-            info!("Max Liquidatable Value {:?}", max_liquidatable_value);
-            info!(
-                "Max Liquidatable Asset Amount {:?}",
-                max_liquidatable_asset_amount
-            );
-            info!("Liquidator profit (USD) {:?}", liquidator_profit);
+            debug!("Account {:?}\nAsset Bank {:?}\nAsset maint weight: {:?}\nAsset Value (USD) {:?}\nLiab Bank {:?}\nLiab maint weight: {:?}\nLiab Value (USD) {:?}\nMax Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", account.address, asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_value, liab_bank.address, liab_bank.bank.config.liability_weight_maint, liab_value, max_liquidatable_value,
+                max_liquidatable_asset_amount, liquidator_profit);
         }
 
         Ok((max_liquidatable_asset_amount, liquidator_profit))
@@ -583,6 +604,7 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
         requirement_type: RequirementType,
+        print_logs: bool,
     ) -> anyhow::Result<I80F48> {
         let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.banks.clone())?;
 
@@ -590,8 +612,14 @@ impl Liquidator {
             (I80F48::ZERO, I80F48::ZERO),
             |(total_assets, total_liabs), baw| {
                 let (assets, liabs) = baw
-                    .calc_weighted_assets_and_liabilities_values(requirement_type)
+                    .calc_weighted_assets_and_liabilities_values(requirement_type, print_logs)
                     .unwrap();
+                if print_logs {
+                    debug!(
+                        "Account {:?}, Bank: {:?}\nAssets: {:?}\nLiabilities: {:?}",
+                        account.address, baw.bank.address, assets, liabs
+                    );
+                }
                 (total_assets + assets, total_liabs + liabs)
             },
         );
@@ -761,7 +789,8 @@ impl Liquidator {
             .map(|(pk, account)| (*pk, account.take()))
             .collect();
 
-        let clock = fetch_clock_sysvar(&rpc_client)?;
+        let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
+        let clock = cached_clock.get_clock(&rpc_client).await?;
 
         for (bank_address, bank) in banks.iter() {
             if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
@@ -801,8 +830,7 @@ impl Liquidator {
                     offsets_data.copy_from_slice(
                         &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
                     );
-                    let swb_feed =
-                        crate::utils::load_swb_pull_account_from_bytes(&offsets_data).unwrap();
+                    let swb_feed = load_swb_pull_account_from_bytes(&offsets_data).unwrap();
 
                     OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
                         feed: Box::new((&swb_feed).into()),

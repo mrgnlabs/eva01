@@ -1,5 +1,5 @@
 use crate::{config::GeneralConfig, metrics::ERROR_COUNT};
-use crossbeam::channel::Receiver;
+use crossbeam::channel::{Receiver, Sender};
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
     NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
@@ -28,7 +28,7 @@ use tonic::transport::Channel;
 
 /// The leadership threshold related to the jito block engine
 const LEADERSHIP_THRESHOLD: u64 = 2;
-const CONCURRENCY_LIMIT: usize = 1usize;
+const CONCURRENCY_LIMIT: usize = 2usize;
 
 /// The sleep duration for the transaction manager
 /// to wait before checking for the next leader
@@ -37,7 +37,8 @@ const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(100
 /// Manages transactions for the liquidator and rebalancer
 #[allow(dead_code)]
 pub struct TransactionManager {
-    rx: Receiver<BatchTransactions>,
+    rx: Receiver<TransactionData>,
+    ack_tx: Sender<Pubkey>,
     keypair: Keypair,
     rpc: Arc<RpcClient>,
     non_block_rpc: NonBlockRpc,
@@ -55,6 +56,11 @@ pub struct TransactionManager {
 // Each vector of instructions represents a single transaction
 // The outer vector represents a batch of transactions
 pub type BatchTransactions = Vec<RawTransaction>;
+
+pub struct TransactionData {
+    pub transactions: BatchTransactions,
+    pub ack_id: Pubkey,
+}
 
 pub struct RawTransaction {
     pub instructions: Vec<Instruction>,
@@ -78,7 +84,8 @@ impl RawTransaction {
 impl TransactionManager {
     /// Creates a new transaction manager
     pub async fn new(
-        rx: Receiver<BatchTransactions>,
+        rx: Receiver<TransactionData>,
+        ack_tx: Sender<Pubkey>,
         config: GeneralConfig,
     ) -> anyhow::Result<Self> {
         let keypair = read_keypair_file(&config.keypair_path)
@@ -114,6 +121,7 @@ impl TransactionManager {
 
         Ok(Self {
             rx,
+            ack_tx,
             keypair,
             rpc,
             non_block_rpc,
@@ -128,14 +136,18 @@ impl TransactionManager {
     pub async fn start(&mut self) {
         let semaphore = Arc::new(Semaphore::new(CONCURRENCY_LIMIT));
 
-        for instructions in self.rx.clone().iter() {
+        for TransactionData {
+            transactions,
+            ack_id,
+        } in self.rx.clone().iter()
+        {
             let semaphore = semaphore.clone();
             let available_permits = semaphore.available_permits();
             debug!("Available permits before acquire: {}", available_permits);
 
             let permit = semaphore.acquire_owned().await.unwrap();
 
-            let transactions = match self.configure_instructions(instructions).await {
+            let transactions = match self.configure_instructions(transactions).await {
                 Ok(txs) => txs,
                 Err(e) => {
                     ERROR_COUNT.inc();
@@ -184,12 +196,18 @@ impl TransactionManager {
                 self.searcher_client.clone(),
                 self.rpc.clone(),
             );
+
+            debug!("Ack ID: {:?}", ack_id);
+
+            let cloned_ack_tx = self.ack_tx.clone();
             tokio::spawn(async move {
                 if let Err(e) = result.await {
                     ERROR_COUNT.inc();
                     debug!("Failed to send transaction: {:?}", e);
                 }
+                debug!("Releasing permit");
                 drop(permit);
+                cloned_ack_tx.send(ack_id).unwrap();
             });
         }
     }
@@ -214,7 +232,7 @@ impl TransactionManager {
         )
         .await
         .map_err(|e| {
-            if let Some(BundleRejectionError::SimulationFailure(_, msg)) =
+            if let Some(BundleRejectionError::SimulationFailure(tx_str, msg)) =
                 e.downcast_ref::<BundleRejectionError>()
             {
                 if msg
@@ -223,7 +241,7 @@ impl TransactionManager {
                 {
                     error!("Illegal Liquidation");
                 } else {
-                    error!("SimulationFailure: {:?}", msg);
+                    error!("SimulationFailure: {:?} - {:?}", tx_str, msg);
                 }
             };
 

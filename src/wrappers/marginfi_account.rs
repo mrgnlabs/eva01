@@ -1,5 +1,6 @@
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
+use log::debug;
 use marginfi::state::marginfi_account::{BalanceSide, LendingAccount};
 use solana_program::pubkey::Pubkey;
 use std::collections::HashMap;
@@ -24,7 +25,7 @@ impl MarginfiAccountWrapper {
         self.lending_account
             .balances
             .iter()
-            .any(|a| a.active && matches!(a.get_side(), Some(BalanceSide::Liabilities)))
+            .any(|b| b.active && matches!(b.get_side(), Some(BalanceSide::Liabilities)))
     }
 
     pub fn get_liabilities_shares(&self) -> Vec<(I80F48, Pubkey)> {
@@ -40,41 +41,32 @@ impl MarginfiAccountWrapper {
         &self,
         mints_to_exclude: &[Pubkey],
         banks: &HashMap<Pubkey, BankWrapperT<T>>,
-    ) -> anyhow::Result<Vec<(I80F48, Pubkey)>> {
-        let mut deposits = vec![];
-
-        for deposit_balance in self
-            .lending_account
+    ) -> Vec<Pubkey> {
+        self.lending_account
             .balances
             .iter()
-            .filter(|b| matches!(b.get_side(), Some(BalanceSide::Assets)))
-        {
-            let bank = banks.get(&deposit_balance.bank_pk).unwrap();
-
-            if mints_to_exclude.contains(&bank.bank.mint) {
-                continue;
-            }
-
-            deposits.push((
-                bank.bank
-                    .get_asset_amount(deposit_balance.asset_shares.into())?,
-                deposit_balance.bank_pk,
-            ));
-        }
-
-        Ok(deposits)
+            .filter_map(|b| {
+                if b.active
+                    && matches!(b.get_side(), Some(BalanceSide::Assets))
+                    && !mints_to_exclude.contains(&banks.get(&b.bank_pk).unwrap().bank.mint)
+                {
+                    Some(b.bank_pk)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
     }
 
     pub fn get_balance_for_bank<T: OracleWrapperTrait>(
         &self,
         bank: &BankWrapperT<T>,
-    ) -> anyhow::Result<Option<(I80F48, BalanceSide)>> {
-        let balance = self
-            .lending_account
+    ) -> Option<(I80F48, BalanceSide)> {
+        self.lending_account
             .balances
             .iter()
             .find(|b| b.bank_pk == bank.address)
-            .map(|b| match b.get_side()? {
+            .and_then(|b| match b.get_side()? {
                 BalanceSide::Assets => {
                     let amount = bank.bank.get_asset_amount(b.asset_shares.into()).ok()?;
                     Some((amount, BalanceSide::Assets))
@@ -87,9 +79,6 @@ impl MarginfiAccountWrapper {
                     Some((amount, BalanceSide::Liabilities))
                 }
             })
-            .unwrap_or(None);
-
-        Ok(balance)
     }
 
     pub fn get_deposits_and_liabilities_shares(&self) -> (Shares, Shares) {
@@ -117,8 +106,7 @@ impl MarginfiAccountWrapper {
         self.lending_account
             .balances
             .iter()
-            .filter(|b| b.active)
-            .map(|b| b.bank_pk)
+            .filter_map(|balance| balance.active.then_some(balance.bank_pk))
             .collect::<Vec<_>>()
     }
 
@@ -128,12 +116,7 @@ impl MarginfiAccountWrapper {
         exclude_banks: &[Pubkey],
         banks: &HashMap<Pubkey, BankWrapperT<T>>,
     ) -> Vec<Pubkey> {
-        let mut bank_pks = self
-            .lending_account
-            .balances
-            .iter()
-            .filter_map(|balance| balance.active.then_some(balance.bank_pk))
-            .collect::<Vec<_>>();
+        let mut bank_pks = self.get_active_banks();
 
         for bank_pk in include_banks {
             if !bank_pks.contains(bank_pk) {
@@ -147,10 +130,15 @@ impl MarginfiAccountWrapper {
             .iter()
             .flat_map(|bank_pk| {
                 let bank = banks.get(bank_pk).unwrap();
+                debug!(
+                    "Bank {:?} asset tag {:?}",
+                    bank.address, bank.bank.config.asset_tag
+                );
 
                 if bank.bank.config.oracle_keys[1] != Pubkey::default()
                     && bank.bank.config.oracle_keys[2] != Pubkey::default()
                 {
+                    debug!("HERE Observation accounts for bank: {:?}", bank.address);
                     vec![
                         bank.address,
                         bank.oracle_adapter.get_address(),

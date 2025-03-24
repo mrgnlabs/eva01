@@ -1,7 +1,9 @@
+pub mod clock;
+
 use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
-use bincode::deserialize;
 use fixed::types::I80F48;
+use log::debug;
 use marginfi::{
     bank_authority_seed,
     constants::{PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID, PYTH_PUSH_PYTH_SPONSORED_SHARD_ID},
@@ -15,12 +17,11 @@ use marginfi::{
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serializer};
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::{rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig};
-use solana_program::{pubkey::Pubkey, sysvar::clock::Clock};
+use solana_client::rpc_config::RpcAccountInfoConfig;
+use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::Account,
     signature::{read_keypair_file, Keypair},
-    sysvar,
 };
 use std::{
     collections::HashMap,
@@ -313,16 +314,17 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     pub fn calc_weighted_assets_and_liabilities_values(
         &self,
         requirement_type: RequirementType,
+        print_logs: bool,
     ) -> anyhow::Result<(I80F48, I80F48)> {
         match self.balance.get_side() {
             Some(side) => match side {
                 BalanceSide::Assets => Ok((
-                    self.calc_weighted_assets(requirement_type, &self.bank.bank)?,
+                    self.calc_weighted_assets(requirement_type, &self.bank.bank, print_logs)?,
                     I80F48::ZERO,
                 )),
                 BalanceSide::Liabilities => Ok((
                     I80F48::ZERO,
-                    self.calc_weighted_liabs(requirement_type, &self.bank.bank)?,
+                    self.calc_weighted_liabs(requirement_type, &self.bank.bank, print_logs)?,
                 )),
             },
             None => Ok((I80F48::ZERO, I80F48::ZERO)),
@@ -334,6 +336,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
         &self,
         requirement_type: RequirementType,
         bank: &Bank,
+        print_logs: bool,
     ) -> anyhow::Result<I80F48> {
         match bank.config.risk_tier {
             RiskTier::Collateral => {
@@ -357,6 +360,16 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
                     }
                 }
 
+                if print_logs {
+                    let high_price = oracle_adapter
+                        .get_price_of_type(
+                            requirement_type.get_oracle_price_type(),
+                            Some(PriceBias::High),
+                        )
+                        .unwrap();
+                    debug!("Asset mint: {:?}, weight: {:?}, low_price: {:?}, high price: {:?}, shares: {:?}, share_value: {:?}", bank.mint, asset_weight, lower_price, high_price, self.balance.asset_shares, bank.asset_share_value);
+                }
+
                 Ok(calc_value(
                     bank.get_asset_amount(self.balance.asset_shares.into())?,
                     lower_price,
@@ -373,6 +386,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
         &self,
         requirement_type: RequirementType,
         bank: &Bank,
+        print_logs: bool,
     ) -> MarginfiResult<I80F48> {
         let oracle_adapter = &self.bank.oracle_adapter;
 
@@ -386,6 +400,16 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
                 Some(PriceBias::High),
             )
             .unwrap();
+
+        if print_logs {
+            let low_price = oracle_adapter
+                .get_price_of_type(
+                    requirement_type.get_oracle_price_type(),
+                    Some(PriceBias::Low),
+                )
+                .unwrap();
+            debug!("Liability mint: {:?}, weight: {:?}, low_price: {:?}, high price: {:?}, shares: {:?}, share_value: {:?}", bank.mint, liability_weight, low_price, higher_price, self.balance.liability_shares, bank.liability_share_value);
+        }
 
         calc_value(
             bank.get_liability_amount(self.balance.liability_shares.into())?,
@@ -579,12 +603,6 @@ pub fn ask_keypair_until_valid() -> anyhow::Result<(PathBuf, Keypair)> {
             }
         }
     }
-}
-
-pub fn fetch_clock_sysvar(rpc_client: &RpcClient) -> anyhow::Result<Clock> {
-    let clock_account = rpc_client.get_account(&sysvar::clock::id())?;
-    let clock: Clock = deserialize(&clock_account.data)?;
-    Ok(clock)
 }
 
 #[macro_export]

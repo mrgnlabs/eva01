@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::{debug, error};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
 use solana_client::rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig};
@@ -20,7 +20,7 @@ pub struct SenderCfg {
 impl SenderCfg {
     pub const DEFAULT: SenderCfg = SenderCfg {
         spam_times: 12,
-        skip_preflight: false,
+        skip_preflight: true,
         timeout: Duration::from_secs(45),
     };
 
@@ -47,7 +47,7 @@ impl TransactionSender {
     ) -> Result<Signature, Box<dyn Error>> {
         let signature = *transaction.get_signature();
 
-        info!("Sending transaction: {}", signature.to_string());
+        debug!("Sending transaction: {}", signature.to_string());
 
         if !cfg.skip_preflight {
             let res = rpc.simulate_transaction_with_config(
@@ -79,7 +79,7 @@ impl TransactionSender {
 
         rpc.confirm_transaction_with_spinner(&signature, blockhash, CommitmentConfig::confirmed())?;
 
-        info!("Confirmed transaction: {}", signature.to_string());
+        debug!("Confirmed transaction: {}", signature.to_string());
 
         Ok(signature)
     }

@@ -1,4 +1,5 @@
 use fixed::types::I80F48;
+use log::debug;
 use marginfi::state::price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias};
 use solana_program::pubkey::Pubkey;
 
@@ -46,7 +47,10 @@ impl OracleWrapperTrait for OracleWrapper {
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48> {
         match self.simulated_price {
-            Some(price) => Ok(I80F48::from_num(price)),
+            Some(price) => {
+                debug!("USING SIMULATED PRICE!");
+                Ok(I80F48::from_num(price))
+            }
             None => Ok(self
                 .price_adapter
                 .get_price_of_type(oracle_type, price_bias)?),

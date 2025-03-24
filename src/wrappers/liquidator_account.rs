@@ -2,10 +2,10 @@ use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
-    transaction_manager::{BatchTransactions, RawTransaction},
+    transaction_manager::{RawTransaction, TransactionData},
 };
-use crossbeam::channel::Sender;
-use log::info;
+use crossbeam::channel::{Receiver, Sender};
+use log::{debug, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
@@ -20,7 +20,11 @@ use solana_sdk::{
     signer::Signer,
     system_instruction::transfer,
 };
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    sync::{Arc, RwLock},
+};
 use switchboard_on_demand_client::{
     FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
 };
@@ -31,24 +35,27 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     token_program_per_mint: HashMap<Pubkey, Pubkey>,
     group: Pubkey,
-    pub transaction_tx: Sender<BatchTransactions>,
+    pub transaction_tx: Sender<TransactionData>,
     pub swb_gateway: Gateway,
     pub non_blocking_rpc_client: NonBlockingRpcClient,
+    pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
 }
 
 impl LiquidatorAccount {
     pub async fn new(
         rpc_client: RpcClient,
-        liquidator_pubkey: Pubkey,
-        transaction_tx: Sender<BatchTransactions>,
+        transaction_tx: Sender<TransactionData>,
+        ack_rx: Receiver<Pubkey>,
         config: GeneralConfig,
     ) -> anyhow::Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
 
-        let account = rpc_client.get_account(&liquidator_pubkey)?;
+        let account = rpc_client.get_account(&config.liquidator_account)?;
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-        let account_wrapper =
-            MarginfiAccountWrapper::new(liquidator_pubkey, marginfi_account.lending_account);
+        let account_wrapper = MarginfiAccountWrapper::new(
+            config.liquidator_account,
+            marginfi_account.lending_account,
+        );
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
 
@@ -64,6 +71,18 @@ impl LiquidatorAccount {
             .unwrap()[0]
             .clone();
 
+        let pending_liquidations = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
+        let cloned_pending_liquidations = Arc::clone(&pending_liquidations);
+
+        tokio::task::spawn(async move {
+            while let Ok(liquidatee_account_address) = ack_rx.clone().recv() {
+                cloned_pending_liquidations
+                    .write()
+                    .unwrap()
+                    .remove(&liquidatee_account_address);
+            }
+        });
+
         Ok(Self {
             account_wrapper,
             signer_keypair,
@@ -73,6 +92,7 @@ impl LiquidatorAccount {
             token_program_per_mint: HashMap::new(),
             swb_gateway,
             non_blocking_rpc_client,
+            pending_liquidations,
         })
     }
 
@@ -112,17 +132,16 @@ impl LiquidatorAccount {
             &[],
             banks,
         );
-        info!(
-            "liquidate: liquidator_observation_accounts length: {:?}",
-            liquidator_observation_accounts.len()
+        debug!(
+            "liquidator_observation_accounts: {:?}",
+            liquidator_observation_accounts
         );
 
         let liquidatee_observation_accounts =
             liquidatee_account.get_observation_accounts(&[], &[], banks);
-
-        info!(
-            "liquidate: liquidatee_observation_accounts length: {:?}",
-            liquidatee_observation_accounts.len()
+        debug!(
+            "liquidatee_observation_accounts: {:?}",
+            liquidatee_observation_accounts
         );
 
         let joined_observation_accounts = liquidator_observation_accounts
@@ -144,7 +163,7 @@ impl LiquidatorAccount {
             })
             .collect::<Vec<_>>();
 
-        info!(
+        debug!(
             "liquidate: observation_swb_oracles length: {:?}",
             observation_swb_oracles.len()
         );
@@ -184,29 +203,15 @@ impl LiquidatorAccount {
             asset_amount,
         );
 
-        info!(
-            "asset bank oracle setup: {:?}",
-            asset_bank.bank.config.oracle_setup
-        );
-        info!(
-            "liab bank oracle setup: {:?}",
-            liab_bank.bank.config.oracle_setup
-        );
-
-        // first liquidator's bank
-        //liquidate_ix.accounts[12] = liquidate_ix.accounts[13].clone();
-
-        info!("liquidate_ix: {:?}", liquidate_ix);
-
         let recent_blockhash = self
             .non_blocking_rpc_client
             .get_latest_blockhash()
             .await
             .unwrap();
 
-        let mut bundle = vec![];
         if let Some((crank_ix, crank_lut)) = crank_data {
-            bundle.push(RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut));
+            let mut transactions =
+                vec![RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut)];
 
             // let transaction = VersionedTransaction::try_new(
             //     VersionedMessage::V0(v0::Message::try_compile(
@@ -229,13 +234,21 @@ impl LiquidatorAccount {
             //         },
             //     )
             //     .await;
-            // println!(
-            //     "Double Transaction sent without preflight check {:?} for address {:?}",
-            //     res, liquidatee_account.address
-            // );
-            bundle.push(RawTransaction::new(vec![liquidate_ix]));
 
-            self.transaction_tx.send(bundle)?;
+            transactions.push(RawTransaction::new(vec![liquidate_ix]));
+
+            debug!(
+                "SENDING DOUBLE liquidate: bundle length: {:?}",
+                transactions.len()
+            );
+            self.pending_liquidations
+                .write()
+                .unwrap()
+                .insert(liquidatee_account_address);
+            self.transaction_tx.send(TransactionData {
+                transactions,
+                ack_id: liquidatee_account_address,
+            })?;
         } else {
             let tx: solana_sdk::transaction::Transaction =
                 solana_sdk::transaction::Transaction::new_signed_with_payer(
@@ -244,6 +257,8 @@ impl LiquidatorAccount {
                     &[&self.signer_keypair],
                     recent_blockhash,
                 );
+
+            debug!("liquidate_ix: {:?}", liquidate_ix);
 
             let res = self
                 .non_blocking_rpc_client
@@ -256,16 +271,16 @@ impl LiquidatorAccount {
                     },
                 )
                 .await;
-            println!(
-                "Single Transaction sent without preflight check {:?} for address {:?}",
-                res, liquidatee_account.address
+            info!(
+                "Single Transaction sent for address {:?} without preflight check: {:?} ",
+                liquidatee_account.address, res
             );
         }
 
         Ok(())
     }
 
-    pub fn withdraw(
+    pub async fn withdraw(
         &self,
         bank: &BankWrapper,
         token_account: Pubkey,
@@ -303,13 +318,42 @@ impl LiquidatorAccount {
             withdraw_all,
         );
 
-        self.transaction_tx
-            .send(vec![RawTransaction::new(vec![withdraw_ix])])?;
+        let recent_blockhash = self
+            .non_blocking_rpc_client
+            .get_latest_blockhash()
+            .await
+            .unwrap();
+
+        let tx: solana_sdk::transaction::Transaction =
+            solana_sdk::transaction::Transaction::new_signed_with_payer(
+                &[withdraw_ix.clone()],
+                Some(&signer_pk),
+                &[&self.signer_keypair],
+                recent_blockhash,
+            );
+
+        debug!("Withdrawing {:?} from {:?}", amount, token_account);
+
+        let res = self
+            .non_blocking_rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        debug!(
+            "Withdrawing result for account {:?} (without preflight check): {:?} ",
+            marginfi_account, res
+        );
 
         Ok(())
     }
 
-    pub fn repay(
+    pub async fn repay(
         &self,
         bank: &BankWrapper,
         token_account: &Pubkey,
@@ -335,13 +379,42 @@ impl LiquidatorAccount {
             repay_all,
         );
 
-        self.transaction_tx
-            .send(vec![RawTransaction::new(vec![repay_ix])])?;
+        let recent_blockhash = self
+            .non_blocking_rpc_client
+            .get_latest_blockhash()
+            .await
+            .unwrap();
+
+        let tx: solana_sdk::transaction::Transaction =
+            solana_sdk::transaction::Transaction::new_signed_with_payer(
+                &[repay_ix.clone()],
+                Some(&signer_pk),
+                &[&self.signer_keypair],
+                recent_blockhash,
+            );
+
+        debug!("Repaying {:?}, token account {:?}", amount, token_account);
+
+        let res = self
+            .non_blocking_rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        debug!(
+            "Repaying result for account {:?} (without preflight check): {:?} ",
+            marginfi_account, res
+        );
 
         Ok(())
     }
 
-    pub fn deposit(
+    pub async fn deposit(
         &self,
         bank: &BankWrapper,
         token_account: Pubkey,
@@ -352,13 +425,6 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-
-        let wrap_sol_ixs: Vec<Instruction> =
-            if mint == pubkey!("So11111111111111111111111111111111111111112") {
-                vec![transfer(&signer_pk, &token_account, amount)]
-            } else {
-                vec![]
-            };
 
         let token_program = *self.token_program_per_mint.get(&mint).unwrap();
         let deposit_ix = make_deposit_ix(
@@ -372,11 +438,44 @@ impl LiquidatorAccount {
             amount,
         );
 
-        let mut transactions = vec![RawTransaction::new(wrap_sol_ixs)];
-        transactions[0]
-            .instructions
-            .extend_from_slice(&[deposit_ix]);
-        self.transaction_tx.send(transactions)?;
+        let recent_blockhash = self
+            .non_blocking_rpc_client
+            .get_latest_blockhash()
+            .await
+            .unwrap();
+
+        let instructions: Vec<Instruction> =
+            if mint == pubkey!("So11111111111111111111111111111111111111112") {
+                vec![transfer(&signer_pk, &token_account, amount), deposit_ix]
+            } else {
+                vec![deposit_ix]
+            };
+
+        let tx: solana_sdk::transaction::Transaction =
+            solana_sdk::transaction::Transaction::new_signed_with_payer(
+                &instructions,
+                Some(&signer_pk),
+                &[&self.signer_keypair],
+                recent_blockhash,
+            );
+
+        debug!("Depositing {:?}, token account {:?}", amount, token_account);
+
+        let res = self
+            .non_blocking_rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        debug!(
+            "Depositing result for account {:?} (without preflight check): {:?} ",
+            marginfi_account, res
+        );
 
         Ok(())
     }

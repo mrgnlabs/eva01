@@ -4,9 +4,10 @@ use crate::{
     liquidator::Liquidator,
     metrics::{metrics_handler, register_metrics},
     rebalancer::Rebalancer,
-    transaction_manager::{BatchTransactions, TransactionManager},
+    transaction_manager::{TransactionData, TransactionManager},
 };
 use log::{error, info};
+use solana_sdk::pubkey::Pubkey;
 use std::{
     collections::HashMap,
     sync::{atomic::AtomicBool, Arc},
@@ -36,19 +37,21 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // Liquidator/Rebalancer -> TransactionManager
     let (liquidator_tx, liquidator_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
-    let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<BatchTransactions>();
+    let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
+    let (ack_tx, ack_rx) = crossbeam::channel::unbounded::<Pubkey>();
 
     // This is to stop liquidator when rebalancer asks for it
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     let mut transaction_manager =
-        TransactionManager::new(transaction_rx, config.general_config.clone()).await?;
+        TransactionManager::new(transaction_rx, ack_tx, config.general_config.clone()).await?;
 
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         config.liquidator_config.clone(),
         liquidator_rx.clone(),
         transaction_tx.clone(),
+        ack_rx.clone(),
         stop_liquidator.clone(),
     )
     .await;
@@ -57,6 +60,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.general_config.clone(),
         config.rebalancer_config.clone(),
         transaction_tx.clone(),
+        ack_rx,
         rebalancer_rx.clone(),
         stop_liquidator.clone(),
     )
@@ -94,7 +98,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     tokio::task::spawn(async move {
         if let Err(e) = rebalancer.start().await {
-            error!("Failed to start rebalancer: {:?}", e);
+            error!("Rebalancer error: {:?}", e);
         }
     });
 
