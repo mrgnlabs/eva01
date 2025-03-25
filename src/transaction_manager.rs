@@ -1,17 +1,13 @@
-use crate::{config::GeneralConfig, metrics::ERROR_COUNT};
+use crate::{config::GeneralConfig, metrics::ERROR_COUNT, ward};
 use crossbeam::channel::{Receiver, Sender};
-use jito_protos::searcher::{
-    searcher_service_client::SearcherServiceClient, GetTipAccountsRequest,
-    NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
-};
-use jito_searcher_client::{
-    get_searcher_client_no_auth, send_bundle_with_confirmation, BundleRejectionError,
-};
+use jito_sdk_rust::JitoJsonRpcSDK;
 use log::{debug, error};
+use serde_json::json;
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc};
 use solana_sdk::{
     address_lookup_table_account::AddressLookupTableAccount,
+    bs58,
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
@@ -21,18 +17,8 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::sync::{atomic::AtomicBool, Arc};
-use std::{ops::Mul, str::FromStr};
-use tokio::sync::Semaphore;
-use tonic::transport::Channel;
-
-/// The leadership threshold related to the jito block engine
-const LEADERSHIP_THRESHOLD: u64 = 2;
-const CONCURRENCY_LIMIT: usize = 2usize;
-
-/// The sleep duration for the transaction manager
-/// to wait before checking for the next leader
-const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(1000);
+use std::str::FromStr;
+use std::sync::Arc;
 
 /// Manages transactions for the liquidator and rebalancer
 #[allow(dead_code)]
@@ -42,12 +28,8 @@ pub struct TransactionManager {
     keypair: Keypair,
     rpc: Arc<RpcClient>,
     non_block_rpc: NonBlockRpc,
-    /// The searcher client for the jito block engine
-    searcher_client: SearcherServiceClient<Channel>,
-    /// Atomic boolean to check if the current node is the jito leader
-    is_jito_leader: AtomicBool,
-    /// The tip accounts of the jito block engine
-    tip_accounts: Vec<Pubkey>,
+    jito_sdk: Arc<JitoJsonRpcSDK>,
+    jito_tip_account: Pubkey,
     lookup_tables: Vec<AddressLookupTableAccount>,
 }
 
@@ -81,6 +63,13 @@ impl RawTransaction {
     }
 }
 
+#[derive(Debug)]
+struct BundleStatus {
+    confirmation_status: Option<String>,
+    err: Option<serde_json::Value>,
+    transactions: Option<Vec<String>>,
+}
+
 impl TransactionManager {
     /// Creates a new transaction manager
     pub async fn new(
@@ -93,9 +82,6 @@ impl TransactionManager {
                 error!("Failed to read keypair file: {:?}", e);
                 e
             })
-            .unwrap();
-        let mut searcher_client = get_searcher_client_no_auth(&config.block_engine_url)
-            .await
             .unwrap();
 
         let rpc = Arc::new(RpcClient::new_with_commitment(
@@ -117,7 +103,9 @@ impl TransactionManager {
             lookup_tables.push(lookup_table);
         }
 
-        let tip_accounts = Self::get_tip_accounts(&mut searcher_client).await.unwrap();
+        let jito_sdk = Arc::new(JitoJsonRpcSDK::new(&config.block_engine_url, None));
+        let random_tip_account = jito_sdk.get_random_tip_account().await?;
+        let jito_tip_account = Pubkey::from_str(&random_tip_account)?;
 
         Ok(Self {
             rx,
@@ -125,29 +113,29 @@ impl TransactionManager {
             keypair,
             rpc,
             non_block_rpc,
-            searcher_client,
-            is_jito_leader: AtomicBool::new(false),
-            tip_accounts,
+            jito_sdk,
+            jito_tip_account,
             lookup_tables,
         })
     }
 
     /// Starts the transaction manager
     pub async fn start(&mut self) {
-        let semaphore = Arc::new(Semaphore::new(CONCURRENCY_LIMIT));
+        let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
+        let jito_sdk = Arc::clone(&self.jito_sdk);
+        let ack_tx = self.ack_tx.clone();
+        tokio::spawn(async move {
+            Self::check_bundle_status(jito_rx, jito_sdk, ack_tx).await;
+        });
 
-        for TransactionData {
+        while let Ok(TransactionData {
             transactions,
             ack_id,
-        } in self.rx.clone().iter()
+        }) = self.rx.recv()
         {
-            let semaphore = semaphore.clone();
-            let available_permits = semaphore.available_permits();
-            debug!("Available permits before acquire: {}", available_permits);
+            debug!("Ack ID: {:?}", ack_id);
 
-            let permit = semaphore.acquire_owned().await.unwrap();
-
-            let transactions = match self.configure_instructions(transactions).await {
+            let serialized_txs = match self.configure_instructions(transactions).await {
                 Ok(txs) => txs,
                 Err(e) => {
                     ERROR_COUNT.inc();
@@ -155,99 +143,240 @@ impl TransactionManager {
                     continue;
                 }
             };
-            debug!("Waiting for Jito leader...");
-            let mut multiplier = 4u32;
-            loop {
-                let next_leader = match self
-                    .searcher_client
-                    .get_next_scheduled_leader(NextScheduledLeaderRequest {})
-                    .await
-                {
-                    Ok(response) => response.into_inner(),
-                    Err(e) => {
-                        ERROR_COUNT.inc();
-                        error!("Failed to get next scheduled leader: {:?}", e);
-                        if e.code() == tonic::Code::ResourceExhausted {
-                            let sleep_for = SLEEP_DURATION.mul(multiplier);
-                            error!(
-                                "Resource exhausted, sleeping for {} seconds",
-                                sleep_for.as_secs()
-                            );
-                            tokio::time::sleep(sleep_for).await;
-                            if multiplier < 128 {
-                                multiplier *= 2;
-                            }
-                        }
-                        continue;
-                    }
-                };
 
-                let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
-
-                if num_slots <= LEADERSHIP_THRESHOLD {
-                    debug!("Sending bundle");
-                    break;
-                }
-
-                tokio::time::sleep(SLEEP_DURATION).await;
-            }
-            let result = Self::send_transactions(
-                transactions,
-                self.searcher_client.clone(),
-                self.rpc.clone(),
-            );
-
-            debug!("Ack ID: {:?}", ack_id);
-
-            let cloned_ack_tx = self.ack_tx.clone();
-            tokio::spawn(async move {
-                if let Err(e) = result.await {
+            let bundle = json!(serialized_txs);
+            let response = match self.jito_sdk.send_bundle(Some(bundle), None).await {
+                Ok(response) => response,
+                Err(e) => {
                     ERROR_COUNT.inc();
-                    debug!("Failed to send transaction: {:?}", e);
-                }
-                debug!("Releasing permit");
-                drop(permit);
-                cloned_ack_tx.send(ack_id).unwrap();
-            });
-        }
-    }
-
-    /// Sends a transaction/bundle of transactions to the jito
-    /// block engine and waits for confirmation
-    async fn send_transactions(
-        transactions: Vec<VersionedTransaction>,
-        mut searcher_client: SearcherServiceClient<Channel>,
-        rpc: Arc<RpcClient>,
-    ) -> anyhow::Result<()> {
-        let mut bundle_results_subscription = searcher_client
-            .subscribe_bundle_results(SubscribeBundleResultsRequest {})
-            .await?
-            .into_inner();
-
-        send_bundle_with_confirmation(
-            &transactions,
-            &rpc,
-            &mut searcher_client,
-            &mut bundle_results_subscription,
-        )
-        .await
-        .map_err(|e| {
-            if let Some(BundleRejectionError::SimulationFailure(tx_str, msg)) =
-                e.downcast_ref::<BundleRejectionError>()
-            {
-                if msg
-                    .as_ref()
-                    .is_some_and(|m| m.contains("custom program error: 0x1781"))
-                {
-                    error!("Illegal Liquidation");
-                } else {
-                    error!("SimulationFailure: {:?} - {:?}", tx_str, msg);
+                    error!("Failed to send JITO bundle: {:?}", e);
+                    continue;
                 }
             };
 
-            anyhow::anyhow!("{:?}", e)
-        })
+            // Extract bundle UUID from response
+            let bundle_uuid = match response["result"].as_str() {
+                Some(uuid) => uuid,
+                None => {
+                    ERROR_COUNT.inc();
+                    error!("Failed to get bundle UUID from response: {:?}", response);
+                    continue;
+                }
+            };
+
+            ward!(jito_tx.send((ack_id, bundle_uuid.to_string())).ok(), break);
+        }
+        error!("Transaction manager stopped: internal stream closed");
     }
+
+    async fn check_bundle_status(
+        jito_rx: Receiver<(Pubkey, String)>,
+        jito_sdk: Arc<JitoJsonRpcSDK>,
+        ack_tx: Sender<Pubkey>,
+    ) {
+        let max_retries = 10;
+        let retry_delay = std::time::Duration::from_millis(500);
+        while let Ok((ack_id, uuid)) = jito_rx.recv() {
+            for attempt in 1..=max_retries {
+                debug!(
+                    "Checking bundle {} (ack_id: {}) status (attempt {}/{})",
+                    uuid, ack_id, attempt, max_retries
+                );
+
+                let status_response = jito_sdk
+                    .get_in_flight_bundle_statuses(vec![uuid.to_string()])
+                    .await;
+                if let Err(e) = status_response {
+                    debug!(
+                        "Failed to check bundle {} (ack_id: {}) status: {:?}",
+                        uuid, ack_id, e
+                    );
+                    continue;
+                }
+
+                let status_response = status_response.unwrap();
+                match status_response.get("result") {
+                    Some(result) => {
+                        match result
+                            .get("value")
+                            .and_then(|value| value.as_array())
+                            .and_then(|statuses| statuses.first())
+                            .and_then(|bundle_status| bundle_status.get("status"))
+                            .and_then(|status| status.as_str())
+                        {
+                            Some("Landed") => {
+                                debug!(
+                                    "({}) Bundle landed on-chain. Checking final status...",
+                                    uuid
+                                );
+                                if let Err(e) =
+                                    Self::check_final_bundle_status(&jito_sdk, &uuid).await
+                                {
+                                    error!("({}) Final status: {}", uuid, e.to_string());
+                                }
+                                break;
+                            }
+                            Some("Pending") => {
+                                debug!("({}) Bundle is pending. Waiting...", uuid);
+                            }
+                            Some(status) => {
+                                debug!(
+                                    "({}) Unexpected bundle status: {}. Waiting...",
+                                    uuid, status
+                                );
+                            }
+                            None => {
+                                debug!("({}) Unable to parse bundle status. Waiting...", uuid);
+                            }
+                        }
+                    }
+                    None => match status_response.get("error") {
+                        Some(error) => {
+                            debug!("({}) Error checking bundle status: {:?}", uuid, error);
+                        }
+                        None => {
+                            debug!("({}) Unexpected response format. Waiting...", uuid);
+                        }
+                    },
+                }
+
+                if attempt < max_retries {
+                    tokio::time::sleep(retry_delay).await;
+                } else {
+                    ERROR_COUNT.inc();
+                    error!(
+                        "Failed to confirm bundle status: uuid = {}, ack_id = {}",
+                        uuid, ack_id
+                    );
+                    break;
+                }
+
+                ack_tx.send(ack_id).unwrap();
+            }
+        }
+    }
+
+    async fn check_final_bundle_status(
+        jito_sdk: &JitoJsonRpcSDK,
+        uuid: &str,
+    ) -> anyhow::Result<()> {
+        let max_retries = 10;
+        let retry_delay = std::time::Duration::from_millis(500);
+
+        for attempt in 1..=max_retries {
+            debug!(
+                "({}) Checking final bundle status (attempt {}/{})",
+                uuid, attempt, max_retries
+            );
+
+            let status_response = jito_sdk.get_bundle_statuses(vec![uuid.to_string()]).await?;
+            let bundle_status = Self::get_bundle_status(&status_response)?;
+
+            match bundle_status.confirmation_status.as_deref() {
+                Some("confirmed") => {
+                    debug!(
+                        "({}) Bundle confirmed on-chain. Waiting for finalization...",
+                        uuid
+                    );
+                    Self::check_transaction_error(&bundle_status)?;
+                }
+                Some("finalized") => {
+                    debug!("({}) Bundle finalized on-chain successfully!", uuid);
+                    Self::check_transaction_error(&bundle_status)?;
+                    Self::print_transaction_url(&bundle_status);
+                    return Ok(());
+                }
+                Some(status) => {
+                    debug!(
+                        "({}) Unexpected final bundle status: {}. Continuing to poll...",
+                        uuid, status
+                    );
+                }
+                None => {
+                    debug!(
+                        "({}) Unable to parse final bundle status. Continuing to poll...",
+                        uuid
+                    );
+                }
+            }
+
+            if attempt < max_retries {
+                tokio::time::sleep(retry_delay).await;
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "({}) Failed to get finalized status after {} attempts",
+            uuid,
+            max_retries
+        ))
+    }
+
+    fn get_bundle_status(status_response: &serde_json::Value) -> anyhow::Result<BundleStatus> {
+        status_response
+            .get("result")
+            .and_then(|result| result.get("value"))
+            .and_then(|value| value.as_array())
+            .and_then(|statuses| statuses.first())
+            .ok_or_else(|| anyhow::anyhow!("Failed to parse bundle status"))
+            .map(|bundle_status| BundleStatus {
+                confirmation_status: bundle_status
+                    .get("confirmation_status")
+                    .and_then(|s| s.as_str())
+                    .map(String::from),
+                err: bundle_status.get("err").cloned(),
+                transactions: bundle_status
+                    .get("transactions")
+                    .and_then(|t| t.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    }),
+            })
+    }
+
+    fn check_transaction_error(bundle_status: &BundleStatus) -> anyhow::Result<()> {
+        if let Some(err) = &bundle_status.err {
+            if err["Ok"].is_null() {
+                println!("Transaction executed without errors.");
+                Ok(())
+            } else {
+                println!("Transaction encountered an error: {:?}", err);
+                Err(anyhow::anyhow!("Transaction encountered an error"))
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn print_transaction_url(bundle_status: &BundleStatus) {
+        if let Some(transactions) = &bundle_status.transactions {
+            if let Some(tx_id) = transactions.first() {
+                debug!("Transaction URL: https://solscan.io/tx/{}", tx_id);
+            } else {
+                debug!("Unable to extract transaction ID.");
+            }
+        } else {
+            debug!("No transactions found in the bundle status.");
+        }
+    }
+
+    /*
+
+               if let Some(BundleRejectionError::SimulationFailure(tx_str, msg)) =
+               e.downcast_ref::<BundleRejectionError>()
+           {
+               if msg
+                   .as_ref()
+                   .is_some_and(|m| m.contains("custom program error: 0x1781"))
+               {
+                   error!("Illegal Liquidation");
+               } else {
+                   error!("SimulationFailure: {:?} - {:?}", tx_str, msg);
+               }
+           };
+    */
 
     /// Configures the instructions
     /// Adds the compute budget instruction to each instruction
@@ -256,7 +385,7 @@ impl TransactionManager {
     async fn configure_instructions(
         &self,
         instructions: BatchTransactions,
-    ) -> anyhow::Result<Vec<VersionedTransaction>> {
+    ) -> anyhow::Result<Vec<String>> {
         let blockhash = self.rpc.get_latest_blockhash().await?;
 
         let mut txs = Vec::new();
@@ -265,7 +394,7 @@ impl TransactionManager {
             ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(1_000_000));
             ixs.push(transfer(
                 &self.keypair.pubkey(),
-                &self.tip_accounts[0],
+                &self.jito_tip_account,
                 10_000,
             ));
             let transaction = VersionedTransaction::try_new(
@@ -281,25 +410,9 @@ impl TransactionManager {
                 )?),
                 &[&self.keypair],
             )?;
+            let transaction = bs58::encode(bincode::serialize(&transaction)?).into_string();
             txs.push(transaction);
         }
         Ok(txs)
-    }
-
-    async fn get_tip_accounts(
-        searcher_client: &mut SearcherServiceClient<Channel>,
-    ) -> anyhow::Result<Vec<Pubkey>> {
-        let tip_accounts = searcher_client
-            .get_tip_accounts(GetTipAccountsRequest {})
-            .await?
-            .into_inner();
-
-        let tip_accounts = tip_accounts
-            .accounts
-            .into_iter()
-            .filter_map(|a| Pubkey::from_str(&a).ok())
-            .collect::<Vec<Pubkey>>();
-
-        Ok(tip_accounts)
     }
 }

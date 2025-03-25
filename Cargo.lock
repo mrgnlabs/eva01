@@ -1978,8 +1978,7 @@ dependencies = [
  "futures",
  "futures-sink",
  "hex",
- "jito-protos",
- "jito-searcher-client",
+ "jito-sdk-rust",
  "jupiter-swap-api-client",
  "lazy_static",
  "log",
@@ -2714,36 +2713,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 
 [[package]]
-name = "jito-protos"
+name = "jito-sdk-rust"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/jito-rs?branch=1.18.17#380213171ef847d227ba1fdd737ccc72fbf998e1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6db230a3c6c255775431517c1da38760b748490210ba1801a36190349af64c1c"
 dependencies = [
+ "anyhow",
  "bincode",
- "bytes",
- "prost 0.12.6",
- "prost-types",
- "solana-perf",
- "solana-sdk",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
-name = "jito-searcher-client"
-version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/jito-rs?branch=1.18.17#380213171ef847d227ba1fdd737ccc72fbf998e1"
-dependencies = [
- "futures-util",
- "jito-protos",
- "log",
- "prost-types",
- "solana-client",
- "solana-metrics",
- "solana-program",
- "solana-sdk",
- "thiserror",
+ "bs58 0.4.0",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
- "tonic",
 ]
 
 [[package]]
@@ -6531,7 +6513,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "webpki-roots 0.25.4",
 ]
 
 [[package]]
