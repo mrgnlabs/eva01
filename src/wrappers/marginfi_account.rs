@@ -5,15 +5,12 @@ use solana_program::pubkey::Pubkey;
 use std::collections::HashMap;
 
 #[derive(Clone)]
-pub struct TxConfig {
-    pub compute_unit_price_micro_lamports: Option<u64>,
-}
-
-#[derive(Clone)]
 pub struct MarginfiAccountWrapper {
     pub address: Pubkey,
     pub account: MarginfiAccount,
 }
+
+type Shares = Vec<(I80F48, Pubkey)>;
 
 impl MarginfiAccountWrapper {
     pub fn new(address: Pubkey, account: MarginfiAccount) -> Self {
@@ -97,19 +94,7 @@ impl MarginfiAccountWrapper {
         Ok(balance)
     }
 
-    pub fn get_deposits_shares(&self) -> Vec<(I80F48, Pubkey)> {
-        self.account
-            .lending_account
-            .balances
-            .iter()
-            .filter(|b| matches!(b.get_side(), Some(BalanceSide::Assets)) & b.active)
-            .map(|b| (b.asset_shares.into(), b.bank_pk))
-            .collect::<Vec<_>>()
-    }
-
-    pub fn get_deposits_and_liabilities_shares(
-        &self,
-    ) -> (Vec<(I80F48, Pubkey)>, Vec<(I80F48, Pubkey)>) {
+    pub fn get_deposits_and_liabilities_shares(&self) -> (Shares, Shares) {
         let mut liabilities = Vec::new();
         let mut deposits = Vec::new();
 

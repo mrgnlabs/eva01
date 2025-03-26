@@ -2,6 +2,7 @@ use crate::{
     config::{GeneralConfig, RebalancerCfg},
     crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
+    metrics::update_balance,
     sender::{SenderCfg, TransactionSender},
     token_account_manager::TokenAccountManager,
     transaction_manager::{BatchTransactions, RawTransaction},
@@ -32,9 +33,7 @@ use marginfi::{
         price::{OraclePriceFeedAdapter, OracleSetup, PriceBias, SwitchboardPullPriceFeed},
     },
 };
-use solana_client::{
-    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
-};
+use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::Account, account_info::IntoAccountInfo, clock::Clock,
@@ -44,12 +43,11 @@ use solana_sdk::{
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    str::FromStr,
     sync::{atomic::AtomicBool, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
-use switchboard_on_demand_client::QueueAccountData;
-use switchboard_on_demand_client::{FetchUpdateManyParams, Gateway, PullFeed};
+use switchboard_on_demand_client::SbContext;
+use switchboard_on_demand_client::{FetchUpdateManyParams, PullFeed};
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
 pub struct Rebalancer {
@@ -208,7 +206,7 @@ impl Rebalancer {
             while let Ok(mut msg) = self.geyser_receiver.recv() {
                 debug!("Received message {:?}", msg);
                 match msg.account_type {
-                    AccountType::OracleAccount => {
+                    AccountType::Oracle => {
                         if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
                             let bank_to_update: &mut BankWrapper =
                                 self.banks.get_mut(bank_to_update_pk).unwrap();
@@ -284,7 +282,7 @@ impl Rebalancer {
                             bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
                         }
                     }
-                    AccountType::MarginfiAccount => {
+                    AccountType::Marginfi => {
                         if msg.address == self.general_config.liquidator_account {
                             let marginfi_account =
                                 bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
@@ -292,13 +290,14 @@ impl Rebalancer {
                             self.liquidator_account.account_wrapper.account = *marginfi_account;
                         }
                     }
-                    AccountType::TokenAccount => {
+                    AccountType::Token => {
                         let mint = accessor::mint(&msg.account.data);
                         let balance = accessor::amount(&msg.account.data);
 
                         let token_to_update = self.token_accounts.get_mut(&mint).unwrap();
 
                         token_to_update.balance = balance;
+                        update_balance(&token_to_update.mint.to_string(), balance as f64).await;
                     }
                 }
 
@@ -318,11 +317,10 @@ impl Rebalancer {
             .banks
             .values()
             .filter_map(|bank| {
-                if let Some(feed_hash) = &bank.oracle_adapter.swb_feed_hash {
-                    Some((bank.address, feed_hash.clone()))
-                } else {
-                    None
-                }
+                bank.oracle_adapter
+                    .swb_feed_hash
+                    .as_ref()
+                    .map(|feed_hash| (bank.address, feed_hash.clone()))
             })
             .collect::<Vec<_>>();
 
@@ -358,6 +356,7 @@ impl Rebalancer {
 
         if !active_swb_oracles.is_empty() {
             if let Ok((ix, lut)) = PullFeed::fetch_update_many_ix(
+                SbContext::new(),
                 &self.liquidator_account.non_blocking_rpc_client,
                 FetchUpdateManyParams {
                     feeds: active_swb_oracles,
@@ -376,10 +375,10 @@ impl Rebalancer {
             }
         }
         debug!("Rebalancing accounts");
-        //self.sell_non_preferred_deposits().await?;
-        //self.repay_liabilities().await?;
-        //self.handle_tokens_in_token_accounts().await?;
-        //self.deposit_preferred_tokens().await?;
+        self.sell_non_preferred_deposits().await?;
+        self.repay_liabilities().await?;
+        self.handle_tokens_in_token_accounts().await?;
+        self.deposit_preferred_tokens().await?;
 
         Ok(())
     }
@@ -415,7 +414,7 @@ impl Rebalancer {
         let mut tracked_accounts: HashMap<Pubkey, AccountType> = HashMap::new();
 
         for token_account in self.token_accounts.values() {
-            tracked_accounts.insert(token_account.address, AccountType::TokenAccount);
+            tracked_accounts.insert(token_account.address, AccountType::Token);
         }
 
         tracked_accounts

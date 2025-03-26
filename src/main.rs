@@ -1,6 +1,9 @@
 use env_logger::Builder;
 use std::{backtrace::Backtrace, error::Error};
 
+/// Prometheus metrics
+mod metrics;
+
 /// Geyser service
 mod geyser;
 
