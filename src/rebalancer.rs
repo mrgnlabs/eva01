@@ -124,21 +124,32 @@ impl Rebalancer {
             self.mint_to_bank.insert(bank.bank.mint, bank.address);
         }
 
-        for bank in self.banks.values() {
-            if bank.bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
-                let keys = &bank.bank.config.oracle_keys[1..3];
-                let accounts = batch_get_multiple_accounts(
-                    self.rpc_client.clone(),
-                    keys,
-                    BatchLoadingConfig::DEFAULT,
-                )
-                .unwrap();
-                for (key, account) in keys.iter().zip(accounts.iter()) {
-                    self.cache_oracle_needed_accounts
-                        .insert(*key, account.clone().unwrap());
-                }
-            }
-        }
+        let all_keys = self
+            .banks
+            .values()
+            .filter(|b| b.bank.config.oracle_setup == OracleSetup::StakedWithPythPush)
+            .flat_map(|bank| {
+                vec![
+                    bank.bank.config.oracle_keys[1],
+                    bank.bank.config.oracle_keys[2],
+                ]
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let all_accounts = batch_get_multiple_accounts(
+            self.rpc_client.clone(),
+            &all_keys,
+            BatchLoadingConfig::DEFAULT,
+        )
+        .unwrap();
+
+        self.cache_oracle_needed_accounts = all_keys
+            .into_iter()
+            .zip(all_accounts.into_iter())
+            .map(|(key, acc)| (key, acc.unwrap()))
+            .collect();
 
         self.token_account_manager
             .add_mints(&bank_mints, self.general_config.signer_pubkey)?;
@@ -206,6 +217,7 @@ impl Rebalancer {
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
 
         while let Ok(mut msg) = self.geyser_receiver.recv() {
+            info!("Received geyser update: {:?} for {:?}", msg.account_type, msg.address);
             match msg.account_type {
                 AccountType::Oracle => {
                     let bank_to_update_pk = ward!(self.oracle_to_bank.get(&msg.address), continue);
