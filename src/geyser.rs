@@ -2,7 +2,7 @@ use crate::{utils::account_update_to_account, ward};
 use anchor_lang::AccountDeserialize;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
-use log::{error, info};
+use log::{error, info, warn};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
@@ -58,18 +58,19 @@ impl GeyserService {
         let tracked_accounts_vec: Vec<Pubkey> = tracked_accounts.keys().cloned().collect();
         let sub_req =
             Self::build_geyser_subscribe_request(&tracked_accounts_vec, &marginfi_program_id);
-        let (_, mut stream) = client.subscribe_with_request(Some(sub_req)).await?;
+        let (_, mut stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;
 
         info!("Connected to geyser");
 
         while let Some(msg) = stream.next().await {
-            let msg = ward!(
-                msg.map_err(|e| error!("Error receiving message from geyser {:?}", e))
-                    .ok(),
-                continue
-            );
+            if let Err(e) = msg {
+                warn!("Reconnecting to Geyser due to error: {:?}", e);
+                let (_, new_stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;
+                stream = new_stream;
+                continue;
+            }
 
-            let update_oneof = ward!(msg.update_oneof, continue);
+            let update_oneof = ward!(msg.unwrap().update_oneof, continue);
 
             if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
                 let account_update = ward!(&account.account, continue);

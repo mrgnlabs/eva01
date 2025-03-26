@@ -5,7 +5,7 @@ use crate::{
     transaction_manager::{RawTransaction, TransactionData},
 };
 use crossbeam::channel::{Receiver, Sender};
-use log::{debug, info};
+use log::{debug, error, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
@@ -271,10 +271,20 @@ impl LiquidatorAccount {
                     },
                 )
                 .await;
-            info!(
-                "Single Transaction sent for address {:?} without preflight check: {:?} ",
-                liquidatee_account.address, res
-            );
+            match res {
+                Ok(res) => {
+                    info!(
+                        "Single Transaction sent for address {:?} landed successfully: {:?} ",
+                        liquidatee_account.address, res
+                    );
+                }
+                Err(err) => {
+                    error!(
+                        "Single Transaction sent for address {:?} failed: {:?} ",
+                        liquidatee_account.address, err
+                    );
+                }
+            }
         }
 
         Ok(())
