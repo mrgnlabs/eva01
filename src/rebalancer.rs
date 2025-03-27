@@ -217,7 +217,10 @@ impl Rebalancer {
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
 
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            info!("Received geyser update: {:?} for {:?}", msg.account_type, msg.address);
+            info!(
+                "Received geyser update: {:?} for {:?}",
+                msg.account_type, msg.address
+            );
             match msg.account_type {
                 AccountType::Oracle => {
                     let bank_to_update_pk = ward!(self.oracle_to_bank.get(&msg.address), continue);

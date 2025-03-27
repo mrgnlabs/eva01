@@ -51,6 +51,7 @@ impl GeyserService {
         liquidator_sender: Sender<GeyserUpdate>,
         rebalancer_sender: Sender<GeyserUpdate>,
     ) -> anyhow::Result<()> {
+        info!("Connecting to geyser...");
         let mut client = GeyserGrpcClient::build_from_shared(config.endpoint.clone())?
             .x_token(config.x_token.clone())?
             .connect()

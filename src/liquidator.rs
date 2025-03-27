@@ -45,7 +45,7 @@ use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::Account, account_info::IntoAccountInfo, bs58, signature::Keypair};
 use std::{
     cmp::min,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
@@ -113,26 +113,37 @@ impl Liquidator {
     pub async fn load_data(&mut self) -> anyhow::Result<()> {
         let rpc_client = Arc::new(RpcClient::new(self.general_config.rpc_url.clone()));
         self.load_marginfi_accounts(rpc_client.clone()).await?;
+        info!("Loading banks...");
         self.load_oracles_and_banks(rpc_client.clone()).await?;
+        info!("Loading initial data for liquidator...");
         self.liquidator_account
             .load_initial_data(rpc_client.as_ref(), self.get_all_mints())
             .await?;
+        info!("Loading staked banks...");
 
-        for bank in self.banks.values() {
-            if bank.bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
-                let keys = &bank.bank.config.oracle_keys[1..3];
-                let accounts = batch_get_multiple_accounts(
-                    rpc_client.clone(),
-                    keys,
-                    BatchLoadingConfig::DEFAULT,
-                )
+        let all_keys = self
+            .banks
+            .values()
+            .filter(|b| b.bank.config.oracle_setup == OracleSetup::StakedWithPythPush)
+            .flat_map(|bank| {
+                vec![
+                    bank.bank.config.oracle_keys[1],
+                    bank.bank.config.oracle_keys[2],
+                ]
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let all_accounts =
+            batch_get_multiple_accounts(rpc_client.clone(), &all_keys, BatchLoadingConfig::DEFAULT)
                 .unwrap();
-                for (key, account) in keys.iter().zip(accounts.iter()) {
-                    self.cache_oracle_needed_accounts
-                        .insert(*key, account.clone().unwrap());
-                }
-            }
-        }
+
+        self.cache_oracle_needed_accounts = all_keys
+            .into_iter()
+            .zip(all_accounts.into_iter())
+            .map(|(key, acc)| (key, acc.unwrap()))
+            .collect();
         Ok(())
     }
 
@@ -166,6 +177,10 @@ impl Liquidator {
                                 })
                             }
                             OracleSetup::StakedWithPythPush => {
+                                debug!(
+                                    "Getting update for STAKED oracle: {:?} for bank: {:?}",
+                                    msg.address, bank_to_update_pk
+                                );
                                 let clock =
                                     ward!(cached_clock.get_clock(&rpc_client).await.ok(), continue);
                                 let keys = &bank_to_update.bank.config.oracle_keys[1..3];
@@ -363,10 +378,6 @@ impl Liquidator {
                 &asset_bank_pk,
                 &liab_bank_pk,
             )
-            .map_err(|_| {
-                //error!("Error computing max liquidatable asset amount: {:?}", e);
-                ERROR_COUNT.inc();
-            })
             .ok()?;
 
         if max_liquidatable_amount.is_zero() {
@@ -765,6 +776,7 @@ impl Liquidator {
         let program: Program<Arc<Keypair>> =
             anchor_client.program(self.general_config.marginfi_program_id)?;
 
+        info!("Loading banks internally...");
         let banks = program
             .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
                 BANK_GROUP_PK_OFFSET,
@@ -777,6 +789,7 @@ impl Liquidator {
             .flat_map(|(_, bank)| find_oracle_keys(&bank.config))
             .collect::<Vec<_>>();
 
+        info!("Loading oracles...");
         let mut oracle_accounts = batch_get_multiple_accounts(
             rpc_client.clone(),
             &oracle_keys,
@@ -792,9 +805,10 @@ impl Liquidator {
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
         let clock = cached_clock.get_clock(&rpc_client).await?;
 
+        debug!("Filling the cache...");
         for (bank_address, bank) in banks.iter() {
             if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
-                continue;
+                debug!("Loading STAKED bank: {:?}", bank_address);
             }
 
             let oracle_keys_excluded_default = bank
@@ -804,7 +818,13 @@ impl Liquidator {
                 .filter(|key| *key != &Pubkey::default())
                 .collect::<Vec<_>>();
 
-            if oracle_keys_excluded_default.len() > 1 {
+            if oracle_keys_excluded_default.len() > 1
+                && bank.config.oracle_setup != OracleSetup::StakedWithPythPush
+            {
+                error!(
+                    "Bank {:?} has more than one oracle key, which is not supported",
+                    bank_address
+                );
                 continue;
             }
 
@@ -912,6 +932,12 @@ impl Liquidator {
                 }
             };
 
+            if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
+                debug!(
+                    "Loaded STAKED bank: {:?} with oracle: {:?}",
+                    bank_address, oracle_address
+                );
+            }
             self.banks.insert(
                 *bank_address,
                 BankWrapper::new(
