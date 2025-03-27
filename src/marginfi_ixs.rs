@@ -1,59 +1,37 @@
-use anchor_lang::{system_program, InstructionData, Key, ToAccountMetas};
+use anchor_lang::{InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
-use log::trace;
-use solana_sdk::instruction::AccountMeta;
+use log::{debug, info, trace};
 use solana_sdk::{
-    instruction::Instruction,
+    instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    signature::{Keypair, Signer},
 };
 
-pub fn make_initialize_ix(
-    marginfi_program_id: Pubkey,
-    marginfi_group: Pubkey,
-    signer: Pubkey,
-) -> Instruction {
-    let marginfi_account_key = Keypair::new();
+use crate::{utils::find_bank_liquidity_vault_authority, wrappers::bank::BankWrapper};
 
-    Instruction {
-        program_id: marginfi_program_id,
-        accounts: marginfi::accounts::MarginfiAccountInitialize {
-            marginfi_group,
-            marginfi_account: marginfi_account_key.pubkey(),
-            system_program: system_program::ID,
-            authority: signer,
-            fee_payer: signer,
-        }
-        .to_account_metas(Some(true)),
-        data: marginfi::instruction::MarginfiAccountInitialize.data(),
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 pub fn make_deposit_ix(
     marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     signer: Pubkey,
-    bank: Pubkey,
+    bank: &BankWrapper,
     signer_token_account: Pubkey,
-    bank_liquidity_vault: Pubkey,
     token_program: Pubkey,
-    mint: Pubkey,
     amount: u64,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountDeposit {
         marginfi_group,
         marginfi_account,
         signer,
-        bank,
+        bank: bank.address,
         signer_token_account,
-        bank_liquidity_vault,
+        bank_liquidity_vault: bank.bank.liquidity_vault,
         token_program,
     }
     .to_account_metas(Some(true));
 
-    maybe_add_bank_mint(&mut accounts, mint, &token_program);
+    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
 
     Instruction {
         program_id: marginfi_program_id,
@@ -62,16 +40,15 @@ pub fn make_deposit_ix(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn make_repay_ix(
     marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     signer: Pubkey,
-    bank: Pubkey,
+    bank: &BankWrapper,
     signer_token_account: Pubkey,
-    bank_liquidity_vault: Pubkey,
     token_program: Pubkey,
-    mint: Pubkey,
     amount: u64,
     repay_all: Option<bool>,
 ) -> Instruction {
@@ -79,14 +56,14 @@ pub fn make_repay_ix(
         marginfi_group,
         marginfi_account,
         signer,
-        bank,
+        bank: bank.address,
         signer_token_account,
-        bank_liquidity_vault,
+        bank_liquidity_vault: bank.bank.liquidity_vault,
         token_program,
     }
     .to_account_metas(Some(true));
 
-    maybe_add_bank_mint(&mut accounts, mint, &token_program);
+    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
 
     Instruction {
         program_id: marginfi_program_id,
@@ -95,18 +72,16 @@ pub fn make_repay_ix(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn make_withdraw_ix(
     marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     signer: Pubkey,
-    bank: Pubkey,
+    bank: &BankWrapper,
     destination_token_account: Pubkey,
-    bank_liquidity_vault_authority: Pubkey,
-    bank_liquidity_vault: Pubkey,
     token_program: Pubkey,
     observation_accounts: Vec<Pubkey>,
-    mint: Pubkey,
     amount: u64,
     withdraw_all: Option<bool>,
 ) -> Instruction {
@@ -114,15 +89,18 @@ pub fn make_withdraw_ix(
         marginfi_group,
         marginfi_account,
         signer,
-        bank,
+        bank: bank.address,
         destination_token_account,
-        bank_liquidity_vault_authority,
-        bank_liquidity_vault,
+        bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
+            &bank.address,
+            &marginfi_program_id,
+        ),
+        bank_liquidity_vault: bank.bank.liquidity_vault,
         token_program,
     }
     .to_account_metas(Some(true));
 
-    maybe_add_bank_mint(&mut accounts, mint, &token_program);
+    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
 
     trace!(
         "make_withdraw_ix: observation_accounts: {:?}",
@@ -146,54 +124,58 @@ pub fn make_withdraw_ix(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn make_liquidate_ix(
     marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
-    asset_bank: Pubkey,
-    liab_bank: Pubkey,
+    asset_bank: &BankWrapper,
+    liab_bank: &BankWrapper,
     signer: Pubkey,
     liquidatee_marginfi_account: Pubkey,
-    bank_liquidity_vault_authority: Pubkey,
-    bank_liquidity_vault: Pubkey,
-    bank_insurance_vault: Pubkey,
     token_program: Pubkey,
-    liquidator_observation_accounts: Vec<Pubkey>,
-    liquidatee_observation_accounts: Vec<Pubkey>,
-    asset_bank_oracle: Pubkey,
-    liab_bank_oracle: Pubkey,
-    liab_mint: Pubkey,
+    observation_accounts: Vec<Pubkey>,
     asset_amount: u64,
 ) -> Instruction {
-    let mut accounts = marginfi::accounts::LendingAccountLiquidate {
-        marginfi_group,
+    let accounts_raw = marginfi::accounts::LendingAccountLiquidate {
+        group: marginfi_group,
+        asset_bank: asset_bank.address,
+        liab_bank: liab_bank.address,
         liquidator_marginfi_account: marginfi_account,
         signer,
         liquidatee_marginfi_account,
-        bank_liquidity_vault_authority,
-        bank_liquidity_vault,
-        bank_insurance_vault,
+        bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
+            &liab_bank.address,
+            &marginfi_program_id,
+        ),
+        bank_liquidity_vault: liab_bank.bank.liquidity_vault,
+        bank_insurance_vault: liab_bank.bank.insurance_vault,
         token_program,
-        asset_bank,
-        liab_bank,
-    }
-    .to_account_metas(Some(true));
+    };
+    let mut accounts = accounts_raw.to_account_metas(Some(true));
 
-    maybe_add_bank_mint(&mut accounts, liab_mint, &token_program);
+    info!(
+        "LendingAccountLiquidate {{ group: {:?}, liquidator_marginfi_account: {:?}, signer: {:?}, liquidatee_marginfi_account: {:?}, bank_liquidity_vault_authority: {:?}, bank_liquidity_vault: {:?}, bank_insurance_vault: {:?}, token_program: {:?}, asset_bank: {:?}, liab_bank: {:?} }}",
+        accounts_raw.group,
+        accounts_raw.liquidator_marginfi_account,
+        accounts_raw.signer,
+        accounts_raw.liquidatee_marginfi_account,
+        accounts_raw.bank_liquidity_vault_authority,
+        accounts_raw.bank_liquidity_vault,
+        accounts_raw.bank_insurance_vault,
+        accounts_raw.token_program,
+        accounts_raw.asset_bank,
+        accounts_raw.liab_bank
+    );
+    maybe_add_bank_mint(&mut accounts, liab_bank.bank.mint, &token_program);
 
     accounts.extend([
-        AccountMeta::new_readonly(asset_bank_oracle, false),
-        AccountMeta::new_readonly(liab_bank_oracle, false),
+        AccountMeta::new_readonly(asset_bank.oracle_adapter.address, false),
+        AccountMeta::new_readonly(liab_bank.oracle_adapter.address, false),
     ]);
 
     accounts.extend(
-        liquidator_observation_accounts
-            .iter()
-            .map(|a| AccountMeta::new_readonly(a.key(), false)),
-    );
-
-    accounts.extend(
-        liquidatee_observation_accounts
+        observation_accounts
             .iter()
             .map(|a| AccountMeta::new_readonly(a.key(), false)),
     );
@@ -207,6 +189,7 @@ pub fn make_liquidate_ix(
 
 fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_program: &Pubkey) {
     if token_program == &token_2022::ID {
+        debug!("!!!Adding mint account to accounts!!!");
         accounts.push(AccountMeta::new_readonly(mint, false));
     }
 }
