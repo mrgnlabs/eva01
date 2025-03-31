@@ -784,6 +784,8 @@ impl Liquidator {
             ))])
             .await?;
 
+        info!("Fetched {} banks", banks.len());
+
         let oracle_keys = banks
             .iter()
             .flat_map(|(_, bank)| find_oracle_keys(&bank.config))
