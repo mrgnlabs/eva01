@@ -71,8 +71,8 @@ impl LiquidatorAccount {
         let pending_liquidations = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
         let cloned_pending_liquidations = Arc::clone(&pending_liquidations);
 
-        tokio::task::spawn(async move {
-            while let Ok(liquidatee_account_address) = ack_rx.clone().recv() {
+        std::thread::spawn(move || {
+            while let Ok(liquidatee_account_address) = ack_rx.recv() {
                 cloned_pending_liquidations
                     .write()
                     .unwrap()

@@ -1,6 +1,7 @@
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use switchboard_on_demand_client::CrossbarClient;
+use futures::stream::{self, StreamExt};
 
 const CHUNK_SIZE: usize = 20;
 
@@ -21,56 +22,40 @@ impl CrossbarMaintainer {
         if feeds.is_empty() {
             return Vec::new();
         }
-
-        // Create a fast lookup map from feed hash to oracle hash
-        let feed_hash_to_oracle_hash_map: HashMap<String, Pubkey> = feeds
+    
+        let feed_hash_to_pubkey: HashMap<&str, Pubkey> = feeds
             .iter()
-            .map(|(address, feed_hash)| (feed_hash.clone(), *address))
+            .map(|(pk, hash)| (hash.as_str(), *pk))
             .collect();
-
-        let feed_hashes: Vec<String> = feeds
-            .iter()
-            .map(|(_, feed_hash)| feed_hash.clone())
-            .collect();
-
-        let chunk_futures: Vec<_> = feed_hashes
-            .chunks(CHUNK_SIZE)
-            .map(|chunk| {
-                let client = self.crossbar_client.clone();
-                let chunk_owned: Vec<String> = chunk.to_vec();
-
-                tokio::spawn(async move {
-                    let chunk_refs: Vec<&str> = chunk_owned.iter().map(|s| s.as_str()).collect();
-                    client.simulate_feeds(&chunk_refs).await
-                })
-            })
-            .collect();
-
-        let chunk_results = match futures::future::try_join_all(chunk_futures).await {
-            Ok(results) => results,
-            Err(e) => {
-                log::error!("Error while simulating feeds: {:?}", e);
-                return Vec::new();
+    
+        let feed_hashes: Vec<String> = feeds.iter().map(|(_, hash)| hash.clone()).collect();
+    
+        // Stream chunks and limit concurrent simulations
+        let results = stream::iter(feed_hashes.chunks(CHUNK_SIZE).map(|chunk| {
+            let client = self.crossbar_client.clone();
+            let chunk_refs: Vec<String> = chunk.to_vec(); // clone once for move
+    
+            async move {
+                let chunk_refs: Vec<&str> = chunk_refs.iter().map(String::as_str).collect();
+                client.simulate_feeds(&chunk_refs).await.unwrap_or_default()
             }
-        };
-
+        }))
+        .buffer_unordered(10) // Limit to 10 concurrent simulations
+        .collect::<Vec<_>>()
+        .await;
+    
         let mut prices = Vec::new();
-
-        chunk_results
-            .into_iter()
-            .flatten()
-            .flatten()
-            .for_each(|simulated_response| {
-                if let Some(price) = calculate_price(simulated_response.results) {
-                    prices.push((
-                        *feed_hash_to_oracle_hash_map
-                            .get(&simulated_response.feedHash)
-                            .unwrap(),
-                        price,
-                    ));
+    
+        for responses in results.into_iter().flatten() {
+            if let Some(price) = calculate_price(responses.results) {
+                if let Some(address) = feed_hash_to_pubkey.get(responses.feedHash.as_str()) {
+                    prices.push((*address, price));
+                } else {
+                    log::warn!("Missing mapping for feed hash: {}", responses.feedHash);
                 }
-            });
-
+            }
+        }
+    
         prices
     }
 }

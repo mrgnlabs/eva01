@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use prometheus::{Counter, Encoder, Gauge, Histogram, HistogramOpts, Registry, TextEncoder};
 use std::collections::HashMap;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
@@ -46,8 +46,8 @@ pub fn metrics_handler() -> String {
     String::from_utf8(buffer).unwrap()
 }
 
-pub async fn update_balance(coin: &str, new_balance: f64) {
-    let mut balances = BALANCES.lock().await;
+pub fn update_balance(coin: &str, new_balance: f64) {
+    let mut balances = BALANCES.lock().unwrap();
 
     if let Some(gauge) = balances.get(coin) {
         gauge.set(new_balance);
