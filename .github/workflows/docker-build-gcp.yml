@@ -1,0 +1,77 @@
+name: Build and Push Docker Image to GCP Artifact Registry
+
+# Trigger the workflow only when a git tag following SemVer is pushed
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Set up Google Cloud authentication
+      - name: Set up GCP authentication
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}'
+
+      # Configure Docker to use gcloud as a credential helper
+      - name: Configure Docker for Google Artifact Registry
+        run: |
+          gcloud auth configure-docker us-east1-docker.pkg.dev
+
+      # Extract version tag without the 'v' prefix
+      - name: Extract version without 'v' prefix
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+      # Build the Docker image using the version without the 'v' and tag it as 'latest' as well
+      - name: Build Docker image
+        run: |
+          docker build -t us-east1-docker.pkg.dev/marginfi-dev/main/eva01:${{ env.VERSION }} \
+                       -t us-east1-docker.pkg.dev/marginfi-dev/main/eva01:latest .
+
+      # Push the Docker image to Artifact Registry with the version tag
+      - name: Push Docker image with version tag to Artifact Registry
+        run: |
+          docker push us-east1-docker.pkg.dev/marginfi-dev/main/eva01:${{ env.VERSION }}
+
+      # Push the Docker image to Artifact Registry with the 'latest' tag
+      - name: Push Docker image with 'latest' tag to Artifact Registry
+        run: |
+          docker push us-east1-docker.pkg.dev/marginfi-dev/main/eva01:latest
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Set up & Validate Kubeconfig
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+        run: |
+          mkdir -p ~/.kube
+          echo "$KUBECONFIG" > ~/.kube/config
+          kubectl config view --kubeconfig=~/.kube/config > /dev/null
+
+      - name: Get all eva01-* deployments
+        id: get-deployments
+        run: |
+          kubectl get deployments --no-headers -o custom-columns=":metadata.name" | grep '^eva01-' > deployments.txt
+
+      - name: Restart all eva01-* deployments
+        run: |
+          cat deployments.txt | xargs -I {} kubectl rollout restart deployment {}
+

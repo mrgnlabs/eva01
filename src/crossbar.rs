@@ -1,8 +1,5 @@
 use solana_sdk::pubkey::Pubkey;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
 use switchboard_on_demand_client::CrossbarClient;
 
 const CHUNK_SIZE: usize = 20;
@@ -16,7 +13,7 @@ pub(crate) struct CrossbarMaintainer {
 impl CrossbarMaintainer {
     /// Creates a new CrossbarMaintainer empty instance
     pub fn new() -> Self {
-        let crossbar_client = CrossbarClient::default(None);
+        let crossbar_client = CrossbarClient::default();
         Self { crossbar_client }
     }
 
@@ -28,7 +25,7 @@ impl CrossbarMaintainer {
         // Create a fast lookup map from feed hash to oracle hash
         let feed_hash_to_oracle_hash_map: HashMap<String, Pubkey> = feeds
             .iter()
-            .map(|(address, feed_hash)| (feed_hash.clone(), address.clone()))
+            .map(|(address, feed_hash)| (feed_hash.clone(), *address))
             .collect();
 
         let feed_hashes: Vec<String> = feeds
@@ -59,25 +56,25 @@ impl CrossbarMaintainer {
 
         let mut prices = Vec::new();
 
-        for result in chunk_results {
-            if let Ok(chunk_result) = result {
-                for simulated_response in chunk_result {
-                    if let Some(price) = calculate_price(simulated_response.results) {
-                        prices.push((
-                            feed_hash_to_oracle_hash_map
-                                .get(&simulated_response.feedHash)
-                                .unwrap()
-                                .clone(),
-                            price,
-                        ));
-                    }
+        chunk_results
+            .into_iter()
+            .flatten()
+            .flatten()
+            .for_each(|simulated_response| {
+                if let Some(price) = calculate_price(simulated_response.results) {
+                    prices.push((
+                        *feed_hash_to_oracle_hash_map
+                            .get(&simulated_response.feedHash)
+                            .unwrap(),
+                        price,
+                    ));
                 }
-            }
-        }
+            });
 
         prices
     }
 }
+
 fn calculate_price(mut numbers: Vec<f64>) -> Option<f64> {
     if numbers.is_empty() {
         return None;
@@ -90,5 +87,25 @@ fn calculate_price(mut numbers: Vec<f64>) -> Option<f64> {
         Some((numbers[mid - 1] + numbers[mid]) / 2.0)
     } else {
         Some(numbers[mid])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_price() {
+        // Test empty vector
+        assert_eq!(calculate_price(vec![]), None);
+
+        // Test single element vector
+        assert_eq!(calculate_price(vec![5.0]), Some(5.0));
+
+        // Test odd number of elements
+        assert_eq!(calculate_price(vec![3.0, 1.0, 2.0]), Some(2.0));
+
+        // Test even number of elements
+        assert_eq!(calculate_price(vec![4.0, 1.0, 3.0, 2.0]), Some(2.5));
     }
 }

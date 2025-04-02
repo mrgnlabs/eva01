@@ -8,10 +8,10 @@ pub mod app;
 /// Entrypoints for the Eva
 pub mod entrypoints;
 
-/// A wizard like setup menu for creating the liquidator configuration
+/// A wizard-like setup menu for creating the liquidator configuration
 pub mod setup;
 
-/// Main entrypoint for the Eva
+/// Main entrypoint for Eva
 pub async fn main_entry() -> anyhow::Result<()> {
     let args = app::Args::parse();
 
