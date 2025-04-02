@@ -1,4 +1,5 @@
 /target
 .idea/
 .env
-cfg.toml
+config.toml
+.vscode/

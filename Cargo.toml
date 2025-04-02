@@ -56,13 +56,14 @@ tonic = "0.10.2"
 tonic-health = "0.10.2"
 yellowstone-grpc-client = { git = "https://github.com/mrgnlabs/yellowstone-grpc", branch = "1.18.17" }
 yellowstone-grpc-proto = { git = "https://github.com/mrgnlabs/yellowstone-grpc", branch = "1.18.17" }
-jito-protos = { git = "https://github.com/mrgnlabs/jito-rs", branch = "1.18.17" }
-jito-searcher-client = { git = "https://github.com/mrgnlabs/jito-rs", branch = "1.18.17" }
+jito-sdk-rust = "0.1.0"
 switchboard-on-demand = "0.1.15"
-switchboard-on-demand-client = "0.1.7"
+switchboard-on-demand-client = "0.2.9"
 chrono = "0.4.38"
 hex = "0.4.3"
 url = "2.5.2"
+warp = "0.3.7"
+prometheus = "0.13.4"
 
 [profile.release]
 opt-level = 3
