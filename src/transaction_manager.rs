@@ -241,6 +241,7 @@ impl TransactionManager {
                 }
 
                 if attempt < max_retries {
+                    debug!("Sleeping for {} ms before retrying...", retry_delay.as_millis());
                     tokio::time::sleep(retry_delay).await;
                 } else {
                     ERROR_COUNT.inc();

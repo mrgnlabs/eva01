@@ -11,24 +11,20 @@ Marginfi liquidator
 1. Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
 ### Creating a New Configuration File
-To initiate the creation of a new configuration file for the liquidator, execute the following command in your terminal:
-```bash
-  cargo run -- setup
-```
+To initiate the creation of a new configuration file for the liquidator, execute the following command in your terminal: `cargo run -- setup`
+
 This command launches a Mini CLI wizard that guides you through setting up a base configuration for the liquidator. During this process, it will also check if you have a MarginfiAccount initialized. If not, it will prompt you to create one. At this stage, the setup will only request the essential variables. For adjusting settings like `Minimum Profit`, you'll need to manually edit the configuration file afterward.
 
 #### Ubuntu 
 Copy the `src/eva01/bin/env.template` to environment specific file and populate environment variables.
 
 ### Starting the liquidator
-Local:
-```bash
-  cargo run -- run <config.toml>
-```
+Local:`cargo run -- run <config.toml>`
+
 #### Ubuntu
 1. `source src/eva01/bin/prod.env`
 1. Optionally Rotate logs: `mv  ~/log/liquidator.log  ~/log/liquidator.log.$(date +'%Y%m%dT%H%M%S')`
-1. `nohup bash $LIQUIDATOR_SRC_PATH/bin/start.sh >> ~/log/liquidator.log 2>&1 &`
+1. `nohup bash $LIQUIDATOR_SRC_PATH/bin/start.sh ~/.config/mrgn/lq_config.toml >> ~/log/liquidator.log 2>&1 &`
 
 Replace `<config.toml>` with the path to your newly created configuration file. After initiating this command, Eva begins its operation. Please note that it might take a few minutes for Eva to load all the marginfi accounts, including English support, and to be fully operational.
 
