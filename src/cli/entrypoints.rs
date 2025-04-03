@@ -89,6 +89,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         )
         .await
         {
+            // FIXME: make sure that the instance goes down in this case.
             error!("Failed to connect to geyser service: {:?}", e);
         }
     });

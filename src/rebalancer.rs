@@ -216,6 +216,7 @@ impl Rebalancer {
         let mut start = std::time::Instant::now();
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
 
+        info!("Starting the Rebalancer loop");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
             info!(
                 "Received geyser update: {:?} for {:?}",
@@ -334,7 +335,8 @@ impl Rebalancer {
                 continue;
             }
         }
-        Err(anyhow!("Rebalancer stopped"))
+        info!("Rebalancer stopped.");
+        Ok(())
     }
 
     async fn needs_to_be_relanced(&mut self) -> bool {

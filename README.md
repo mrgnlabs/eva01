@@ -6,17 +6,11 @@ Marginfi liquidator
 ## Deployment Guide
 ### Installing dependencies
 
-Ubuntu:
-```bash
-  sudo apt install build-essential libssl-dev pkg-config unzip
-```
-
-All systems:
-Follow this instructions
-  https://grpc.io/docs/protoc-installation/#install-pre-compiled-binaries-any-os;
+1. OS librarires: `sudo apt install build-essential libssl-dev pkg-config unzip`
+1. Protoc:  https://grpc.io/docs/protoc-installation/#install-pre-compiled-binaries-any-os;
+1. Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
 ### Creating a New Configuration File
-
 To initiate the creation of a new configuration file for the liquidator, execute the following command in your terminal:
 
 ```bash

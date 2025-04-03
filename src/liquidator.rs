@@ -151,6 +151,8 @@ impl Liquidator {
     pub async fn start(&mut self) -> anyhow::Result<()> {
         let rpc_client = RpcClient::new(self.general_config.rpc_url.clone());
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
+
+        info!("Staring the Liquidator loop.");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
             match msg.account_type {
                 AccountType::Oracle => {
@@ -297,7 +299,8 @@ impl Liquidator {
                 }
             }
         }
-        error!("Stopped getting messages from geyser");
+
+        info!("The Liquidator loop is stopped.");
         Ok(())
     }
 

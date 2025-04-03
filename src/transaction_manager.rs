@@ -1,7 +1,7 @@
 use crate::{config::GeneralConfig, metrics::ERROR_COUNT, ward};
 use crossbeam::channel::{Receiver, Sender};
 use jito_sdk_rust::JitoJsonRpcSDK;
-use log::{debug, error};
+use log::{debug, error, info};
 use serde_json::json;
 use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc};
@@ -128,6 +128,7 @@ impl TransactionManager {
             Self::check_bundle_status(jito_rx, jito_sdk, ack_tx).await;
         });
 
+        info!("Starting the Transaction manager loop.");
         while let Ok(TransactionData {
             transactions,
             ack_id,
@@ -166,7 +167,7 @@ impl TransactionManager {
 
             ward!(jito_tx.send((ack_id, bundle_uuid.to_string())).ok(), break);
         }
-        error!("Transaction manager stopped: internal stream closed");
+        info!("The Transaction manager loop is stopped.");
     }
 
     async fn check_bundle_status(
