@@ -12,30 +12,14 @@ Marginfi liquidator
 
 ### Creating a New Configuration File
 To initiate the creation of a new configuration file for the liquidator, execute the following command in your terminal:
-
-```bash
-  ./eva01 setup
-```
-
-or through cargo:
-
 ```bash
   cargo run -- setup
 ```
-
 This command launches a Mini CLI wizard that guides you through setting up a base configuration for the liquidator. During this process, it will also check if you have a MarginfiAccount initialized. If not, it will prompt you to create one. At this stage, the setup will only request the essential variables. For adjusting settings like `Minimum Profit`, you'll need to manually edit the configuration file afterward.
 Now, lets start the liquidator
 
 ### Starting the liquidator
-
 Once your configuration file is ready, you can start the liquidator by running:
-
-```bash
-  ./eva01 run <config.toml>
-```
-
-or:
-
 ```bash
   cargo run -- run <config.toml>
 ```
@@ -43,15 +27,12 @@ or:
 Replace `<config.toml>` with the path to your newly created configuration file. After initiating this command, Eva begins its operation. Please note that it might take a few minutes for Eva to load all the marginfi accounts, including English support, and to be fully operational.
 
 ### Initial Loading Time
-
 The initial loading phase can take some time, depending on your RPC. Eva will load everything needed into the state, including all Marginfi Accounts. Expect the loading time to be between 1-3 minutes depending on the RPC.
 
 ## Eva01 Configuration
-
 To run eva you need to add configuration variables first.
 
 ## Required Configuration
-
 The following are mandatory to run Eva
 
 - `RPC_URL` The RPC endpoint URL as a string.

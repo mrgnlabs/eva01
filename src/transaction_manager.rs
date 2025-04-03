@@ -79,8 +79,7 @@ impl TransactionManager {
     ) -> anyhow::Result<Self> {
         let keypair = read_keypair_file(&config.keypair_path)
             .map_err(|e| {
-                error!("Failed to read keypair file: {:?}", e);
-                e
+                error!("Failed to read keypair file ({:?}): {:?}", &config.keypair_path, e);
             })
             .unwrap();
 
