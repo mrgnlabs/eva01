@@ -61,8 +61,7 @@ impl GeyserService {
             Self::build_geyser_subscribe_request(&tracked_accounts_vec, &marginfi_program_id);
         let (_, mut stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;
 
-        info!("Connected to geyser");
-
+        info!("Staring the geyser loop.");
         while let Some(msg) = stream.next().await {
             if let Err(e) = msg {
                 warn!("Reconnecting to Geyser due to error: {:?}", e);
@@ -102,6 +101,7 @@ impl GeyserService {
                     );
                 }
 
+                // FIXME: Second call for the Marginfi program account update?
                 if let Some(account_type) = tracked_accounts.get(&address) {
                     Self::send_update(
                         &liquidator_sender,
@@ -113,6 +113,8 @@ impl GeyserService {
                 }
             }
         }
+        info!("The Geyser loop is stopped.");
+
         Ok(())
     }
 

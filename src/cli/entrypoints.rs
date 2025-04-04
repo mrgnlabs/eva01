@@ -12,7 +12,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
+pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // register_metrics();
 
     // let metrics_route = warp::path("metrics").map(move || {
@@ -42,7 +42,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     let mut transaction_manager =
-        TransactionManager::new(transaction_rx, ack_tx, config.general_config.clone()).await?;
+        TransactionManager::new(transaction_rx, ack_tx, config.general_config.clone())?;
 
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
@@ -51,8 +51,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         transaction_tx.clone(),
         ack_rx.clone(),
         stop_liquidator.clone(),
-    )
-    .await;
+    )?;
 
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
@@ -61,14 +60,13 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         ack_rx,
         rebalancer_rx.clone(),
         stop_liquidator.clone(),
-    )
-    .await?;
+    )?;
 
     info!("Loading data for liquidator...");
-    liquidator.load_data().await?;
+    liquidator.load_data()?;
 
     info!("Loading data for rebalancer...");
-    rebalancer.load_data(liquidator.get_banks_and_map()).await?;
+    rebalancer.load_data(liquidator.get_banks_and_map())?;
 
     let mut accounts_to_track = HashMap::new();
     for (key, value) in liquidator.get_accounts_to_track() {
@@ -89,26 +87,27 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         )
         .await
         {
+            // FIXME: make sure that the instance goes down in this case.
             error!("Failed to connect to geyser service: {:?}", e);
         }
     });
 
     tokio::task::spawn(async move {
-        transaction_manager.start().await;
+        transaction_manager.start();
     });
 
     tokio::task::spawn(async move {
-        if let Err(e) = rebalancer.start().await {
+        if let Err(e) = rebalancer.start() {
             error!("Rebalancer error: {:?}", e);
         }
     });
 
-    liquidator.start().await?;
+    liquidator.start()?;
 
     Ok(())
 }
 
-pub async fn wizard_setup() -> anyhow::Result<()> {
-    crate::cli::setup::setup().await?;
+pub fn wizard_setup() -> anyhow::Result<()> {
+    crate::cli::setup::setup()?;
     Ok(())
 }

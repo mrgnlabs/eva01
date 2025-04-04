@@ -41,7 +41,7 @@ mod transaction_manager;
 /// Crossbar client
 mod crossbar;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 6)]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger, with INFO as default log level
     Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }));
 
     // Main entrypoint
-    crate::cli::main_entry().await?;
+    crate::cli::main_entry()?;
 
     Ok(())
 }

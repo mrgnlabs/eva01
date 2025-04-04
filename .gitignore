@@ -3,3 +3,4 @@
 .env
 config.toml
 .vscode/
+bin/*.env

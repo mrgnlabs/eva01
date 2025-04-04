@@ -27,7 +27,7 @@ lazy_static! {
     };
 }
 
-pub async fn setup() -> anyhow::Result<()> {
+pub fn setup() -> anyhow::Result<()> {
     // Config location
     let input_raw = prompt_user(&format!(
         "Select config location [default: {:?}]: ",
@@ -74,7 +74,7 @@ pub async fn setup() -> anyhow::Result<()> {
 
     // Marginfi account discovery/selection
     let (keypair_path, signer_keypair) = ask_keypair_until_valid()?;
-    let accounts = marginfi_account_by_authority(signer_keypair.pubkey(), rpc_client).await?;
+    let accounts = marginfi_account_by_authority(signer_keypair.pubkey(), rpc_client)?;
     if accounts.is_empty() {
         println!("No marginfi account found for the provided signer. Please create one first.");
         bail!("No marginfi account found");
@@ -145,7 +145,7 @@ pub async fn setup() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn setup_from_cfg(
+pub fn setup_from_cfg(
     SetupFromCliOpts {
         rpc_url,
         tx_landing_url,
@@ -181,7 +181,6 @@ pub async fn setup_from_cfg(
     let marginfi_account = match marginfi_account {
         Some(account) => account,
         None => marginfi_account_by_authority(signer_pubkey, RpcClient::new(rpc_url.clone()))
-            .await
             .expect("Failed to get marginfi account by authority")
             .pop()
             .expect("No marginfi account found"),
@@ -245,7 +244,7 @@ pub async fn setup_from_cfg(
     Ok(())
 }
 
-async fn marginfi_account_by_authority(
+fn marginfi_account_by_authority(
     authority: Pubkey,
     rpc_client: RpcClient,
 ) -> anyhow::Result<Vec<Pubkey>> {
