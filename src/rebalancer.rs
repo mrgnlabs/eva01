@@ -46,6 +46,7 @@ use std::{
     cmp::min,
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc},
+    thread,
     time::Duration,
 };
 use switchboard_on_demand::PullFeedAccountData;
@@ -219,8 +220,10 @@ impl Rebalancer {
         info!("Starting the Rebalancer loop");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
             info!(
-                "Received geyser update: {:?} for {:?}",
-                msg.account_type, msg.address
+                "Thread {:?}. Received geyser update: {:?} for {:?}",
+                thread::current().id(),
+                msg.account_type,
+                msg.address
             );
             match msg.account_type {
                 AccountType::Oracle => {
