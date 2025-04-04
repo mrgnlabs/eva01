@@ -23,7 +23,7 @@ use solana_sdk::{
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock}, thread,
 };
 use switchboard_on_demand_client::{
     FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
@@ -258,7 +258,7 @@ impl LiquidatorAccount {
                     recent_blockhash,
                 );
 
-            debug!("liquidate_ix: {:?}", liquidate_ix);
+            debug!("Thread {:?}. liquidate_ix: {:?}", thread::current().id(), liquidate_ix);
 
             let res = self
                 .non_blocking_rpc_client
