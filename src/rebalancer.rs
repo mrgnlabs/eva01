@@ -37,7 +37,9 @@ use marginfi::{
         price::{OraclePriceFeedAdapter, OracleSetup, PriceBias, SwitchboardPullPriceFeed},
     },
 };
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
+};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::Account, account_info::IntoAccountInfo, commitment_config::CommitmentConfig,
@@ -62,7 +64,8 @@ pub struct Rebalancer {
     token_accounts: HashMap<Pubkey, TokenAccountWrapper>,
     banks: HashMap<Pubkey, BankWrapper>,
     token_account_manager: TokenAccountManager,
-    rpc_client: Arc<RpcClient>,
+    non_blocking_rpc_client: NonBlockingRpcClient,
+    txn_client: Arc<RpcClient>,
     mint_to_bank: HashMap<Pubkey, Pubkey>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
     preferred_mints: HashSet<Pubkey>,
@@ -82,15 +85,17 @@ impl Rebalancer {
         geyser_receiver: Receiver<GeyserUpdate>,
         stop_liquidations: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
-        let rpc_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
-        let token_account_manager = TokenAccountManager::new(rpc_client.clone())?;
+        let txn_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
+        let non_blocking_rpc_client = NonBlockingRpcClient::new(general_config.rpc_url.clone());
 
-        let liquidator_account = block_on(LiquidatorAccount::new(
+        let token_account_manager = TokenAccountManager::new(txn_client.clone())?;
+
+        let liquidator_account = LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
             transaction_tx.clone(),
             ack_rx,
             general_config.clone(),
-        ))?;
+        )?;
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();
 
@@ -101,7 +106,8 @@ impl Rebalancer {
             token_accounts: HashMap::new(),
             banks: HashMap::new(),
             token_account_manager,
-            rpc_client,
+            non_blocking_rpc_client,
+            txn_client,
             mint_to_bank: HashMap::new(),
             oracle_to_bank: HashMap::new(),
             preferred_mints,
@@ -141,7 +147,7 @@ impl Rebalancer {
             .collect::<Vec<_>>();
 
         let all_accounts = batch_get_multiple_accounts(
-            self.rpc_client.clone(),
+            self.txn_client.clone(),
             &all_keys,
             BatchLoadingConfig::DEFAULT,
         )
@@ -164,10 +170,10 @@ impl Rebalancer {
             .get_mints_and_token_account_addresses();
 
         self.liquidator_account
-            .load_initial_data(&self.rpc_client, mints.clone())?;
+            .load_initial_data(&self.txn_client, mints.clone())?;
 
         let accounts = batch_get_multiple_accounts(
-            self.rpc_client.clone(),
+            self.txn_client.clone(),
             &token_account_addresses,
             BatchLoadingConfig::DEFAULT,
         )?;
@@ -252,8 +258,7 @@ impl Rebalancer {
                             ))
                         }
                         OracleSetup::StakedWithPythPush => {
-                            let clock =
-                                ward!(block_on(cached_clock.get_clock(&rpc_client)).ok(), continue);
+                            let clock = ward!(cached_clock.get_clock(&rpc_client).ok(), continue);
 
                             let keys = &bank_to_update.bank.config.oracle_keys[1..3];
 
@@ -283,8 +288,7 @@ impl Rebalancer {
                             )
                         }
                         _ => {
-                            let clock =
-                                ward!(block_on(cached_clock.get_clock(&rpc_client)).ok(), continue);
+                            let clock = ward!(cached_clock.get_clock(&rpc_client).ok(), continue);
                             let oracle_account_info =
                                 (&msg.address, &mut msg.account).into_account_info();
 
@@ -393,7 +397,7 @@ impl Rebalancer {
         if !active_swb_oracles.is_empty() {
             if let Ok((ix, lut)) = block_on(PullFeed::fetch_update_many_ix(
                 SbContext::new(),
-                &self.liquidator_account.non_blocking_rpc_client,
+                &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
                     feeds: active_swb_oracles,
                     payer: self.general_config.signer_pubkey,
@@ -568,16 +572,14 @@ impl Rebalancer {
 
             let bank = self.banks.get(&self.swap_mint_bank_pk.unwrap()).unwrap();
 
-            block_on(
-                self.liquidator_account.withdraw(
-                    bank,
-                    self.token_account_manager
-                        .get_address_for_mint(bank.bank.mint)
-                        .unwrap(),
-                    withdraw_amount.to_num(),
-                    Some(withdraw_all),
-                    &self.banks,
-                ),
+            self.liquidator_account.withdraw(
+                bank,
+                self.token_account_manager
+                    .get_address_for_mint(bank.bank.mint)
+                    .unwrap(),
+                withdraw_amount.to_num(),
+                Some(withdraw_all),
+                &self.banks,
             )?;
 
             withdraw_amount
@@ -613,16 +615,14 @@ impl Rebalancer {
 
         let bank = self.banks.get(&bank_pk).unwrap();
 
-        block_on(
-            self.liquidator_account.repay(
-                bank,
-                &self
-                    .token_account_manager
-                    .get_address_for_mint(bank.bank.mint)
-                    .unwrap(),
-                token_balance.to_num(),
-                Some(repay_all),
-            ),
+        self.liquidator_account.repay(
+            bank,
+            &self
+                .token_account_manager
+                .get_address_for_mint(bank.bank.mint)
+                .unwrap(),
+            token_balance.to_num(),
+            Some(repay_all),
         )?;
 
         Ok(())
@@ -647,10 +647,8 @@ impl Rebalancer {
             .get_address_for_mint(bank.bank.mint)
             .unwrap();
 
-        block_on(
-            self.liquidator_account
-                .deposit(bank, token_address, balance.to_num()),
-        )?;
+        self.liquidator_account
+            .deposit(bank, token_address, balance.to_num())?;
 
         Ok(())
     }
@@ -731,16 +729,14 @@ impl Rebalancer {
             "Withdrawing {:?} of {:?} from bank {:?}",
             amount, bank.bank.mint, bank_pk
         );
-        block_on(
-            self.liquidator_account.withdraw(
-                bank,
-                self.token_account_manager
-                    .get_address_for_mint(bank.bank.mint)
-                    .unwrap(),
-                amount,
-                Some(withdrawl_all),
-                &self.banks,
-            ),
+        self.liquidator_account.withdraw(
+            bank,
+            self.token_account_manager
+                .get_address_for_mint(bank.bank.mint)
+                .unwrap(),
+            amount,
+            Some(withdrawl_all),
+            &self.banks,
         )?;
 
         debug!("Swapping");
@@ -795,7 +791,7 @@ impl Rebalancer {
             &[&read_keypair_file(&self.general_config.keypair_path).unwrap()],
         )?;
 
-        TransactionSender::aggressive_send_tx(self.rpc_client.clone(), &tx, SenderCfg::DEFAULT)
+        TransactionSender::aggressive_send_tx(self.txn_client.clone(), &tx, SenderCfg::DEFAULT)
             .map_err(|_| anyhow!("Failed to send swap transaction"))?;
 
         self.refresh_token_account(src_bank)?;
@@ -838,7 +834,7 @@ impl Rebalancer {
             .unwrap();
 
         let account = self
-            .rpc_client
+            .txn_client
             .get_account_with_commitment(&token_account_addresses, CommitmentConfig::confirmed())?
             .value
             .ok_or_else(|| anyhow::anyhow!("Token account not found"))?;

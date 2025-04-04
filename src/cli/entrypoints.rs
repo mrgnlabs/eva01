@@ -12,7 +12,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
+pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // register_metrics();
 
     // let metrics_route = warp::path("metrics").map(move || {
@@ -42,7 +42,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     let mut transaction_manager =
-        TransactionManager::new(transaction_rx, ack_tx, config.general_config.clone()).await?;
+        TransactionManager::new(transaction_rx, ack_tx, config.general_config.clone())?;
 
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
@@ -51,8 +51,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         transaction_tx.clone(),
         ack_rx.clone(),
         stop_liquidator.clone(),
-    )
-    .await;
+    )?;
 
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
@@ -64,7 +63,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     )?;
 
     info!("Loading data for liquidator...");
-    liquidator.load_data().await?;
+    liquidator.load_data()?;
 
     info!("Loading data for rebalancer...");
     rebalancer.load_data(liquidator.get_banks_and_map())?;
@@ -94,7 +93,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     });
 
     tokio::task::spawn(async move {
-        transaction_manager.start().await;
+        transaction_manager.start();
     });
 
     tokio::task::spawn(async move {
@@ -103,12 +102,12 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         }
     });
 
-    liquidator.start().await?;
+    liquidator.start()?;
 
     Ok(())
 }
 
-pub async fn wizard_setup() -> anyhow::Result<()> {
-    crate::cli::setup::setup().await?;
+pub fn wizard_setup() -> anyhow::Result<()> {
+    crate::cli::setup::setup()?;
     Ok(())
 }

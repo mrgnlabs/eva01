@@ -22,6 +22,7 @@ use core::panic;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
+use futures::executor::block_on;
 use log::{debug, error, info};
 use marginfi::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
@@ -78,24 +79,22 @@ pub struct PreparedLiquidatableAccount {
 
 impl Liquidator {
     /// Creates a new instance of the liquidator
-    pub async fn new(
+    pub fn new(
         general_config: GeneralConfig,
         liquidator_config: LiquidatorCfg,
         geyser_receiver: Receiver<GeyserUpdate>,
         transaction_sender: Sender<TransactionData>,
         ack_rx: Receiver<Pubkey>,
         stop_liquidation: Arc<AtomicBool>,
-    ) -> Liquidator {
+    ) -> anyhow::Result<Self> {
         let liquidator_account = LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
             transaction_sender,
             ack_rx,
             general_config.clone(),
-        )
-        .await
-        .unwrap();
+        )?;
 
-        Liquidator {
+        Ok(Liquidator {
             general_config,
             config: liquidator_config,
             geyser_receiver,
@@ -106,15 +105,15 @@ impl Liquidator {
             stop_liquidation,
             crossbar_client: CrossbarMaintainer::new(),
             cache_oracle_needed_accounts: HashMap::new(),
-        }
+        })
     }
 
     /// Loads necessary data to the liquidator
-    pub async fn load_data(&mut self) -> anyhow::Result<()> {
+    pub fn load_data(&mut self) -> anyhow::Result<()> {
         let rpc_client = Arc::new(RpcClient::new(self.general_config.rpc_url.clone()));
-        self.load_marginfi_accounts(rpc_client.clone()).await?;
+        self.load_marginfi_accounts(rpc_client.clone())?;
         info!("Loading banks...");
-        self.load_oracles_and_banks(rpc_client.clone()).await?;
+        self.load_oracles_and_banks(rpc_client.clone())?;
         info!("Loading initial data for liquidator...");
         self.liquidator_account
             .load_initial_data(rpc_client.as_ref(), self.get_all_mints())?;
@@ -134,9 +133,11 @@ impl Liquidator {
             .into_iter()
             .collect::<Vec<_>>();
 
-        let all_accounts =
-            batch_get_multiple_accounts(rpc_client.clone(), &all_keys, BatchLoadingConfig::DEFAULT)
-                .unwrap();
+        let all_accounts = batch_get_multiple_accounts(
+            rpc_client.clone(),
+            &all_keys,
+            BatchLoadingConfig::DEFAULT,
+        )?;
 
         self.cache_oracle_needed_accounts = all_keys
             .into_iter()
@@ -147,7 +148,7 @@ impl Liquidator {
     }
 
     /// Liquidator starts receiving messages and processing them
-    pub async fn start(&mut self) -> anyhow::Result<()> {
+    pub fn start(&mut self) -> anyhow::Result<()> {
         let rpc_client = RpcClient::new(self.general_config.rpc_url.clone());
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
 
@@ -183,7 +184,7 @@ impl Liquidator {
                                     msg.address, bank_to_update_pk
                                 );
                                 let clock =
-                                    ward!(cached_clock.get_clock(&rpc_client).await.ok(), continue);
+                                    ward!(cached_clock.get_clock(&rpc_client).ok(), continue);
                                 let keys = &bank_to_update.bank.config.oracle_keys[1..3];
 
                                 let mut accounts_info =
@@ -216,7 +217,7 @@ impl Liquidator {
                             }
                             _ => {
                                 let clock =
-                                    ward!(cached_clock.get_clock(&rpc_client).await.ok(), continue);
+                                    ward!(cached_clock.get_clock(&rpc_client).ok(), continue);
                                 // info!(
                                 //     "Getting update for oracle: {:?} for bank: {:?}",
                                 //     msg.address, bank_to_update_pk
@@ -264,7 +265,7 @@ impl Liquidator {
             {
                 break;
             }
-            if let Ok(mut accounts) = self.process_all_accounts().await {
+            if let Ok(mut accounts) = self.process_all_accounts() {
                 // Accounts are sorted from the highest profit to the lowest
                 accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                 accounts.reverse();
@@ -275,17 +276,13 @@ impl Liquidator {
                     );
                     LIQUIDATION_ATTEMPTS.inc();
                     let start = Instant::now();
-                    if let Err(e) = self
-                        .liquidator_account
-                        .liquidate(
-                            &account.liquidatee_account,
-                            &account.asset_bank,
-                            &account.liab_bank,
-                            account.asset_amount,
-                            &account.banks,
-                        )
-                        .await
-                    {
+                    if let Err(e) = self.liquidator_account.liquidate(
+                        &account.liquidatee_account,
+                        &account.asset_bank,
+                        &account.liab_bank,
+                        account.asset_amount,
+                        &account.banks,
+                    ) {
                         error!(
                             "Failed to liquidate account {:?}, error: {:?}",
                             account.liquidatee_account.address, e
@@ -304,7 +301,7 @@ impl Liquidator {
     }
 
     /// Checks if liquidation is needed, for each account one by one
-    async fn process_all_accounts(&mut self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
+    fn process_all_accounts(&mut self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
         // Update switchboard pull prices with crossbar
         let swb_feed_hashes = self
             .banks
@@ -317,7 +314,7 @@ impl Liquidator {
             })
             .collect::<Vec<_>>();
 
-        let simulated_prices = self.crossbar_client.simulate(swb_feed_hashes).await;
+        let simulated_prices = block_on(self.crossbar_client.simulate(swb_feed_hashes));
 
         for (bank_pk, price) in simulated_prices {
             let bank = self.banks.get_mut(&bank_pk).unwrap();
@@ -678,15 +675,10 @@ impl Liquidator {
     /// Loading marginfi accounts into the liquidator itself
     /// makes it easier and better, than holding it in a shared
     /// state engine, as it shouldn't be blocked by other threads
-    pub async fn load_marginfi_accounts(
-        &mut self,
-        rpc_client: Arc<RpcClient>,
-    ) -> anyhow::Result<()> {
+    pub fn load_marginfi_accounts(&mut self, rpc_client: Arc<RpcClient>) -> anyhow::Result<()> {
         info!("Loading marginfi accounts, this may take a few minutes, please wait!");
         let start = std::time::Instant::now();
-        let marginfi_accounts_pubkeys = self
-            .load_marginfi_account_addresses(rpc_client.clone())
-            .await?;
+        let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(rpc_client.clone())?;
 
         let mut marginfi_accounts = batch_get_multiple_accounts(
             rpc_client.clone(),
@@ -714,10 +706,11 @@ impl Liquidator {
         Ok(())
     }
 
-    async fn load_marginfi_account_addresses(
+    fn load_marginfi_account_addresses(
         &self,
         rpc_client: Arc<RpcClient>,
     ) -> anyhow::Result<Vec<Pubkey>> {
+        info!("Loading marginfi account addresses...");
         match &self.general_config.account_whitelist {
             Some(account_list) => Ok(account_list.clone()),
             None => {
@@ -763,13 +756,17 @@ impl Liquidator {
                     .map(|(pubkey, _)| *pubkey)
                     .collect();
 
+                info!(
+                    "Loaded {} marginfi account addresses.",
+                    marginfi_account_pubkeys.len()
+                );
                 Ok(marginfi_account_pubkeys)
             }
         }
     }
 
     /// Loads Oracles and banks into the Liquidator
-    async fn load_oracles_and_banks(&mut self, rpc_client: Arc<RpcClient>) -> anyhow::Result<()> {
+    fn load_oracles_and_banks(&mut self, rpc_client: Arc<RpcClient>) -> anyhow::Result<()> {
         let anchor_client = anchor_client::Client::new(
             anchor_client::Cluster::Custom(self.general_config.rpc_url.clone(), String::from("")),
             Arc::new(Keypair::new()),
@@ -779,12 +776,12 @@ impl Liquidator {
             anchor_client.program(self.general_config.marginfi_program_id)?;
 
         info!("Loading banks internally...");
-        let banks = program
-            .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
+        let banks = block_on(program.accounts::<Bank>(vec![RpcFilterType::Memcmp(
+            Memcmp::new_base58_encoded(
                 BANK_GROUP_PK_OFFSET,
                 self.general_config.marginfi_group_address.as_ref(),
-            ))])
-            .await?;
+            ),
+        )]))?;
 
         info!("Fetched {} banks", banks.len());
 
@@ -807,7 +804,7 @@ impl Liquidator {
             .collect();
 
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
-        let clock = cached_clock.get_clock(&rpc_client).await?;
+        let clock = cached_clock.get_clock(&rpc_client)?;
 
         debug!("Filling the cache...");
         for (bank_address, bank) in banks.iter() {

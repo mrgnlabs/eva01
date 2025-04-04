@@ -1,10 +1,11 @@
 use crate::{config::GeneralConfig, metrics::ERROR_COUNT, ward};
 use crossbeam::channel::{Receiver, Sender};
+use futures::executor::block_on;
 use jito_sdk_rust::JitoJsonRpcSDK;
 use log::{debug, error, info};
 use serde_json::json;
 use solana_address_lookup_table_program::state::AddressLookupTable;
-use solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as NonBlockRpc};
+use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     address_lookup_table_account::AddressLookupTableAccount,
     bs58,
@@ -17,8 +18,8 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::str::FromStr;
 use std::sync::Arc;
+use std::{str::FromStr, thread};
 
 /// Manages transactions for the liquidator and rebalancer
 #[allow(dead_code)]
@@ -27,7 +28,6 @@ pub struct TransactionManager {
     ack_tx: Sender<Pubkey>,
     keypair: Keypair,
     rpc: Arc<RpcClient>,
-    non_block_rpc: NonBlockRpc,
     jito_sdk: Arc<JitoJsonRpcSDK>,
     jito_tip_account: Pubkey,
     lookup_tables: Vec<AddressLookupTableAccount>,
@@ -72,14 +72,17 @@ struct BundleStatus {
 
 impl TransactionManager {
     /// Creates a new transaction manager
-    pub async fn new(
+    pub fn new(
         rx: Receiver<TransactionData>,
         ack_tx: Sender<Pubkey>,
         config: GeneralConfig,
     ) -> anyhow::Result<Self> {
         let keypair = read_keypair_file(&config.keypair_path)
             .map_err(|e| {
-                error!("Failed to read keypair file ({:?}): {:?}", &config.keypair_path, e);
+                error!(
+                    "Failed to read keypair file ({:?}): {:?}",
+                    &config.keypair_path, e
+                );
             })
             .unwrap();
 
@@ -88,12 +91,10 @@ impl TransactionManager {
             CommitmentConfig::confirmed(),
         ));
 
-        let non_block_rpc = NonBlockRpc::new(config.rpc_url.clone());
-
         // Loads the Address Lookup Table's accounts
         let mut lookup_tables = vec![];
         for table_address in &config.address_lookup_tables {
-            let raw_account = rpc.get_account(table_address).await?;
+            let raw_account = rpc.get_account(table_address)?;
             let address_lookup_table = AddressLookupTable::deserialize(&raw_account.data)?;
             let lookup_table = AddressLookupTableAccount {
                 key: *table_address,
@@ -103,7 +104,7 @@ impl TransactionManager {
         }
 
         let jito_sdk = Arc::new(JitoJsonRpcSDK::new(&config.block_engine_url, None));
-        let random_tip_account = jito_sdk.get_random_tip_account().await?;
+        let random_tip_account = block_on(jito_sdk.get_random_tip_account())?;
         let jito_tip_account = Pubkey::from_str(&random_tip_account)?;
 
         Ok(Self {
@@ -111,7 +112,6 @@ impl TransactionManager {
             ack_tx,
             keypair,
             rpc,
-            non_block_rpc,
             jito_sdk,
             jito_tip_account,
             lookup_tables,
@@ -119,13 +119,11 @@ impl TransactionManager {
     }
 
     /// Starts the transaction manager
-    pub async fn start(&mut self) {
+    pub fn start(&mut self) {
         let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
         let jito_sdk = Arc::clone(&self.jito_sdk);
         let ack_tx = self.ack_tx.clone();
-        tokio::spawn(async move {
-            Self::check_bundle_status(jito_rx, jito_sdk, ack_tx).await;
-        });
+        Self::check_bundle_status(jito_rx, jito_sdk, ack_tx);
 
         info!("Starting the Transaction manager loop.");
         while let Ok(TransactionData {
@@ -135,7 +133,7 @@ impl TransactionManager {
         {
             debug!("Ack ID: {:?}", ack_id);
 
-            let serialized_txs = match self.configure_instructions(transactions).await {
+            let serialized_txs = match self.configure_instructions(transactions) {
                 Ok(txs) => txs,
                 Err(e) => {
                     ERROR_COUNT.inc();
@@ -145,7 +143,7 @@ impl TransactionManager {
             };
 
             let bundle = json!(serialized_txs);
-            let response = match self.jito_sdk.send_bundle(Some(bundle), None).await {
+            let response = match block_on(self.jito_sdk.send_bundle(Some(bundle), None)) {
                 Ok(response) => response,
                 Err(e) => {
                     ERROR_COUNT.inc();
@@ -169,7 +167,7 @@ impl TransactionManager {
         info!("The Transaction manager loop is stopped.");
     }
 
-    async fn check_bundle_status(
+    fn check_bundle_status(
         jito_rx: Receiver<(Pubkey, String)>,
         jito_sdk: Arc<JitoJsonRpcSDK>,
         ack_tx: Sender<Pubkey>,
@@ -183,9 +181,8 @@ impl TransactionManager {
                     uuid, ack_id, attempt, max_retries
                 );
 
-                let status_response = jito_sdk
-                    .get_in_flight_bundle_statuses(vec![uuid.to_string()])
-                    .await;
+                let status_response =
+                    block_on(jito_sdk.get_in_flight_bundle_statuses(vec![uuid.to_string()]));
                 if let Err(e) = status_response {
                     debug!(
                         "Failed to check bundle {} (ack_id: {}) status: {:?}",
@@ -209,9 +206,7 @@ impl TransactionManager {
                                     "({}) Bundle landed on-chain. Checking final status...",
                                     uuid
                                 );
-                                if let Err(e) =
-                                    Self::check_final_bundle_status(&jito_sdk, &uuid).await
-                                {
+                                if let Err(e) = Self::check_final_bundle_status(&jito_sdk, &uuid) {
                                     error!("({}) Final status: {}", uuid, e.to_string());
                                 }
                                 break;
@@ -241,8 +236,11 @@ impl TransactionManager {
                 }
 
                 if attempt < max_retries {
-                    debug!("Sleeping for {} ms before retrying...", retry_delay.as_millis());
-                    tokio::time::sleep(retry_delay).await;
+                    debug!(
+                        "Sleeping for {} ms before retrying...",
+                        retry_delay.as_millis()
+                    );
+                    thread::sleep(retry_delay);
                 } else {
                     ERROR_COUNT.inc();
                     error!(
@@ -258,10 +256,7 @@ impl TransactionManager {
         }
     }
 
-    async fn check_final_bundle_status(
-        jito_sdk: &JitoJsonRpcSDK,
-        uuid: &str,
-    ) -> anyhow::Result<()> {
+    fn check_final_bundle_status(jito_sdk: &JitoJsonRpcSDK, uuid: &str) -> anyhow::Result<()> {
         let max_retries = 10;
         let retry_delay = std::time::Duration::from_millis(500);
 
@@ -271,7 +266,7 @@ impl TransactionManager {
                 uuid, attempt, max_retries
             );
 
-            let status_response = jito_sdk.get_bundle_statuses(vec![uuid.to_string()]).await?;
+            let status_response = block_on(jito_sdk.get_bundle_statuses(vec![uuid.to_string()]))?;
             let bundle_status = Self::get_bundle_status(&status_response)?;
 
             match bundle_status.confirmation_status.as_deref() {
@@ -303,7 +298,7 @@ impl TransactionManager {
             }
 
             if attempt < max_retries {
-                tokio::time::sleep(retry_delay).await;
+                thread::sleep(retry_delay);
             }
         }
 
@@ -384,11 +379,11 @@ impl TransactionManager {
     /// Adds the compute budget instruction to each instruction
     /// and compiles the instructions into transactions
     /// Returns a vector of transactions
-    async fn configure_instructions(
+    fn configure_instructions(
         &self,
         instructions: BatchTransactions,
     ) -> anyhow::Result<Vec<String>> {
-        let blockhash = self.rpc.get_latest_blockhash().await?;
+        let blockhash = self.rpc.get_latest_blockhash()?;
 
         let mut txs = Vec::new();
         for raw_transaction in instructions {
