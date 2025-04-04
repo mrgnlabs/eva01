@@ -74,7 +74,7 @@ pub struct Rebalancer {
 }
 
 impl Rebalancer {
-    pub async fn new(
+    pub fn new(
         general_config: GeneralConfig,
         config: RebalancerCfg,
         transaction_tx: Sender<TransactionData>,
@@ -85,13 +85,12 @@ impl Rebalancer {
         let rpc_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
         let token_account_manager = TokenAccountManager::new(rpc_client.clone())?;
 
-        let liquidator_account = LiquidatorAccount::new(
+        let liquidator_account = block_on(LiquidatorAccount::new(
             RpcClient::new(general_config.rpc_url.clone()),
             transaction_tx.clone(),
             ack_rx,
             general_config.clone(),
-        )
-        .await?;
+        ))?;
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();
 
@@ -114,7 +113,7 @@ impl Rebalancer {
         })
     }
 
-    pub async fn load_data(
+    pub fn load_data(
         &mut self,
         banks_and_map: (HashMap<Pubkey, BankWrapper>, HashMap<Pubkey, Pubkey>),
     ) -> anyhow::Result<()> {
@@ -165,8 +164,7 @@ impl Rebalancer {
             .get_mints_and_token_account_addresses();
 
         self.liquidator_account
-            .load_initial_data(&self.rpc_client, mints.clone())
-            .await?;
+            .load_initial_data(&self.rpc_client, mints.clone())?;
 
         let accounts = batch_get_multiple_accounts(
             self.rpc_client.clone(),
@@ -213,7 +211,7 @@ impl Rebalancer {
         Ok(())
     }
 
-    pub async fn start(&mut self) -> anyhow::Result<()> {
+    pub fn start(&mut self) -> anyhow::Result<()> {
         let max_duration = std::time::Duration::from_secs(20);
         let rpc_client = RpcClient::new(self.general_config.rpc_url.clone());
         let mut start = std::time::Instant::now();
@@ -255,7 +253,7 @@ impl Rebalancer {
                         }
                         OracleSetup::StakedWithPythPush => {
                             let clock =
-                                ward!(cached_clock.get_clock(&rpc_client).await.ok(), continue);
+                                ward!(block_on(cached_clock.get_clock(&rpc_client)).ok(), continue);
 
                             let keys = &bank_to_update.bank.config.oracle_keys[1..3];
 
@@ -286,7 +284,7 @@ impl Rebalancer {
                         }
                         _ => {
                             let clock =
-                                ward!(cached_clock.get_clock(&rpc_client).await.ok(), continue);
+                                ward!(block_on(cached_clock.get_clock(&rpc_client)).ok(), continue);
                             let oracle_account_info =
                                 (&msg.address, &mut msg.account).into_account_info();
 
@@ -429,7 +427,7 @@ impl Rebalancer {
         Ok(())
     }
 
-    // If our margin is at 50% or lower, we should stop liquidations and await until the account
+    // If our margin is at 50% or lower, we should stop liquidations and waits until the account
     // is fully rebalanced
     pub fn should_stop_liquidations(&self) {
         let (assets, liabs) = self.calc_health(

@@ -61,14 +61,13 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         ack_rx,
         rebalancer_rx.clone(),
         stop_liquidator.clone(),
-    )
-    .await?;
+    )?;
 
     info!("Loading data for liquidator...");
     liquidator.load_data().await?;
 
     info!("Loading data for rebalancer...");
-    rebalancer.load_data(liquidator.get_banks_and_map()).await?;
+    rebalancer.load_data(liquidator.get_banks_and_map())?;
 
     let mut accounts_to_track = HashMap::new();
     for (key, value) in liquidator.get_accounts_to_track() {
@@ -99,7 +98,7 @@ pub async fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     });
 
     tokio::task::spawn(async move {
-        if let Err(e) = rebalancer.start().await {
+        if let Err(e) = rebalancer.start() {
             error!("Rebalancer error: {:?}", e);
         }
     });

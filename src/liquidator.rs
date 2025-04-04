@@ -117,8 +117,7 @@ impl Liquidator {
         self.load_oracles_and_banks(rpc_client.clone()).await?;
         info!("Loading initial data for liquidator...");
         self.liquidator_account
-            .load_initial_data(rpc_client.as_ref(), self.get_all_mints())
-            .await?;
+            .load_initial_data(rpc_client.as_ref(), self.get_all_mints())?;
         info!("Loading staked banks...");
 
         let all_keys = self

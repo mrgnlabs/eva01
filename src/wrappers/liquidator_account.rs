@@ -23,7 +23,8 @@ use solana_sdk::{
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
-    sync::{Arc, RwLock}, thread,
+    sync::{Arc, RwLock},
+    thread,
 };
 use switchboard_on_demand_client::{
     FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
@@ -96,7 +97,7 @@ impl LiquidatorAccount {
         })
     }
 
-    pub async fn load_initial_data(
+    pub fn load_initial_data(
         &mut self,
         rpc_client: &RpcClient,
         mints: Vec<Pubkey>,
@@ -258,7 +259,11 @@ impl LiquidatorAccount {
                     recent_blockhash,
                 );
 
-            debug!("Thread {:?}. liquidate_ix: {:?}", thread::current().id(), liquidate_ix);
+            debug!(
+                "Thread {:?}. liquidate_ix: {:?}",
+                thread::current().id(),
+                liquidate_ix
+            );
 
             let res = self
                 .non_blocking_rpc_client
