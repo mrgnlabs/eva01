@@ -90,12 +90,8 @@ impl Rebalancer {
 
         let token_account_manager = TokenAccountManager::new(txn_client.clone())?;
 
-        let liquidator_account = LiquidatorAccount::new(
-            RpcClient::new(general_config.rpc_url.clone()),
-            transaction_tx.clone(),
-            ack_rx,
-            general_config.clone(),
-        )?;
+        let liquidator_account =
+            LiquidatorAccount::new(transaction_tx.clone(), ack_rx, &general_config)?;
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();
 

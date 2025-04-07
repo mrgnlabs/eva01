@@ -87,12 +87,8 @@ impl Liquidator {
         ack_rx: Receiver<Pubkey>,
         stop_liquidation: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
-        let liquidator_account = LiquidatorAccount::new(
-            RpcClient::new(general_config.rpc_url.clone()),
-            transaction_sender,
-            ack_rx,
-            general_config.clone(),
-        )?;
+        let liquidator_account =
+            LiquidatorAccount::new(transaction_sender, ack_rx, &general_config)?;
 
         Ok(Liquidator {
             general_config,

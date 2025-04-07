@@ -3,6 +3,7 @@ use crate::{
     geyser::{GeyserService, GeyserUpdate},
     liquidator::Liquidator,
     rebalancer::Rebalancer,
+    transaction_checker::TransactionChecker,
     transaction_manager::{TransactionData, TransactionManager},
 };
 use log::{error, info};
@@ -36,19 +37,21 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let (liquidator_tx, liquidator_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
+    let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
     let (ack_tx, ack_rx) = crossbeam::channel::unbounded::<Pubkey>();
 
     // This is to stop liquidator when rebalancer asks for it
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
-    let mut transaction_manager =
-        TransactionManager::new(transaction_rx, ack_tx, config.general_config.clone())?;
+    let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
+    let transaction_checker = TransactionChecker::new(&config.general_config.block_engine_url);
 
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         config.liquidator_config.clone(),
-        liquidator_rx.clone(),
+        liquidator_rx,
         transaction_tx.clone(),
+        // FIXME: Channel receivers are not thread safe
         ack_rx.clone(),
         stop_liquidator.clone(),
     )?;
@@ -56,9 +59,10 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
         config.rebalancer_config.clone(),
-        transaction_tx.clone(),
+        transaction_tx,
+        // FIXME: Channel receivers are not thread safe
         ack_rx,
-        rebalancer_rx.clone(),
+        rebalancer_rx,
         stop_liquidator.clone(),
     )?;
 
@@ -93,7 +97,11 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     });
 
     tokio::task::spawn(async move {
-        transaction_manager.start();
+        transaction_checker.check_bundle_status(jito_rx, ack_tx);
+    });
+
+    tokio::task::spawn(async move {
+        transaction_manager.start(jito_tx, transaction_rx);
     });
 
     tokio::task::spawn(async move {

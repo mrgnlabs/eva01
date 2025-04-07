@@ -46,13 +46,14 @@ pub struct LiquidatorAccount {
 
 impl LiquidatorAccount {
     pub fn new(
-        rpc_client: RpcClient,
         transaction_tx: Sender<TransactionData>,
+        // TODO: consider replacing ack_rx with concurrent hashmap
         ack_rx: Receiver<Pubkey>,
-        config: GeneralConfig,
+        config: &GeneralConfig,
     ) -> anyhow::Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
 
+        let rpc_client = RpcClient::new(config.rpc_url.clone());
         let account = rpc_client.get_account(&config.liquidator_account)?;
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
         let account_wrapper = MarginfiAccountWrapper::new(
