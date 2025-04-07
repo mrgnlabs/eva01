@@ -107,10 +107,11 @@ impl TransactionChecker {
                     );
                     break;
                 }
-
-                debug!("Sending ACK for bundle {} (ack_id: {})", uuid, ack_id);
-                ack_tx.send(ack_id).unwrap();
             }
+
+            // TODO: replace with concurrent hashset.
+            debug!("Sending ACK for bundle {} (ack_id: {})", uuid, ack_id);
+            ack_tx.send(ack_id).unwrap();
         }
     }
 }
