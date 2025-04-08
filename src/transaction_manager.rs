@@ -38,7 +38,7 @@ pub type BatchTransactions = Vec<RawTransaction>;
 
 pub struct TransactionData {
     pub transactions: BatchTransactions,
-    pub ack_id: Pubkey,
+    pub bundle_id: Pubkey,
 }
 
 pub struct RawTransaction {
@@ -109,10 +109,10 @@ impl TransactionManager {
         info!("Starting the Transaction manager loop.");
         while let Ok(TransactionData {
             transactions,
-            ack_id,
+            bundle_id,
         }) = txn_rx.recv()
         {
-            debug!("Ack ID: {:?}", ack_id);
+            debug!("Bundle ID: {:?}", bundle_id);
 
             let serialized_txs = match self.configure_instructions(transactions) {
                 Ok(txs) => txs,
@@ -143,26 +143,13 @@ impl TransactionManager {
                 }
             };
 
-            ward!(jito_tx.send((ack_id, bundle_uuid.to_string())).ok(), break);
+            ward!(
+                jito_tx.send((bundle_id, bundle_uuid.to_string())).ok(),
+                break
+            );
         }
         info!("The Transaction manager loop is stopped.");
     }
-
-    /*
-
-               if let Some(BundleRejectionError::SimulationFailure(tx_str, msg)) =
-               e.downcast_ref::<BundleRejectionError>()
-           {
-               if msg
-                   .as_ref()
-                   .is_some_and(|m| m.contains("custom program error: 0x1781"))
-               {
-                   error!("Illegal Liquidation");
-               } else {
-                   error!("SimulationFailure: {:?} - {:?}", tx_str, msg);
-               }
-           };
-    */
 
     /// Configures the instructions
     /// Adds the compute budget instruction to each instruction

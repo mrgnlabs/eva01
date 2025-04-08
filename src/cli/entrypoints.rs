@@ -9,8 +9,8 @@ use crate::{
 use log::{error, info};
 use solana_sdk::pubkey::Pubkey;
 use std::{
-    collections::HashMap,
-    sync::{atomic::AtomicBool, Arc},
+    collections::{HashMap, HashSet},
+    sync::{atomic::AtomicBool, Arc, RwLock},
 };
 
 pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
@@ -37,22 +37,21 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let (liquidator_tx, liquidator_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
-    let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
-    let (ack_tx, ack_rx) = crossbeam::channel::unbounded::<Pubkey>();
 
     // This is to stop liquidator when rebalancer asks for it
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
-    let transaction_checker = TransactionChecker::new(&config.general_config.block_engine_url);
+    let transaction_checker =
+        TransactionChecker::new(config.general_config.block_engine_url.as_str());
 
+    let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         config.liquidator_config.clone(),
         liquidator_rx,
         transaction_tx.clone(),
-        // FIXME: Channel receivers are not thread safe
-        ack_rx.clone(),
+        Arc::clone(&pending_bundles),
         stop_liquidator.clone(),
     )?;
 
@@ -60,8 +59,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.general_config.clone(),
         config.rebalancer_config.clone(),
         transaction_tx,
-        // FIXME: Channel receivers are not thread safe
-        ack_rx,
+        Arc::clone(&pending_bundles),
         rebalancer_rx,
         stop_liquidator.clone(),
     )?;
@@ -96,12 +94,12 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         }
     });
 
-    tokio::task::spawn(async move {
-        transaction_checker.check_bundle_status(jito_rx, ack_tx);
-    });
-
+    let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
     tokio::task::spawn(async move {
         transaction_manager.start(jito_tx, transaction_rx);
+    });
+    tokio::task::spawn(async move {
+        transaction_checker.check_bundle_status(jito_rx, pending_bundles);
     });
 
     tokio::task::spawn(async move {

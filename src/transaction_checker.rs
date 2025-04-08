@@ -1,6 +1,10 @@
-use std::thread;
+use std::{
+    collections::HashSet,
+    sync::{Arc, RwLock},
+    thread,
+};
 
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Receiver;
 use futures::executor::block_on;
 use jito_sdk_rust::JitoJsonRpcSDK;
 use solana_sdk::pubkey::Pubkey;
@@ -21,20 +25,24 @@ pub struct TransactionChecker {
 }
 
 impl TransactionChecker {
-    pub fn new(jito_block_engine_url: &String) -> Self {
+    pub fn new(jito_block_engine_url: &str) -> Self {
         debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
-        let jito_sdk = JitoJsonRpcSDK::new(&jito_block_engine_url, None);
+        let jito_sdk = JitoJsonRpcSDK::new(jito_block_engine_url, None);
         Self { jito_sdk }
     }
 
-    pub fn check_bundle_status(&self, jito_rx: Receiver<(Pubkey, String)>, ack_tx: Sender<Pubkey>) {
+    pub fn check_bundle_status(
+        &self,
+        jito_rx: Receiver<(Pubkey, String)>,
+        pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
+    ) {
         let max_retries = 10;
         let retry_delay = std::time::Duration::from_millis(500);
-        while let Ok((ack_id, uuid)) = jito_rx.recv() {
+        while let Ok((bundle_id, uuid)) = jito_rx.recv() {
             for attempt in 1..=max_retries {
                 debug!(
-                    "Checking bundle {} (ack_id: {}) status (attempt {}/{})",
-                    uuid, ack_id, attempt, max_retries
+                    "Checking bundle {} (uuid: {}) status (attempt {}/{})",
+                    bundle_id, uuid, attempt, max_retries
                 );
 
                 let status_response = block_on(
@@ -43,8 +51,8 @@ impl TransactionChecker {
                 );
                 if let Err(e) = status_response {
                     debug!(
-                        "Failed to check bundle {} (ack_id: {}) status: {:?}",
-                        uuid, ack_id, e
+                        "Failed to check bundle {} (uuid: {}) status: {:?}",
+                        bundle_id, uuid, e
                     );
                     continue;
                 }
@@ -102,16 +110,18 @@ impl TransactionChecker {
                 } else {
                     ERROR_COUNT.inc();
                     error!(
-                        "Failed to confirm bundle status: uuid = {}, ack_id = {}",
-                        uuid, ack_id
+                        "Failed to confirm bundle status: uuid = {}, bundle_id = {}",
+                        uuid, bundle_id
                     );
                     break;
                 }
             }
 
-            // TODO: replace with concurrent hashset.
-            debug!("Sending ACK for bundle {} (ack_id: {})", uuid, ack_id);
-            ack_tx.send(ack_id).unwrap();
+            debug!(
+                "Removing bundle {} (uuid: {}) from pending",
+                bundle_id, uuid
+            );
+            pending_bundles.write().unwrap().remove(&bundle_id);
         }
     }
 }

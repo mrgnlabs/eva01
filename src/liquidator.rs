@@ -47,7 +47,7 @@ use solana_sdk::{account::Account, account_info::IntoAccountInfo, bs58, signatur
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, RwLock},
     time::{Duration, Instant},
 };
 use switchboard_on_demand::PullFeedAccountData;
@@ -84,11 +84,11 @@ impl Liquidator {
         liquidator_config: LiquidatorCfg,
         geyser_receiver: Receiver<GeyserUpdate>,
         transaction_sender: Sender<TransactionData>,
-        ack_rx: Receiver<Pubkey>,
+        pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         stop_liquidation: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
         let liquidator_account =
-            LiquidatorAccount::new(transaction_sender, ack_rx, &general_config)?;
+            LiquidatorAccount::new(transaction_sender, &general_config, pending_liquidations)?;
 
         Ok(Liquidator {
             general_config,
@@ -137,7 +137,7 @@ impl Liquidator {
 
         self.cache_oracle_needed_accounts = all_keys
             .into_iter()
-            .zip(all_accounts.into_iter())
+            .zip(all_accounts)
             .map(|(key, acc)| (key, acc.unwrap()))
             .collect();
         Ok(())

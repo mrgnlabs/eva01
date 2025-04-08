@@ -2,7 +2,7 @@ use crate::{
     config::{GeneralConfig, RebalancerCfg},
     crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
-    metrics::{update_balance, ERROR_COUNT},
+    metrics::ERROR_COUNT,
     sender::{SenderCfg, TransactionSender},
     token_account_manager::TokenAccountManager,
     transaction_manager::{RawTransaction, TransactionData},
@@ -48,7 +48,7 @@ use solana_sdk::{
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, RwLock},
     thread,
     time::Duration,
 };
@@ -81,7 +81,7 @@ impl Rebalancer {
         general_config: GeneralConfig,
         config: RebalancerCfg,
         transaction_tx: Sender<TransactionData>,
-        ack_rx: Receiver<Pubkey>,
+        pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
         geyser_receiver: Receiver<GeyserUpdate>,
         stop_liquidations: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
@@ -91,7 +91,7 @@ impl Rebalancer {
         let token_account_manager = TokenAccountManager::new(txn_client.clone())?;
 
         let liquidator_account =
-            LiquidatorAccount::new(transaction_tx.clone(), ack_rx, &general_config)?;
+            LiquidatorAccount::new(transaction_tx.clone(), &general_config, pending_bundles)?;
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();
 
@@ -151,7 +151,7 @@ impl Rebalancer {
 
         self.cache_oracle_needed_accounts = all_keys
             .into_iter()
-            .zip(all_accounts.into_iter())
+            .zip(all_accounts)
             .map(|(key, acc)| (key, acc.unwrap()))
             .collect();
 
@@ -402,12 +402,12 @@ impl Rebalancer {
                     ..Default::default()
                 },
             )) {
-                debug!("SENDING Rebalancer SWB liquidate");
+                debug!("SENDING Rebalancer SWB bundle");
                 self.liquidator_account
                     .transaction_tx
                     .send(TransactionData {
                         transactions: vec![RawTransaction::new(vec![ix]).with_lookup_tables(lut)],
-                        ack_id: self.liquidator_account.account_wrapper.address,
+                        bundle_id: self.liquidator_account.account_wrapper.address,
                     })?;
             }
         }

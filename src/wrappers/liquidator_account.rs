@@ -4,7 +4,7 @@ use crate::{
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
     transaction_manager::{RawTransaction, TransactionData},
 };
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Sender;
 use futures::executor::block_on;
 use log::{debug, error, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
@@ -47,9 +47,8 @@ pub struct LiquidatorAccount {
 impl LiquidatorAccount {
     pub fn new(
         transaction_tx: Sender<TransactionData>,
-        // TODO: consider replacing ack_rx with concurrent hashmap
-        ack_rx: Receiver<Pubkey>,
         config: &GeneralConfig,
+        pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     ) -> anyhow::Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
 
@@ -68,18 +67,6 @@ impl LiquidatorAccount {
             &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
         ))?;
         let swb_gateway = block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
-
-        let pending_liquidations = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
-        let cloned_pending_liquidations = Arc::clone(&pending_liquidations);
-
-        std::thread::spawn(move || {
-            while let Ok(liquidatee_account_address) = ack_rx.recv() {
-                cloned_pending_liquidations
-                    .write()
-                    .unwrap()
-                    .remove(&liquidatee_account_address);
-            }
-        });
 
         Ok(Self {
             account_wrapper,
@@ -240,7 +227,7 @@ impl LiquidatorAccount {
                 .insert(liquidatee_account_address);
             self.transaction_tx.send(TransactionData {
                 transactions,
-                ack_id: liquidatee_account_address,
+                bundle_id: liquidatee_account_address,
             })?;
         } else {
             let tx: solana_sdk::transaction::Transaction =

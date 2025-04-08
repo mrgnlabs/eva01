@@ -1,7 +1,7 @@
+use futures::stream::{self, StreamExt};
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use switchboard_on_demand_client::CrossbarClient;
-use futures::stream::{self, StreamExt};
 
 const CHUNK_SIZE: usize = 20;
 
@@ -22,19 +22,19 @@ impl CrossbarMaintainer {
         if feeds.is_empty() {
             return Vec::new();
         }
-    
+
         let feed_hash_to_pubkey: HashMap<&str, Pubkey> = feeds
             .iter()
             .map(|(pk, hash)| (hash.as_str(), *pk))
             .collect();
-    
+
         let feed_hashes: Vec<String> = feeds.iter().map(|(_, hash)| hash.clone()).collect();
-    
+
         // Stream chunks and limit concurrent simulations
         let results = stream::iter(feed_hashes.chunks(CHUNK_SIZE).map(|chunk| {
             let client = self.crossbar_client.clone();
             let chunk_refs: Vec<String> = chunk.to_vec(); // clone once for move
-    
+
             async move {
                 let chunk_refs: Vec<&str> = chunk_refs.iter().map(String::as_str).collect();
                 client.simulate_feeds(&chunk_refs).await.unwrap_or_default()
@@ -43,9 +43,9 @@ impl CrossbarMaintainer {
         .buffer_unordered(10) // Limit to 10 concurrent simulations
         .collect::<Vec<_>>()
         .await;
-    
+
         let mut prices = Vec::new();
-    
+
         for responses in results.into_iter().flatten() {
             if let Some(price) = calculate_price(responses.results) {
                 if let Some(address) = feed_hash_to_pubkey.get(responses.feedHash.as_str()) {
@@ -55,7 +55,7 @@ impl CrossbarMaintainer {
                 }
             }
         }
-    
+
         prices
     }
 }
