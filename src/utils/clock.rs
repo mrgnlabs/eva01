@@ -21,7 +21,7 @@ impl CachedClock {
         }
     }
 
-    pub async fn get_clock(&self, rpc_client: &RpcClient) -> anyhow::Result<Clock> {
+    pub fn get_clock(&self, rpc_client: &RpcClient) -> anyhow::Result<Clock> {
         let mut last_updated = self.last_updated.lock().unwrap();
         let mut clock = self.clock.lock().unwrap();
 

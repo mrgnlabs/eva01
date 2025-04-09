@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use prometheus::{Counter, Encoder, Gauge, Histogram, HistogramOpts, Registry, TextEncoder};
 use std::collections::HashMap;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
@@ -25,7 +25,7 @@ lazy_static! {
     pub static ref BALANCES: Mutex<HashMap<String, Gauge>> = Mutex::new(HashMap::new());
 }
 
-pub fn register_metrics() {
+pub fn _register_metrics() {
     REGISTRY
         .register(Box::new(LIQUIDATION_ATTEMPTS.clone()))
         .unwrap();
@@ -38,7 +38,7 @@ pub fn register_metrics() {
         .unwrap();
 }
 
-pub fn metrics_handler() -> String {
+pub fn _metrics_handler() -> String {
     let encoder = TextEncoder::new();
     let mut buffer = Vec::new();
     let metric_families = REGISTRY.gather();
@@ -46,8 +46,8 @@ pub fn metrics_handler() -> String {
     String::from_utf8(buffer).unwrap()
 }
 
-pub async fn update_balance(coin: &str, new_balance: f64) {
-    let mut balances = BALANCES.lock().await;
+pub fn _update_balance(coin: &str, new_balance: f64) {
+    let mut balances = BALANCES.lock().unwrap();
 
     if let Some(gauge) = balances.get(coin) {
         gauge.set(new_balance);

@@ -45,7 +45,7 @@ pub struct BatchLoadingConfig {
 impl BatchLoadingConfig {
     pub const DEFAULT: Self = Self {
         max_batch_size: 100,
-        max_concurrent_calls: 64,
+        max_concurrent_calls: 16,
     };
 }
 
