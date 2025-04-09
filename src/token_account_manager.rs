@@ -26,6 +26,7 @@ pub enum TokenAccountManagerError {
 
 #[derive(Clone)]
 pub struct TokenAccountManager {
+    // TODO: clarify if it is really needed to be thread safe anymore.
     mint_to_account: Arc<RwLock<HashMap<Pubkey, (Pubkey, Pubkey)>>>,
     rpc_client: Arc<RpcClient>,
 }
