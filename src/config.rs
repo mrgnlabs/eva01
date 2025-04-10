@@ -24,10 +24,10 @@ pub struct Eva01Config {
 
 impl Eva01Config {
     pub fn try_load_from_file(path: PathBuf) -> anyhow::Result<Self> {
-        let config_str = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read config file: {:#?}", e))?;
+        let config_str = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to read config file ({:?}): {:#?}", &path, e))?;
         let config = toml::from_str(&config_str)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config file {:#?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse config file ({:?}): {:#?}", &path, e))?;
         Ok(config)
     }
 
