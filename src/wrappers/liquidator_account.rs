@@ -114,7 +114,7 @@ impl LiquidatorAccount {
         let liab_mint = liab_bank.bank.mint;
 
         let liquidator_observation_accounts = self.account_wrapper.get_observation_accounts(
-            &[asset_bank.address, liab_bank.address],
+            &[liab_bank.address, asset_bank.address],
             &[],
             banks,
         );
