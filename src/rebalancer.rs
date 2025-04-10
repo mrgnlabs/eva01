@@ -210,6 +210,12 @@ impl Rebalancer {
         self.swap_mint_bank_pk = self
             .get_bank_for_mint(&self.config.swap_mint)
             .map(|bank| bank.address);
+        if self.swap_mint_bank_pk.is_none() {
+            return Err(anyhow!(
+                "Failed to find a bank for the swap mint {}!",
+                &self.config.swap_mint
+            ));
+        }
 
         Ok(())
     }
@@ -418,9 +424,9 @@ impl Rebalancer {
     fn rebalance_accounts(&mut self) -> anyhow::Result<()> {
         self.fetch_swb_prices()?;
 
-        self.sell_non_preferred_deposits()?;
+        self.sell_non_preferred_deposits();
 
-        self.repay_liabilities()?;
+        self.repay_liabilities();
 
         self.drain_tokens_from_token_accounts()?;
 
@@ -474,7 +480,7 @@ impl Rebalancer {
         )
     }
 
-    fn sell_non_preferred_deposits(&mut self) -> anyhow::Result<()> {
+    fn sell_non_preferred_deposits(&mut self) {
         let non_preferred_deposits = self
             .liquidator_account
             .account_wrapper
@@ -492,11 +498,9 @@ impl Rebalancer {
                 }
             }
         }
-
-        Ok(())
     }
 
-    fn repay_liabilities(&mut self) -> anyhow::Result<()> {
+    fn repay_liabilities(&mut self) {
         let liabilities = self
             .liquidator_account
             .account_wrapper
@@ -513,8 +517,6 @@ impl Rebalancer {
                 }
             }
         }
-
-        Ok(())
     }
 
     /// Repay a liability for a given bank
@@ -566,22 +568,41 @@ impl Rebalancer {
 
         // Get the amount of USDC needed to repay the liability
 
-        let required_swap_token =
-            self.get_amount(liab_usd_value, &self.swap_mint_bank_pk.unwrap(), None)?;
+        let required_swap_token = self.get_amount(
+            liab_usd_value,
+            &self
+                .swap_mint_bank_pk
+                .ok_or(anyhow!("The Swap mint bank is not set!"))?,
+            None,
+        )?;
 
         let swap_token_balance = self
-            .get_token_balance_for_bank(&self.swap_mint_bank_pk.unwrap())
+            .get_token_balance_for_bank(
+                &self
+                    .swap_mint_bank_pk
+                    .ok_or(anyhow!("The Swap mint bank is not set!"))?,
+            )
             .unwrap_or_default();
 
         let token_balance_to_withdraw = required_swap_token - swap_token_balance;
 
         let withdraw_amount = if token_balance_to_withdraw.is_positive() {
-            let (max_withdraw_amount, withdraw_all) =
-                self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk.unwrap())?;
+            let (max_withdraw_amount, withdraw_all) = self.get_max_withdraw_for_bank(
+                &self
+                    .swap_mint_bank_pk
+                    .ok_or(anyhow!("The Swap mint bank is not set!"))?,
+            )?;
 
             let withdraw_amount = min(max_withdraw_amount, token_balance_to_withdraw);
 
-            let bank = self.banks.get(&self.swap_mint_bank_pk.unwrap()).unwrap();
+            let bank = self
+                .banks
+                .get(
+                    &self
+                        .swap_mint_bank_pk
+                        .ok_or(anyhow!("The Swap mint bank is not set!"))?,
+                )
+                .unwrap();
 
             self.liquidator_account.withdraw(
                 bank,
@@ -601,15 +622,15 @@ impl Rebalancer {
         let amount_to_swap = min(liab_balance + withdraw_amount, required_swap_token);
         debug!(
             "SWAPPING {:?} of {:?} for {:?}",
-            amount_to_swap,
-            self.swap_mint_bank_pk.unwrap(),
-            bank_pk
+            amount_to_swap, self.swap_mint_bank_pk, bank_pk
         );
 
         if amount_to_swap.is_positive() {
             self.swap(
                 amount_to_swap.to_num(),
-                &self.swap_mint_bank_pk.unwrap(),
+                &self
+                    .swap_mint_bank_pk
+                    .ok_or(anyhow!("The Swap mint bank is not set!"))?,
                 &bank_pk,
             )?;
 
@@ -640,29 +661,30 @@ impl Rebalancer {
     }
 
     fn deposit_preferred_tokens(&self) -> anyhow::Result<()> {
-        if let Some(swap_mint_bank) = self.swap_mint_bank_pk {
-            if let Some(balance) = self.get_token_balance_for_bank(&swap_mint_bank) {
-                if !balance.is_zero() {
-                    debug!(
-                        "Depositing preferred tokens for the Swap mint bank {:?}.",
-                        swap_mint_bank
-                    );
+        let swap_mint_bank = self
+            .swap_mint_bank_pk
+            .ok_or(anyhow!("The Swap mint bank is not set!"))?;
 
-                    if let Some(bank) = self.banks.get(&swap_mint_bank) {
-                        if let Some(token_address) = self
-                            .token_account_manager
-                            .get_address_for_mint(bank.bank.mint)
+        if let Some(balance) = self.get_token_balance_for_bank(&swap_mint_bank) {
+            if !balance.is_zero() {
+                debug!(
+                    "Depositing preferred tokens for the Swap mint bank {:?}.",
+                    swap_mint_bank
+                );
+
+                if let Some(bank) = self.banks.get(&swap_mint_bank) {
+                    if let Some(token_address) = self
+                        .token_account_manager
+                        .get_address_for_mint(bank.bank.mint)
+                    {
+                        if let Err(error) =
+                            self.liquidator_account
+                                .deposit(bank, token_address, balance.to_num())
                         {
-                            if let Err(error) = self.liquidator_account.deposit(
-                                bank,
-                                token_address,
-                                balance.to_num(),
-                            ) {
-                                error!(
-                                    "Failed to deposit to the Bank ({:?}): {:?}",
-                                    bank.bank, error
-                                );
-                            }
+                            error!(
+                                "Failed to deposit to the Bank ({:?}): {:?}",
+                                bank.bank, error
+                            );
                         }
                     }
                 }
@@ -704,25 +726,27 @@ impl Rebalancer {
     }
 
     fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<()> {
-        if let Some(swap_mint_bank) = self.swap_mint_bank_pk {
-            let token_accounts: Vec<TokenAccountWrapper> =
-                self.token_accounts.values().cloned().collect();
+        let swap_mint_bank = self
+            .swap_mint_bank_pk
+            .ok_or(anyhow!("The Swap mint bank is not set!"))?;
 
-            if !token_accounts.is_empty() {
-                debug!("Draining tokens from token accounts.");
-                for account in token_accounts {
-                    if account.bank.bank.mint == self.config.swap_mint {
-                        continue;
-                    }
+        let token_accounts: Vec<TokenAccountWrapper> =
+            self.token_accounts.values().cloned().collect();
 
-                    let value = account.get_value()?;
-                    if value > self.config.token_account_dust_threshold {
-                        self.swap(
-                            account.get_amount().to_num(),
-                            &account.bank.address,
-                            &swap_mint_bank,
-                        )?;
-                    }
+        if !token_accounts.is_empty() {
+            debug!("Draining tokens from token accounts.");
+            for account in token_accounts {
+                if account.bank.bank.mint == self.config.swap_mint {
+                    continue;
+                }
+
+                let value = account.get_value()?;
+                if value > self.config.token_account_dust_threshold {
+                    self.swap(
+                        account.get_amount().to_num(),
+                        &account.bank.address,
+                        &swap_mint_bank,
+                    )?;
                 }
             }
         }
@@ -760,7 +784,13 @@ impl Rebalancer {
             &self.banks,
         )?;
 
-        self.swap(amount, bank_pk, &self.swap_mint_bank_pk.unwrap())?;
+        self.swap(
+            amount,
+            bank_pk,
+            &self
+                .swap_mint_bank_pk
+                .ok_or(anyhow!("The Swap mint bank is not set!"))?,
+        )?;
 
         Ok(())
     }
