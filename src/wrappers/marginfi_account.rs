@@ -116,13 +116,27 @@ impl MarginfiAccountWrapper {
         exclude_banks: &[Pubkey],
         banks: &HashMap<Pubkey, BankWrapperT<T>>,
     ) -> Vec<Pubkey> {
-        let mut bank_pks = self.get_active_banks();
+        // This is a temporary fix to ensure the proper order of the remaining accounts.
+        // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320
+        let active_bank_pks = self.get_active_banks();
 
-        for bank_pk in include_banks {
-            if !bank_pks.contains(bank_pk) {
-                bank_pks.push(*bank_pk);
+        let mut bank_pks: Vec<Pubkey> = vec![];
+        let mut bank_to_include_index = 0;
+
+        for balance in self.lending_account.balances.iter() {
+            if balance.active {
+                bank_pks.push(balance.bank_pk);
+            } else if include_banks.len() > bank_to_include_index {
+                for bank_pk in &include_banks[bank_to_include_index..] {
+                    bank_to_include_index += 1;
+                    if !active_bank_pks.contains(bank_pk) {
+                        bank_pks.push(*bank_pk);
+                        break;
+                    }
+                }
             }
         }
+        // The end of the complex logic-to-be-removed
 
         bank_pks.retain(|bank_pk| !exclude_banks.contains(bank_pk));
 
