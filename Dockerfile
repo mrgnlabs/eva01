@@ -27,7 +27,7 @@ WORKDIR /app
 # Copy the build artifact from the build stage
 COPY --from=builder /usr/src/app/target/release/eva01 .
 
-ENV RUST_LOG=eva01=info
+ENV RUST_LOG=eva01=debug
 ENV PRETTY_LOGS=1
 
 # Set the startup command
