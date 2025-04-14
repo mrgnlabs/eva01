@@ -274,17 +274,14 @@ mod tests {
             healthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), usdc_bank.address)]
         );
-        assert_eq!(
-            healthy.get_deposits(&[], &banks),
-            vec![(I80F48::from_num(100), sol_bank.address)]
-        );
-        let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap().unwrap();
+        assert_eq!(healthy.get_deposits(&[], &banks), vec![(sol_bank.address)]);
+        let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
             BalanceSide::Assets => assert!(true, "Side is Assets"),
             BalanceSide::Liabilities => assert!(false, "Side is Liabilities"),
         }
-        let (balance, side) = healthy.get_balance_for_bank(&usdc_bank).unwrap().unwrap();
+        let (balance, side) = healthy.get_balance_for_bank(&usdc_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
             BalanceSide::Assets => assert!(false, "Side is Assets"),
@@ -324,16 +321,16 @@ mod tests {
             vec![(I80F48::from_num(100), sol_bank.address)]
         );
         assert_eq!(
-            unhealthy.get_deposits(&[], &banks).unwrap(),
-            vec![(I80F48::from_num(100), usdc_bank.address)]
+            unhealthy.get_deposits(&[], &banks),
+            vec![(usdc_bank.address)]
         );
-        let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap().unwrap();
+        let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
             BalanceSide::Assets => assert!(false, "Side is Assets"),
             BalanceSide::Liabilities => assert!(true, "Side is Liabilities"),
         }
-        let (balance, side) = unhealthy.get_balance_for_bank(&usdc_bank).unwrap().unwrap();
+        let (balance, side) = unhealthy.get_balance_for_bank(&usdc_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
             BalanceSide::Assets => assert!(true, "Side is Assets"),

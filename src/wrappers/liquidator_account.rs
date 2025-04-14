@@ -113,7 +113,8 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
-        let liquidator_observation_accounts = self.account_wrapper.get_observation_accounts(
+        let liquidator_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
+            &self.account_wrapper.lending_account,
             &[liab_bank.address, asset_bank.address],
             &[],
             banks,
@@ -123,8 +124,12 @@ impl LiquidatorAccount {
             liquidator_observation_accounts
         );
 
-        let liquidatee_observation_accounts =
-            liquidatee_account.get_observation_accounts(&[], &[], banks);
+        let liquidatee_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
+            &liquidatee_account.lending_account,
+            &[],
+            &[],
+            banks,
+        );
         debug!(
             "liquidatee_observation_accounts: {:?}",
             liquidatee_observation_accounts
@@ -291,9 +296,12 @@ impl LiquidatorAccount {
             vec![]
         };
 
-        let observation_accounts =
-            self.account_wrapper
-                .get_observation_accounts(&[], &banks_to_exclude, banks);
+        let observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
+            &self.account_wrapper.lending_account,
+            &[],
+            &banks_to_exclude,
+            banks,
+        );
 
         let mint = bank.bank.mint;
         let token_program = *self.token_program_per_mint.get(&mint).unwrap();
