@@ -19,6 +19,6 @@ export RUST_LOG=debug,hyper=info
 export RUST_BACKTRACDE=full
 cargo run -- run $1
 
-popd > /dev/pull
+popd > /dev/null
 
 
