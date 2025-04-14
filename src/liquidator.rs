@@ -240,6 +240,12 @@ impl Liquidator {
                 AccountType::Marginfi => {
                     let marginfi_account =
                         bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
+                    if msg.address == self.liquidator_account.account_wrapper.address {
+                        debug!(
+                            "Got an update for liquidator account!!!!!!!!!: {:?}",
+                            msg.address
+                        );
+                    }
                     self.marginfi_accounts
                         .entry(msg.address)
                         .and_modify(|mrgn_account| {
