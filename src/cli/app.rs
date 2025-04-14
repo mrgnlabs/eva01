@@ -48,6 +48,8 @@ pub struct SetupFromCliOpts {
     pub yellowstone_x_token: Option<String>,
     #[arg(long, help = "Compute unit price in micro lamports")]
     pub compute_unit_price_micro_lamports: Option<u64>,
+    #[arg(long, help = "Max number of compute units per transaction")]
+    pub compute_unit_limit: u32,
     #[arg(
         long,
         help = "Marginfi program id",

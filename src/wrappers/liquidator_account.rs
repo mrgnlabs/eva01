@@ -15,6 +15,7 @@ use solana_client::{
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
+    compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
     pubkey,
     signature::{read_keypair_file, Keypair},
@@ -42,6 +43,7 @@ pub struct LiquidatorAccount {
     rpc_client: RpcClient,
     pub non_blocking_rpc_client: NonBlockingRpcClient,
     pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
+    compute_unit_limit: u32,
 }
 
 impl LiquidatorAccount {
@@ -79,6 +81,7 @@ impl LiquidatorAccount {
             rpc_client,
             non_blocking_rpc_client,
             pending_liquidations,
+            compute_unit_limit: config.compute_unit_limit,
         })
     }
 
@@ -179,6 +182,8 @@ impl LiquidatorAccount {
             None
         };
 
+        let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
+
         let liquidate_ix = make_liquidate_ix(
             self.program_id,
             self.group,
@@ -220,7 +225,7 @@ impl LiquidatorAccount {
             //     )
             //     .await;
 
-            transactions.push(RawTransaction::new(vec![liquidate_ix]));
+            transactions.push(RawTransaction::new(vec![liquidate_ix, cu_limit_ix]));
 
             debug!(
                 "SENDING DOUBLE liquidate: bundle length: {:?}",
@@ -237,16 +242,17 @@ impl LiquidatorAccount {
         } else {
             let tx: solana_sdk::transaction::Transaction =
                 solana_sdk::transaction::Transaction::new_signed_with_payer(
-                    &[liquidate_ix.clone()],
+                    &[liquidate_ix.clone(), cu_limit_ix.clone()],
                     Some(&signer_pk),
                     &[&self.signer_keypair],
                     recent_blockhash,
                 );
 
             debug!(
-                "Thread {:?}. liquidate_ix: {:?}",
+                "Thread {:?}: liquidate_ix: ({:?}), cu_limit_ix: ({:?})",
                 thread::current().id(),
-                liquidate_ix
+                liquidate_ix,
+                cu_limit_ix
             );
 
             let res = self

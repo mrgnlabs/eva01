@@ -63,6 +63,7 @@ pub struct GeneralConfig {
     pub liquidator_account: Pubkey,
     #[serde(default = "GeneralConfig::default_compute_unit_price_micro_lamports")]
     pub compute_unit_price_micro_lamports: Option<u64>,
+    pub compute_unit_limit: u32,
     #[serde(
         deserialize_with = "from_pubkey_string",
         serialize_with = "pubkey_to_str",
@@ -101,6 +102,7 @@ impl std::fmt::Display for GeneralConfig {
                  - Keypair Path: {:?}\n\
                  - Liquidator Account: {}\n\
                  - Compute Unit Price Micro Lamports: {}\n\
+                 - Compute Unit Limit: {}\n\
                  - Marginfi Program ID: {}\n\
                  - Marginfi Group Address: {}\n\
                  - Account Whitelist: {}",
@@ -111,6 +113,7 @@ impl std::fmt::Display for GeneralConfig {
             self.keypair_path,
             self.liquidator_account,
             self.compute_unit_price_micro_lamports.unwrap_or_default(),
+            self.compute_unit_limit,
             self.marginfi_program_id,
             self.marginfi_group_address,
             self.account_whitelist
@@ -147,6 +150,10 @@ impl GeneralConfig {
 
     pub fn default_compute_unit_price_micro_lamports() -> Option<u64> {
         Some(10_000)
+    }
+
+    pub fn default_compute_unit_limit() -> u32 {
+        200_000
     }
 
     pub fn default_block_engine_url() -> String {

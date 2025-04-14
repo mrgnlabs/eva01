@@ -101,6 +101,7 @@ pub fn setup() -> anyhow::Result<()> {
         liquidator_account: accounts[0],
         compute_unit_price_micro_lamports: GeneralConfig::default_compute_unit_price_micro_lamports(
         ),
+        compute_unit_limit: GeneralConfig::default_compute_unit_limit(),
         marginfi_program_id,
         marginfi_group_address,
         account_whitelist: GeneralConfig::default_account_whitelist(),
@@ -154,6 +155,7 @@ pub fn setup_from_cfg(
         yellowstone_endpoint,
         yellowstone_x_token,
         compute_unit_price_micro_lamports,
+        compute_unit_limit,
         marginfi_program_id,
         marginfi_group_address,
         min_profit,
@@ -196,6 +198,7 @@ pub fn setup_from_cfg(
         keypair_path,
         liquidator_account: marginfi_account,
         compute_unit_price_micro_lamports,
+        compute_unit_limit,
         marginfi_program_id,
         marginfi_group_address,
         account_whitelist: None,
