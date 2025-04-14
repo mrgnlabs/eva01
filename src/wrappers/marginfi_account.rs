@@ -1,5 +1,6 @@
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
+use indexmap::IndexSet;
 use log::debug;
 use marginfi::state::marginfi_account::{BalanceSide, LendingAccount};
 use solana_program::pubkey::Pubkey;
@@ -111,35 +112,25 @@ impl MarginfiAccountWrapper {
     }
 
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
-        &self,
+        lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         banks: &HashMap<Pubkey, BankWrapperT<T>>,
     ) -> Vec<Pubkey> {
-        // This is a temporary fix to ensure the proper order of the remaining accounts.
-        // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320
-        let active_bank_pks = self.get_active_banks();
+        let mut bank_pks: IndexSet<Pubkey> = IndexSet::new();
 
-        let mut bank_pks: Vec<Pubkey> = vec![];
-        let mut bank_to_include_index = 0;
+        // Collect eligible banks
+        bank_pks.extend(include_banks.iter().cloned());
 
-        for balance in self.lending_account.balances.iter() {
-            if balance.active {
-                bank_pks.push(balance.bank_pk);
-            } else if include_banks.len() > bank_to_include_index {
-                for bank_pk in &include_banks[bank_to_include_index..] {
-                    bank_to_include_index += 1;
-                    if !active_bank_pks.contains(bank_pk) {
-                        bank_pks.push(*bank_pk);
-                        break;
-                    }
-                }
-            }
+        for balance in lending_account
+            .balances
+            .iter()
+            .filter(|balance| balance.active && !exclude_banks.contains(&balance.bank_pk))
+        {
+            bank_pks.insert(balance.bank_pk);
         }
-        // The end of the complex logic-to-be-removed
 
-        bank_pks.retain(|bank_pk| !exclude_banks.contains(bank_pk));
-
+        // Add bank oracles
         bank_pks
             .iter()
             .flat_map(|bank_pk| {
@@ -284,7 +275,7 @@ mod tests {
             vec![(I80F48::from_num(100), usdc_bank.address)]
         );
         assert_eq!(
-            healthy.get_deposits(&[], &banks).unwrap(),
+            healthy.get_deposits(&[], &banks),
             vec![(I80F48::from_num(100), sol_bank.address)]
         );
         let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap().unwrap();
@@ -312,7 +303,12 @@ mod tests {
         );
         let banks_to_exclude = vec![];
         assert_eq!(
-            healthy.get_observation_accounts(&[], &banks_to_exclude, &banks),
+            MarginfiAccountWrapper::get_observation_accounts(
+                &healthy.lending_account,
+                &[],
+                &banks_to_exclude,
+                &banks
+            ),
             vec![
                 sol_bank.address,
                 sol_bank.oracle_adapter.get_address(),
@@ -356,7 +352,12 @@ mod tests {
         );
         let banks_to_exclude = vec![sol_bank.address, usdc_bank.address];
         assert_eq!(
-            unhealthy.get_observation_accounts(&[], &banks_to_exclude, &banks),
+            MarginfiAccountWrapper::get_observation_accounts(
+                &unhealthy.lending_account,
+                &[],
+                &banks_to_exclude,
+                &banks
+            ),
             vec![]
         );
     }
