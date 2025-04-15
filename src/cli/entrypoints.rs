@@ -108,7 +108,9 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         }
     });
 
-    liquidator.start()?;
+    if let Err(error) = liquidator.start() {
+        panic!("Liquidator failed: {:?}", error);
+    }
 
     Ok(())
 }

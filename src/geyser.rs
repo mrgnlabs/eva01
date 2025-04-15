@@ -111,10 +111,7 @@ impl GeyserService {
                             address,
                             &account,
                         );
-                    }
-
-                    // FIXME: Second call for the Marginfi program account update?
-                    if let Some(account_type) = tracked_accounts.get(&address) {
+                    } else if let Some(account_type) = tracked_accounts.get(&address) {
                         Self::send_update(
                             &liquidator_sender,
                             &rebalancer_sender,
@@ -127,7 +124,7 @@ impl GeyserService {
             }
 
             if stop_liquidator.load(std::sync::atomic::Ordering::Relaxed) {
-                info!("Stopping the geyser loop.");
+                info!("Stopping the Geyser loop.");
                 break;
             }
         }
