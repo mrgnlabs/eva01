@@ -143,12 +143,9 @@ impl Rebalancer {
             .into_iter()
             .collect::<Vec<_>>();
 
-        let all_accounts = batch_get_multiple_accounts(
-            self.txn_client.clone(),
-            &all_keys,
-            BatchLoadingConfig::DEFAULT,
-        )
-        .unwrap();
+        let all_accounts =
+            batch_get_multiple_accounts(&self.txn_client, &all_keys, BatchLoadingConfig::DEFAULT)
+                .unwrap();
 
         self.cache_oracle_needed_accounts = all_keys
             .into_iter()
@@ -170,7 +167,7 @@ impl Rebalancer {
             .load_initial_data(&self.txn_client, mints.clone())?;
 
         let accounts = batch_get_multiple_accounts(
-            self.txn_client.clone(),
+            &self.txn_client,
             &token_account_addresses,
             BatchLoadingConfig::DEFAULT,
         )?;
@@ -849,7 +846,7 @@ impl Rebalancer {
             &[&read_keypair_file(&self.general_config.keypair_path).unwrap()],
         )?;
 
-        TransactionSender::aggressive_send_tx(self.txn_client.clone(), &tx, SenderCfg::DEFAULT)
+        TransactionSender::aggressive_send_tx(&self.txn_client, &tx, SenderCfg::DEFAULT)
             .map_err(|_| anyhow!("Failed to send swap transaction"))?;
 
         self.refresh_token_account(src_bank)?;

@@ -74,7 +74,7 @@ impl TransactionManager {
 
         debug!("Initializing RPC client with URL: {}", config.rpc_url);
         let rpc_client =
-            RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
+            RpcClient::new_with_commitment(config.rpc_url, CommitmentConfig::confirmed());
 
         // Loads the Address Lookup Table's accounts
         let mut lookup_tables = vec![];

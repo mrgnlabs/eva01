@@ -44,18 +44,15 @@ impl TokenAccountManager {
         mints: &[Pubkey],
         signer: Pubkey,
     ) -> Result<(), TokenAccountManagerError> {
-        let mint_owners = batch_get_multiple_accounts(
-            self.rpc_client.clone(),
-            mints,
-            BatchLoadingConfig::DEFAULT,
-        )
-        .map_err(|e| {
-            error!("Failed to load mint accounts: {:?}", e);
-            TokenAccountManagerError::SetupFailed("Failed to find missing accounts")
-        })?
-        .iter()
-        .map(|a| a.as_ref().unwrap().owner)
-        .collect::<Vec<_>>();
+        let mint_owners =
+            batch_get_multiple_accounts(&self.rpc_client, mints, BatchLoadingConfig::DEFAULT)
+                .map_err(|e| {
+                    error!("Failed to load mint accounts: {:?}", e);
+                    TokenAccountManagerError::SetupFailed("Failed to find missing accounts")
+                })?
+                .iter()
+                .map(|a| a.as_ref().unwrap().owner)
+                .collect::<Vec<_>>();
 
         let mut mint_to_account = self.mint_to_account.write().unwrap();
 
@@ -100,8 +97,6 @@ impl TokenAccountManager {
             .copied()
             .collect::<Vec<_>>();
 
-        let rpc_client = self.rpc_client.clone();
-
         let tas = mints
             .iter()
             .map(
@@ -126,7 +121,7 @@ impl TokenAccountManager {
                 .collect::<Vec<_>>();
 
             let res = batch_get_multiple_accounts(
-                rpc_client.clone(),
+                &self.rpc_client,
                 &addresses,
                 BatchLoadingConfig::DEFAULT,
             )
@@ -166,7 +161,7 @@ impl TokenAccountManager {
 
             info!("Creating {} token accounts", tas_to_create.len());
 
-            let recent_blockhash = rpc_client.get_latest_blockhash().map_err(|e| {
+            let recent_blockhash = self.rpc_client.get_latest_blockhash().map_err(|e| {
                 error!("Failed to get recent blockhash: {:?}", e);
                 TokenAccountManagerError::SetupFailed("Failed to get recent blockhash")
             })?;
@@ -175,8 +170,6 @@ impl TokenAccountManager {
                 .par_iter()
                 .chunks(MAX_INIT_TA_IXS)
                 .try_for_each(|chunk| {
-                    let rpc = rpc_client.clone();
-
                     let ixs = chunk.iter().map(|ix| (*ix).clone()).collect::<Vec<_>>();
                     let signers = vec![signer.as_ref()];
 
@@ -187,8 +180,12 @@ impl TokenAccountManager {
                         recent_blockhash,
                     );
 
-                    let sig = TransactionSender::aggressive_send_tx(rpc, &tx, SenderCfg::DEFAULT)
-                        .map_err(|e| {
+                    let sig = TransactionSender::aggressive_send_tx(
+                        &self.rpc_client,
+                        &tx,
+                        SenderCfg::DEFAULT,
+                    )
+                    .map_err(|e| {
                         error!("Failed to send transaction: {:?}", e);
                         TokenAccountManagerError::SetupFailed("Failed to send transaction")
                     })?;
