@@ -1,8 +1,8 @@
 use crate::{utils::account_update_to_account, ward};
 use anchor_lang::AccountDeserialize;
 use crossbeam::channel::Sender;
-use futures::StreamExt;
-use log::{debug, error, info, warn};
+use futures::{executor::block_on, StreamExt};
+use log::{error, info, trace, warn};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
@@ -43,7 +43,7 @@ pub struct GeyserServiceConfig {
 pub struct GeyserService {}
 
 impl GeyserService {
-    pub async fn connect(
+    pub fn connect(
         config: GeyserServiceConfig,
         tracked_accounts: HashMap<Pubkey, AccountType>,
         marginfi_program_id: Pubkey,
@@ -52,18 +52,19 @@ impl GeyserService {
         rebalancer_sender: Sender<GeyserUpdate>,
     ) -> anyhow::Result<()> {
         info!("Connecting to geyser...");
-        let mut client = GeyserGrpcClient::build_from_shared(config.endpoint.clone())?
-            .x_token(config.x_token.clone())?
-            .connect()
-            .await?;
+        let mut client = block_on(
+            GeyserGrpcClient::build_from_shared(config.endpoint.clone())?
+                .x_token(config.x_token.clone())?
+                .connect(),
+        )?;
         let tracked_accounts_vec: Vec<Pubkey> = tracked_accounts.keys().cloned().collect();
         let sub_req =
             Self::build_geyser_subscribe_request(&tracked_accounts_vec, &marginfi_program_id);
-        let (_, mut stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;
+        let (_, mut stream) = block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
 
         info!("Staring the geyser loop.");
-        while let Some(msg) = stream.next().await {
-            debug!(
+        while let Some(msg) = block_on(stream.next()) {
+            trace!(
                 "Thread {:?}. Received geyser msg: {:?}",
                 thread::current().id(),
                 msg
@@ -71,7 +72,8 @@ impl GeyserService {
 
             if let Err(e) = msg {
                 warn!("Reconnecting to Geyser due to error: {:?}", e);
-                let (_, new_stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;
+                let (_, new_stream) =
+                    block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
                 stream = new_stream;
                 continue;
             }

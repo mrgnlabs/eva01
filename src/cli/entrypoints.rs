@@ -86,9 +86,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
             config.general_config.marginfi_group_address,
             liquidator_tx,
             rebalancer_tx,
-        )
-        .await
-        {
+        ) {
             // FIXME: make sure that the instance goes down in this case.
             error!("Failed to connect to geyser service: {:?}", e);
         }
