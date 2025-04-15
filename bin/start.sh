@@ -15,7 +15,7 @@ echo "Configuration file: $1"
 
 pushd $LIQUIDATOR_SRC_PATH > /dev/null
 
-export RUST_LOG=debug,hyper=info
+export RUST_LOG=debug,hyper=info,h2::codec=info
 export RUST_BACKTRACDE=full
 cargo run -- run $1
 
