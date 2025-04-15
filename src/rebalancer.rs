@@ -444,7 +444,10 @@ impl Rebalancer {
         );
 
         if assets.is_zero() {
-            warn!("Assets are zero, stopping liquidations");
+            warn!(
+                "Assets are zero for the Liquidator account {:?}. Stopping liquidations.",
+                self.liquidator_account.account_wrapper.address
+            );
 
             self.stop_liquidations
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -453,11 +456,14 @@ impl Rebalancer {
         }
 
         if (assets - liabs) / assets <= 0.5 {
+            warn!(
+                "The Assets ({}) to Liabilities ({}) ratio is low for the Liquidator account {:?}. Stopping liquidations.",
+                assets, liabs,
+                self.liquidator_account.account_wrapper.address
+            );
+
             self.stop_liquidations
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            self.stop_liquidations
-                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
 

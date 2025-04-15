@@ -225,7 +225,7 @@ impl LiquidatorAccount {
             //     )
             //     .await;
 
-            transactions.push(RawTransaction::new(vec![liquidate_ix, cu_limit_ix]));
+            transactions.push(RawTransaction::new(vec![cu_limit_ix, liquidate_ix]));
 
             debug!(
                 "SENDING DOUBLE liquidate: bundle length: {:?}",
@@ -242,17 +242,17 @@ impl LiquidatorAccount {
         } else {
             let tx: solana_sdk::transaction::Transaction =
                 solana_sdk::transaction::Transaction::new_signed_with_payer(
-                    &[liquidate_ix.clone(), cu_limit_ix.clone()],
+                    &[cu_limit_ix.clone(), liquidate_ix.clone()],
                     Some(&signer_pk),
                     &[&self.signer_keypair],
                     recent_blockhash,
                 );
 
             debug!(
-                "Thread {:?}: liquidate_ix: ({:?}), cu_limit_ix: ({:?})",
+                "Thread {:?}: cu_limit_ix: ({:?}), liquidate_ix: ({:?})",
                 thread::current().id(),
-                liquidate_ix,
-                cu_limit_ix
+                cu_limit_ix,
+                liquidate_ix
             );
 
             let res = self
