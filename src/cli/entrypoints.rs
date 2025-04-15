@@ -6,7 +6,7 @@ use crate::{
     transaction_checker::TransactionChecker,
     transaction_manager::{TransactionData, TransactionManager},
 };
-use log::{error, info};
+use log::info;
 use solana_sdk::pubkey::Pubkey;
 use std::{
     collections::{HashMap, HashSet},
@@ -86,9 +86,11 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
             config.general_config.marginfi_group_address,
             liquidator_tx,
             rebalancer_tx,
-        ) {
-            // FIXME: make sure that the instance goes down in this case.
-            error!("Failed to connect to geyser service: {:?}", e);
+            stop_liquidator,
+        )
+        .await
+        {
+            panic!("Geyser service failed! {:?}", e);
         }
     });
 
@@ -102,7 +104,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     tokio::task::spawn(async move {
         if let Err(e) = rebalancer.start() {
-            error!("Rebalancer error: {:?}", e);
+            panic!("Rebalancer failed: {:?}", e);
         }
     });
 

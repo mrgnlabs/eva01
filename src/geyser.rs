@@ -1,12 +1,17 @@
 use crate::{utils::account_update_to_account, ward};
 use anchor_lang::AccountDeserialize;
 use crossbeam::channel::Sender;
-use futures::{executor::block_on, StreamExt};
-use log::{error, info, trace, warn};
+use futures::StreamExt;
+use log::{error, info, trace};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
-use std::{collections::HashMap, mem::size_of, thread};
+use std::{
+    collections::HashMap,
+    mem::size_of,
+    sync::{atomic::AtomicBool, Arc},
+    thread,
+};
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
 
@@ -43,82 +48,87 @@ pub struct GeyserServiceConfig {
 pub struct GeyserService {}
 
 impl GeyserService {
-    pub fn connect(
+    pub async fn connect(
         config: GeyserServiceConfig,
         tracked_accounts: HashMap<Pubkey, AccountType>,
         marginfi_program_id: Pubkey,
         marginfi_group_pk: Pubkey,
         liquidator_sender: Sender<GeyserUpdate>,
         rebalancer_sender: Sender<GeyserUpdate>,
+        stop_liquidator: Arc<AtomicBool>,
     ) -> anyhow::Result<()> {
-        info!("Connecting to geyser...");
-        let mut client = block_on(
-            GeyserGrpcClient::build_from_shared(config.endpoint.clone())?
-                .x_token(config.x_token.clone())?
-                .connect(),
-        )?;
+        info!("Staring the Geyser loop.");
+        let mut client = GeyserGrpcClient::build_from_shared(config.endpoint.clone())?
+            .x_token(config.x_token.clone())?
+            .connect()
+            .await?;
         let tracked_accounts_vec: Vec<Pubkey> = tracked_accounts.keys().cloned().collect();
         let sub_req =
             Self::build_geyser_subscribe_request(&tracked_accounts_vec, &marginfi_program_id);
-        let (_, mut stream) = block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
 
-        info!("Staring the geyser loop.");
-        while let Some(msg) = block_on(stream.next()) {
-            trace!(
-                "Thread {:?}. Received geyser msg: {:?}",
-                thread::current().id(),
-                msg
-            );
+        loop {
+            info!("Connecting to geyser...");
+            let (_, mut stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;
 
-            if let Err(e) = msg {
-                warn!("Reconnecting to Geyser due to error: {:?}", e);
-                let (_, new_stream) =
-                    block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
-                stream = new_stream;
-                continue;
-            }
-
-            let update_oneof = ward!(msg.unwrap().update_oneof, continue);
-
-            if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
-                let account_update = ward!(&account.account, continue);
-                let account = ward!(account_update_to_account(account_update).ok(), continue);
-                let address = ward!(
-                    Pubkey::try_from(account_update.pubkey.clone()).ok(),
-                    continue
+            while let Some(msg) = stream.next().await {
+                trace!(
+                    "Thread {:?}. Received geyser msg: {:?}",
+                    thread::current().id(),
+                    msg
                 );
 
-                if account.owner == marginfi_program_id
-                    && account_update.data.len() == MARGIN_ACCOUNT_SIZE
-                {
-                    let marginfi_account = ward!(
-                        MarginfiAccount::try_deserialize(&mut account.data.as_slice()).ok(),
+                if let Err(e) = msg {
+                    error!("Received error message from Geyser! {:?}", e);
+                    break;
+                }
+
+                let update_oneof = ward!(msg.unwrap().update_oneof, continue);
+
+                if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
+                    let account_update = ward!(&account.account, continue);
+                    let account = ward!(account_update_to_account(account_update).ok(), continue);
+                    let address = ward!(
+                        Pubkey::try_from(account_update.pubkey.clone()).ok(),
                         continue
                     );
 
-                    if marginfi_account.group != marginfi_group_pk {
-                        continue;
+                    if account.owner == marginfi_program_id
+                        && account_update.data.len() == MARGIN_ACCOUNT_SIZE
+                    {
+                        let marginfi_account = ward!(
+                            MarginfiAccount::try_deserialize(&mut account.data.as_slice()).ok(),
+                            continue
+                        );
+
+                        if marginfi_account.group != marginfi_group_pk {
+                            continue;
+                        }
+
+                        Self::send_update(
+                            &liquidator_sender,
+                            &rebalancer_sender,
+                            AccountType::Marginfi,
+                            address,
+                            &account,
+                        );
                     }
 
-                    Self::send_update(
-                        &liquidator_sender,
-                        &rebalancer_sender,
-                        AccountType::Marginfi,
-                        address,
-                        &account,
-                    );
+                    // FIXME: Second call for the Marginfi program account update?
+                    if let Some(account_type) = tracked_accounts.get(&address) {
+                        Self::send_update(
+                            &liquidator_sender,
+                            &rebalancer_sender,
+                            account_type.clone(),
+                            address,
+                            &account,
+                        );
+                    }
                 }
+            }
 
-                // FIXME: Second call for the Marginfi program account update?
-                if let Some(account_type) = tracked_accounts.get(&address) {
-                    Self::send_update(
-                        &liquidator_sender,
-                        &rebalancer_sender,
-                        account_type.clone(),
-                        address,
-                        &account,
-                    );
-                }
+            if stop_liquidator.load(std::sync::atomic::Ordering::Relaxed) {
+                info!("Stopping the geyser loop.");
+                break;
             }
         }
         info!("The Geyser loop is stopped.");
