@@ -298,21 +298,6 @@ mod tests {
             healthy.get_active_banks(),
             vec![sol_bank.address, usdc_bank.address]
         );
-        let banks_to_exclude = vec![];
-        assert_eq!(
-            MarginfiAccountWrapper::get_observation_accounts(
-                &healthy.lending_account,
-                &[],
-                &banks_to_exclude,
-                &banks
-            ),
-            vec![
-                sol_bank.address,
-                sol_bank.oracle_adapter.get_address(),
-                usdc_bank.address,
-                usdc_bank.oracle_adapter.get_address()
-            ]
-        );
 
         let unhealthy = MarginfiAccountWrapper::test_unhealthy();
         assert!(unhealthy.has_liabs());
@@ -347,10 +332,45 @@ mod tests {
             unhealthy.get_active_banks(),
             vec![usdc_bank.address, sol_bank.address]
         );
-        let banks_to_exclude = vec![sol_bank.address, usdc_bank.address];
+    }
+
+    #[test]
+    fn test_get_healthy_observation_accounts() {
+        let healthy_wrapper = MarginfiAccountWrapper::test_healthy();
+        let sol_bank = TestBankWrapper::test_sol();
+        let usdc_bank = TestBankWrapper::test_usdc();
+        let mut banks = HashMap::new();
+        banks.insert(sol_bank.address, sol_bank.clone());
+        banks.insert(usdc_bank.address, usdc_bank.clone());
+        let banks_to_exclude = vec![];
         assert_eq!(
             MarginfiAccountWrapper::get_observation_accounts(
-                &unhealthy.lending_account,
+                &healthy_wrapper.lending_account,
+                &[],
+                &banks_to_exclude,
+                &banks
+            ),
+            vec![
+                sol_bank.address,
+                sol_bank.oracle_adapter.get_address(),
+                usdc_bank.address,
+                usdc_bank.oracle_adapter.get_address()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_get_unhealthy_observation_accounts() {
+        let unhealthy_wrapper = MarginfiAccountWrapper::test_unhealthy();
+        let sol_bank = TestBankWrapper::test_sol();
+        let usdc_bank = TestBankWrapper::test_usdc();
+        let mut banks = HashMap::new();
+        banks.insert(sol_bank.address.clone(), sol_bank.clone());
+        banks.insert(usdc_bank.address.clone(), usdc_bank.clone());
+        let banks_to_exclude = vec![sol_bank.address.clone(), usdc_bank.address.clone()];
+        assert_eq!(
+            MarginfiAccountWrapper::get_observation_accounts(
+                &unhealthy_wrapper.lending_account,
                 &[],
                 &banks_to_exclude,
                 &banks
