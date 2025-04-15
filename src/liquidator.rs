@@ -48,6 +48,7 @@ use std::{
     cmp::min,
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc, RwLock},
+    thread,
     time::{Duration, Instant},
 };
 use switchboard_on_demand::PullFeedAccountData;
@@ -150,6 +151,12 @@ impl Liquidator {
 
         info!("Staring the Liquidator loop.");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
+            debug!(
+                "Thread {:?}. Liquidator received geyser update: {:?}",
+                thread::current().id(),
+                msg
+            );
+
             match msg.account_type {
                 AccountType::Oracle => {
                     if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {

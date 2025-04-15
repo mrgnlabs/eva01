@@ -18,7 +18,7 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::str::FromStr;
+use std::{str::FromStr, thread};
 
 /// Manages transactions for the liquidator and rebalancer
 #[allow(dead_code)]
@@ -112,7 +112,11 @@ impl TransactionManager {
             bundle_id,
         }) = txn_rx.recv()
         {
-            debug!("Bundle ID: {:?}", bundle_id);
+            debug!(
+                "Thread {:?}. Transaction manager received txn for Bundle ID: {:?}",
+                thread::current().id(),
+                bundle_id
+            );
 
             let serialized_txs = match self.configure_instructions(transactions) {
                 Ok(txs) => txs,

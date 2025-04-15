@@ -2,11 +2,11 @@ use crate::{utils::account_update_to_account, ward};
 use anchor_lang::AccountDeserialize;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
-use std::{collections::HashMap, mem::size_of};
+use std::{collections::HashMap, mem::size_of, thread};
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
 
@@ -63,6 +63,12 @@ impl GeyserService {
 
         info!("Staring the geyser loop.");
         while let Some(msg) = stream.next().await {
+            debug!(
+                "Thread {:?}. Received geyser msg: {:?}",
+                thread::current().id(),
+                msg
+            );
+
             if let Err(e) = msg {
                 warn!("Reconnecting to Geyser due to error: {:?}", e);
                 let (_, new_stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;

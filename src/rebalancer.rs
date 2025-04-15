@@ -228,8 +228,8 @@ impl Rebalancer {
 
         info!("Starting the Rebalancer loop");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            info!(
-                "Thread {:?}. Received geyser update: {:?} for {:?}",
+            debug!(
+                "Thread {:?}. Rebalancer received geyser update: {:?} for {:?}",
                 thread::current().id(),
                 msg.account_type,
                 msg.address
@@ -237,7 +237,7 @@ impl Rebalancer {
             match msg.account_type {
                 AccountType::Oracle => {
                     let bank_to_update_pk = ward!(self.oracle_to_bank.get(&msg.address), continue);
-                    //debug!("Received oracle update for bank: {:?}", bank_to_update_pk);
+                    debug!("Received oracle update for bank: {:?}", bank_to_update_pk);
 
                     let bank_to_update = ward!(self.banks.get_mut(bank_to_update_pk), continue);
 
