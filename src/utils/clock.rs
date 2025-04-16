@@ -23,19 +23,20 @@ impl CachedClock {
     }
 
     pub fn get_clock(&self, rpc_client: &RpcClient) -> anyhow::Result<Clock> {
-        debug!("Evaluating clock cache");
+        debug!("Evaluating clock cache...");
         let mut last_updated = self.last_updated.lock().unwrap();
         let mut clock = self.clock.lock().unwrap();
 
         // Check if the cache is stale
         if Instant::now() - *last_updated >= self.cache_duration {
-            debug!("Updating clock cache");
+            debug!("Updating clock cache...");
             let clock_account = rpc_client.get_account(&sysvar::clock::id())?;
             *clock = deserialize(&clock_account.data)?;
             *last_updated = Instant::now();
-            debug!("Updating clock cache done.");
+            debug!("Completed the clock cache update.");
         }
 
+        debug!("Completed the Clock cache evaluation.");
         Ok(clock.clone())
     }
 }
