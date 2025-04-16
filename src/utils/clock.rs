@@ -24,7 +24,10 @@ impl CachedClock {
     }
 
     pub fn get_clock(&self, rpc_client: &RpcClient) -> anyhow::Result<Clock> {
-        debug!("Evaluating clock cache...");
+        debug!(
+            "Thread {:?}: Evaluating clock cache...",
+            thread::current().id()
+        );
         let mut last_updated = self.last_updated.lock().unwrap();
         let mut clock = self.clock.lock().unwrap();
 
