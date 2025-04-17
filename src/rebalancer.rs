@@ -131,6 +131,8 @@ impl Rebalancer {
         &mut self,
         banks_and_map: (HashMap<Pubkey, BankWrapper>, HashMap<Pubkey, Pubkey>),
     ) -> anyhow::Result<()> {
+        info!("Loading Rebalancer data.");
+
         self.banks = banks_and_map.0;
         self.oracle_to_bank = banks_and_map.1;
         let mut bank_mints = Vec::new();

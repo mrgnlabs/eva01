@@ -15,7 +15,6 @@ use std::{
     sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
     thread,
 };
-use tokio::runtime::Builder;
 
 pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // register_metrics();
@@ -81,13 +80,11 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         clock.clone(),
     )?;
 
-    info!("Loading data for liquidator...");
+    info!("Loading data.");
     liquidator.load_data()?;
-
-    info!("Loading data for rebalancer...");
     rebalancer.load_data(liquidator.get_banks_and_map())?;
 
-    // Fetch accounts to track
+    info!("Fetching accounts to track.");
     let mut accounts_to_track = HashMap::new();
     for (key, value) in liquidator.get_accounts_to_track() {
         accounts_to_track.insert(key, value);
@@ -96,26 +93,19 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         accounts_to_track.insert(key, value);
     }
 
+    let geyser_service = GeyserService::new(
+        config.general_config,
+        accounts_to_track,
+        liquidator_tx,
+        rebalancer_tx,
+    )?;
+
+    info!("Starting services.");
+
     thread::spawn(move || clock_manager.start());
 
-    // Start Geyser service
-    // TODO: encapsulate the Tokio runtime in the Geyser service
-    let tokio_rt = Builder::new_multi_thread()
-        .thread_name("geyser")
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
-    tokio_rt.spawn(async move {
-        if let Err(e) = GeyserService::start(
-            config.general_config.get_geyser_service_config(),
-            accounts_to_track,
-            config.general_config.marginfi_program_id,
-            config.general_config.marginfi_group_address,
-            liquidator_tx,
-            rebalancer_tx,
-        )
-        .await
-        {
+    thread::spawn(move || {
+        if let Err(e) = geyser_service.start() {
             panic!("Geyser service failed! {:?}", e);
         }
     });

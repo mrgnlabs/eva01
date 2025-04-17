@@ -121,6 +121,8 @@ impl Liquidator {
 
     /// Loads necessary data to the liquidator
     pub fn load_data(&mut self) -> anyhow::Result<()> {
+        info!("Loading Liquidator data.");
+
         let rpc_client = &RpcClient::new(self.general_config.rpc_url.clone());
 
         self.load_marginfi_accounts(rpc_client)?;
