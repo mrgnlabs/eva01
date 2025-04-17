@@ -5,11 +5,11 @@ use std::{
 };
 
 use crossbeam::channel::Receiver;
-use futures::executor::block_on;
 use jito_sdk_rust::JitoJsonRpcSDK;
 use solana_sdk::pubkey::Pubkey;
 
 use log::{debug, error, info};
+use tokio::runtime::{Builder, Runtime};
 
 use crate::metrics::ERROR_COUNT;
 
@@ -22,13 +22,21 @@ struct BundleStatus {
 
 pub struct TransactionChecker {
     jito_sdk: JitoJsonRpcSDK,
+    tokio_rt: Runtime,
 }
 
 impl TransactionChecker {
-    pub fn new(jito_block_engine_url: &str) -> Self {
+    pub fn new(jito_block_engine_url: &str) -> anyhow::Result<Self> {
         debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
         let jito_sdk = JitoJsonRpcSDK::new(jito_block_engine_url, None);
-        Self { jito_sdk }
+
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("transaction-checker")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+
+        Ok(Self { jito_sdk, tokio_rt })
     }
 
     pub fn check_bundle_status(
@@ -47,7 +55,7 @@ impl TransactionChecker {
                     bundle_id, uuid, attempt, max_retries
                 );
 
-                let status_response = block_on(
+                let status_response = self.tokio_rt.block_on(
                     self.jito_sdk
                         .get_in_flight_bundle_statuses(vec![uuid.to_string()]),
                 );
@@ -74,7 +82,7 @@ impl TransactionChecker {
                                     "({}) Bundle landed on-chain. Checking final status...",
                                     uuid
                                 );
-                                if let Err(e) = check_final_bundle_status(&self.jito_sdk, &uuid) {
+                                if let Err(e) = self.check_final_bundle_status(&uuid) {
                                     error!("({}) Final status: {}", uuid, e.to_string());
                                 }
                                 break;
@@ -127,59 +135,61 @@ impl TransactionChecker {
         }
         info!("The Transaction checker loop stopped.");
     }
-}
 
-fn check_final_bundle_status(jito_sdk: &JitoJsonRpcSDK, uuid: &str) -> anyhow::Result<()> {
-    let max_retries = 10;
-    let retry_delay = std::time::Duration::from_millis(500);
+    fn check_final_bundle_status(&self, uuid: &str) -> anyhow::Result<()> {
+        let max_retries = 10;
+        let retry_delay = std::time::Duration::from_millis(500);
 
-    for attempt in 1..=max_retries {
-        debug!(
-            "({}) Checking final bundle status (attempt {}/{})",
-            uuid, attempt, max_retries
-        );
+        for attempt in 1..=max_retries {
+            debug!(
+                "({}) Checking final bundle status (attempt {}/{})",
+                uuid, attempt, max_retries
+            );
 
-        let status_response = block_on(jito_sdk.get_bundle_statuses(vec![uuid.to_string()]))?;
-        let bundle_status = get_bundle_status(&status_response)?;
+            let status_response = self
+                .tokio_rt
+                .block_on(self.jito_sdk.get_bundle_statuses(vec![uuid.to_string()]))?;
+            let bundle_status = get_bundle_status(&status_response)?;
 
-        match bundle_status.confirmation_status.as_deref() {
-            Some("confirmed") => {
-                debug!(
-                    "({}) Bundle confirmed on-chain. Waiting for finalization...",
-                    uuid
-                );
-                check_transaction_error(&bundle_status)?;
+            match bundle_status.confirmation_status.as_deref() {
+                Some("confirmed") => {
+                    debug!(
+                        "({}) Bundle confirmed on-chain. Waiting for finalization...",
+                        uuid
+                    );
+                    check_transaction_error(&bundle_status)?;
+                }
+                Some("finalized") => {
+                    debug!("({}) Bundle finalized on-chain successfully!", uuid);
+                    check_transaction_error(&bundle_status)?;
+                    print_transaction_url(&bundle_status);
+                    return Ok(());
+                }
+                Some(status) => {
+                    debug!(
+                        "({}) Unexpected final bundle status: {}. Continuing to poll...",
+                        uuid, status
+                    );
+                }
+                None => {
+                    debug!(
+                        "({}) Unable to parse final bundle status. Continuing to poll...",
+                        uuid
+                    );
+                }
             }
-            Some("finalized") => {
-                debug!("({}) Bundle finalized on-chain successfully!", uuid);
-                check_transaction_error(&bundle_status)?;
-                print_transaction_url(&bundle_status);
-                return Ok(());
-            }
-            Some(status) => {
-                debug!(
-                    "({}) Unexpected final bundle status: {}. Continuing to poll...",
-                    uuid, status
-                );
-            }
-            None => {
-                debug!(
-                    "({}) Unable to parse final bundle status. Continuing to poll...",
-                    uuid
-                );
+
+            if attempt < max_retries {
+                thread::sleep(retry_delay);
             }
         }
 
-        if attempt < max_retries {
-            thread::sleep(retry_delay);
-        }
+        Err(anyhow::anyhow!(
+            "({}) Failed to get finalized status after {} attempts",
+            uuid,
+            max_retries
+        ))
     }
-
-    Err(anyhow::anyhow!(
-        "({}) Failed to get finalized status after {} attempts",
-        uuid,
-        max_retries
-    ))
 }
 
 fn get_bundle_status(status_response: &serde_json::Value) -> anyhow::Result<BundleStatus> {

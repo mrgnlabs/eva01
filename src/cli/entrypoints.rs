@@ -13,6 +13,7 @@ use solana_sdk::pubkey::Pubkey;
 use std::{
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    thread,
 };
 
 pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
@@ -37,8 +38,10 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     // Solana Clock
-    let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
-    let clock = Arc::new(Mutex::new(clock_manager::fetch_clock(&rpc_client)?));
+    let clock = {
+        let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
+        Arc::new(Mutex::new(clock_manager::fetch_clock(&rpc_client)?))
+    };
     let mut clock_manager = ClockManager::new(
         clock.clone(),
         config.general_config.rpc_url.clone(),
@@ -55,7 +58,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
     let transaction_checker =
-        TransactionChecker::new(config.general_config.block_engine_url.as_str());
+        TransactionChecker::new(config.general_config.block_engine_url.as_str())?;
 
     let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
     let mut liquidator = Liquidator::new(
@@ -78,16 +81,17 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         clock.clone(),
     )?;
 
-    tokio::task::spawn(async move {
-        clock_manager.start();
-    });
-
     info!("Loading data for liquidator...");
     liquidator.load_data()?;
 
     info!("Loading data for rebalancer...");
     rebalancer.load_data(liquidator.get_banks_and_map())?;
 
+    thread::spawn(move || {
+        clock_manager.start();
+    });
+
+    // Fetch accounts to track
     let mut accounts_to_track = HashMap::new();
     for (key, value) in liquidator.get_accounts_to_track() {
         accounts_to_track.insert(key, value);
@@ -116,18 +120,16 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     tokio::task::spawn(async move {
         transaction_manager.start(jito_tx, transaction_rx);
     });
-    tokio::task::spawn(async move {
-        transaction_checker.check_bundle_status(jito_rx, pending_bundles);
-    });
+    thread::spawn(move || transaction_checker.check_bundle_status(jito_rx, pending_bundles));
 
-    tokio::task::spawn(async move {
+    thread::spawn(move || {
         if let Err(e) = rebalancer.start() {
-            panic!("Rebalancer failed: {:?}", e);
+            panic!("Rebalancer failed! {:?}", e);
         }
     });
 
-    if let Err(error) = liquidator.start() {
-        panic!("Liquidator failed: {:?}", error);
+    if let Err(e) = liquidator.start() {
+        panic!("Liquidator failed! {:?}", e);
     }
 
     Ok(())

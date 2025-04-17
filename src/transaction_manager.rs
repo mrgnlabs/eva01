@@ -1,6 +1,5 @@
 use crate::{config::GeneralConfig, metrics::ERROR_COUNT};
 use crossbeam::channel::{Receiver, Sender};
-use futures::executor::block_on;
 use jito_sdk_rust::JitoJsonRpcSDK;
 use log::{debug, error, info};
 use serde_json::json;
@@ -19,6 +18,7 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use std::{str::FromStr, thread};
+use tokio::runtime::{Builder, Runtime};
 
 /// Manages transactions for the liquidator and rebalancer
 #[allow(dead_code)]
@@ -28,6 +28,7 @@ pub struct TransactionManager {
     jito_tip_account: Pubkey,
     rpc_client: RpcClient,
     lookup_tables: Vec<AddressLookupTableAccount>,
+    tokio_rt: Runtime,
 }
 
 // Type alias for a batch of transactions
@@ -88,11 +89,17 @@ impl TransactionManager {
             lookup_tables.push(lookup_table);
         }
 
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("transaction-manager")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+
         // Get JITO tip account
         let jito_block_engine_url = config.block_engine_url;
         debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
         let jito_sdk: JitoJsonRpcSDK = JitoJsonRpcSDK::new(&jito_block_engine_url, None);
-        let random_tip_account = block_on(jito_sdk.get_random_tip_account())?;
+        let random_tip_account = tokio_rt.block_on(jito_sdk.get_random_tip_account())?;
         let jito_tip_account = Pubkey::from_str(&random_tip_account)?;
 
         Ok(Self {
@@ -101,6 +108,7 @@ impl TransactionManager {
             rpc_client,
             jito_tip_account,
             lookup_tables,
+            tokio_rt,
         })
     }
 
@@ -128,7 +136,10 @@ impl TransactionManager {
             };
 
             let bundle = json!(serialized_txs);
-            let response = match block_on(self.jito_sdk.send_bundle(Some(bundle), None)) {
+            let response = match self
+                .tokio_rt
+                .block_on(self.jito_sdk.send_bundle(Some(bundle), None))
+            {
                 Ok(response) => response,
                 Err(e) => {
                     ERROR_COUNT.inc();

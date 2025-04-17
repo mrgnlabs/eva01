@@ -23,7 +23,6 @@ use core::panic;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use futures::executor::block_on;
 use log::{debug, error, info};
 use marginfi::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
@@ -55,6 +54,7 @@ use std::{
     time::Instant,
 };
 use switchboard_on_demand::PullFeedAccountData;
+use tokio::runtime::{Builder, Runtime};
 
 /// Bank group private key offset
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
@@ -71,6 +71,7 @@ pub struct Liquidator {
     crossbar_client: CrossbarMaintainer,
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
     clock: Arc<Mutex<Clock>>,
+    tokio_rt: Runtime,
 }
 
 pub struct PreparedLiquidatableAccount {
@@ -96,6 +97,12 @@ impl Liquidator {
         let liquidator_account =
             LiquidatorAccount::new(transaction_sender, &general_config, pending_liquidations)?;
 
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("liquidator")
+            .worker_threads(4)
+            .enable_all()
+            .build()?;
+
         Ok(Liquidator {
             general_config,
             config: liquidator_config,
@@ -108,6 +115,7 @@ impl Liquidator {
             crossbar_client: CrossbarMaintainer::new(),
             cache_oracle_needed_accounts: HashMap::new(),
             clock,
+            tokio_rt,
         })
     }
 
@@ -318,7 +326,9 @@ impl Liquidator {
             })
             .collect::<Vec<_>>();
 
-        let simulated_prices = block_on(self.crossbar_client.simulate(swb_feed_hashes));
+        let simulated_prices = self
+            .tokio_rt
+            .block_on(self.crossbar_client.simulate(swb_feed_hashes));
 
         for (bank_pk, price) in simulated_prices {
             let bank = self.banks.get_mut(&bank_pk).unwrap();
@@ -780,12 +790,14 @@ impl Liquidator {
             anchor_client.program(self.general_config.marginfi_program_id)?;
 
         info!("Loading banks internally...");
-        let banks = block_on(program.accounts::<Bank>(vec![RpcFilterType::Memcmp(
-            Memcmp::new_base58_encoded(
-                BANK_GROUP_PK_OFFSET,
-                self.general_config.marginfi_group_address.as_ref(),
-            ),
-        )]))?;
+        let banks =
+            self.tokio_rt
+                .block_on(program.accounts::<Bank>(vec![RpcFilterType::Memcmp(
+                    Memcmp::new_base58_encoded(
+                        BANK_GROUP_PK_OFFSET,
+                        self.general_config.marginfi_group_address.as_ref(),
+                    ),
+                )]))?;
 
         info!("Fetched {} banks", banks.len());
 

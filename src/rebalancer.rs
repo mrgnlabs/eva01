@@ -22,7 +22,6 @@ use anyhow::anyhow;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use futures::executor::block_on;
 use jupiter_swap_api_client::{
     quote::QuoteRequest,
     swap::SwapRequest,
@@ -54,6 +53,7 @@ use std::{
 };
 use switchboard_on_demand::PullFeedAccountData;
 use switchboard_on_demand_client::{FetchUpdateManyParams, PullFeed, SbContext};
+use tokio::runtime::{Builder, Runtime};
 
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
@@ -76,6 +76,7 @@ pub struct Rebalancer {
     crossbar_client: CrossbarMaintainer,
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
     clock: Arc<Mutex<Clock>>,
+    tokio_rt: Runtime,
 }
 
 impl Rebalancer {
@@ -98,6 +99,12 @@ impl Rebalancer {
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();
 
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("rebalancer")
+            .worker_threads(4)
+            .enable_all()
+            .build()?;
+
         Ok(Rebalancer {
             config,
             general_config,
@@ -116,6 +123,7 @@ impl Rebalancer {
             crossbar_client: CrossbarMaintainer::new(),
             cache_oracle_needed_accounts: HashMap::new(),
             clock,
+            tokio_rt,
         })
     }
 
@@ -349,7 +357,7 @@ impl Rebalancer {
                 }
             }
 
-            if start.elapsed() > max_duration && self.needs_to_be_relanced() {
+            if start.elapsed() > max_duration && self.needs_to_be_rebalanced() {
                 if let Err(e) = self.rebalance_accounts() {
                     error!(
                         "Thread {:?}: Failed to rebalance account: {:?}",
@@ -366,7 +374,7 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn needs_to_be_relanced(&mut self) -> bool {
+    fn needs_to_be_rebalanced(&mut self) -> bool {
         // Update switchboard pull prices with crossbar
         let swb_feed_hashes = self
             .banks
@@ -379,7 +387,9 @@ impl Rebalancer {
             })
             .collect::<Vec<_>>();
 
-        let simulated_prices = block_on(self.crossbar_client.simulate(swb_feed_hashes));
+        let simulated_prices = self
+            .tokio_rt
+            .block_on(self.crossbar_client.simulate(swb_feed_hashes));
 
         for (bank_pk, price) in simulated_prices {
             let bank = self.banks.get_mut(&bank_pk).unwrap();
@@ -413,7 +423,7 @@ impl Rebalancer {
 
         if !active_swb_oracles.is_empty() {
             debug!("Thread {:?}: Fetching SWB prices.", thread::current().id());
-            let (ix, lut) = block_on(PullFeed::fetch_update_many_ix(
+            let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
@@ -857,15 +867,17 @@ impl Rebalancer {
 
         let jup_swap_client = JupiterSwapApiClient::new(self.config.jup_swap_api_url.clone());
 
-        let quote_response = block_on(jup_swap_client.quote(&QuoteRequest {
-            input_mint,
-            output_mint,
-            amount,
-            slippage_bps: self.config.slippage_bps,
-            ..Default::default()
-        }))?;
+        let quote_response = self
+            .tokio_rt
+            .block_on(jup_swap_client.quote(&QuoteRequest {
+                input_mint,
+                output_mint,
+                amount,
+                slippage_bps: self.config.slippage_bps,
+                ..Default::default()
+            }))?;
 
-        let swap = block_on(
+        let swap = self.tokio_rt.block_on(
             jup_swap_client.swap(&SwapRequest {
                 user_public_key: self.general_config.signer_pubkey,
                 quote_response,

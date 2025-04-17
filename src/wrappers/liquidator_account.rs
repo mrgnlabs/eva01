@@ -5,7 +5,6 @@ use crate::{
     transaction_manager::{RawTransaction, TransactionData},
 };
 use crossbeam::channel::Sender;
-use futures::executor::block_on;
 use log::{debug, error, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_client::{
@@ -31,6 +30,7 @@ use std::{
 use switchboard_on_demand_client::{
     FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
 };
+use tokio::runtime::{Builder, Runtime};
 
 pub struct LiquidatorAccount {
     pub account_wrapper: MarginfiAccountWrapper,
@@ -44,6 +44,7 @@ pub struct LiquidatorAccount {
     pub non_blocking_rpc_client: NonBlockingRpcClient,
     pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     compute_unit_limit: u32,
+    tokio_rt: Runtime,
 }
 
 impl LiquidatorAccount {
@@ -64,11 +65,18 @@ impl LiquidatorAccount {
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
 
-        let queue = block_on(QueueAccountData::load(
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("liquidator-account")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+
+        let queue = tokio_rt.block_on(QueueAccountData::load(
             &non_blocking_rpc_client,
             &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
         ))?;
-        let swb_gateway = block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
+        let swb_gateway =
+            tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
 
         Ok(Self {
             account_wrapper,
@@ -82,6 +90,7 @@ impl LiquidatorAccount {
             non_blocking_rpc_client,
             pending_liquidations,
             compute_unit_limit: config.compute_unit_limit,
+            tokio_rt,
         })
     }
 
@@ -163,7 +172,7 @@ impl LiquidatorAccount {
         );
 
         let crank_data = if !observation_swb_oracles.is_empty() {
-            if let Ok((ix, luts)) = block_on(PullFeed::fetch_update_many_ix(
+            if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
