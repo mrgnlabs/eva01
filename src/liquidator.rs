@@ -802,7 +802,7 @@ impl Liquidator {
             .collect();
 
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
-        let clock = cached_clock.get_clock(&rpc_client)?;
+        let clock = cached_clock.get_clock(rpc_client)?;
 
         debug!("Filling the cache...");
         for (bank_address, bank) in banks.iter() {
