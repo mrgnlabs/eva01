@@ -1,5 +1,5 @@
 use crate::{
-    clock_manager::ClockManager,
+    clock_manager::{self, ClockManager},
     config::Eva01Config,
     geyser::{GeyserService, GeyserUpdate},
     liquidator::Liquidator,
@@ -8,10 +8,11 @@ use crate::{
     transaction_manager::{TransactionData, TransactionManager},
 };
 use log::info;
+use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
 };
 
 pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
@@ -35,9 +36,13 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // This is to stop liquidator when rebalancer asks for it
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
-    let clock_manager = ClockManager::new(
+    // Solana Clock
+    let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
+    let clock = Arc::new(Mutex::new(clock_manager::fetch_clock(&rpc_client)?));
+    let mut clock_manager = ClockManager::new(
+        clock.clone(),
         config.general_config.rpc_url.clone(),
-        config.general_config.clock_update_interval,
+        config.general_config.solana_clock_refresh_interval,
         stop_liquidator.clone(),
     )?;
 
@@ -60,6 +65,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         transaction_tx.clone(),
         Arc::clone(&pending_bundles),
         stop_liquidator.clone(),
+        clock.clone(),
     )?;
 
     let mut rebalancer = Rebalancer::new(
@@ -69,7 +75,12 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         Arc::clone(&pending_bundles),
         rebalancer_rx,
         stop_liquidator.clone(),
+        clock.clone(),
     )?;
+
+    tokio::task::spawn(async move {
+        clock_manager.start();
+    });
 
     info!("Loading data for liquidator...");
     liquidator.load_data()?;

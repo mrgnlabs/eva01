@@ -167,6 +167,10 @@ impl GeneralConfig {
             pubkey!("5FuKF7C1tJji2mXZuJ14U9oDb37is5mmvYLf4KwojoF1"),
         ]
     }
+
+    pub fn default_sol_clock_refresh_interval() -> u64 {
+        10 // 10 seconds
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

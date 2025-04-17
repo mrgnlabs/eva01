@@ -1,5 +1,3 @@
-pub mod clock;
-
 use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
 use fixed::types::I80F48;

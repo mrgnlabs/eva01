@@ -1,4 +1,5 @@
 use crate::{
+    clock_manager,
     config::{GeneralConfig, RebalancerCfg},
     crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
@@ -8,8 +9,7 @@ use crate::{
     transaction_manager::{RawTransaction, TransactionData},
     utils::{
         accessor, batch_get_multiple_accounts, calc_weighted_assets_new, calc_weighted_liabs_new,
-        clock::CachedClock, load_swb_pull_account_from_bytes, BankAccountWithPriceFeedEva,
-        BatchLoadingConfig,
+        load_swb_pull_account_from_bytes, BankAccountWithPriceFeedEva, BatchLoadingConfig,
     },
     ward,
     wrappers::{
@@ -42,15 +42,15 @@ use solana_client::{
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
-    account::Account, account_info::IntoAccountInfo, commitment_config::CommitmentConfig,
-    signature::read_keypair_file, transaction::VersionedTransaction,
+    account::Account, account_info::IntoAccountInfo, clock::Clock,
+    commitment_config::CommitmentConfig, signature::read_keypair_file,
+    transaction::VersionedTransaction,
 };
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
     thread,
-    time::Duration,
 };
 use switchboard_on_demand::PullFeedAccountData;
 use switchboard_on_demand_client::{FetchUpdateManyParams, PullFeed, SbContext};
@@ -75,6 +75,7 @@ pub struct Rebalancer {
     stop_liquidations: Arc<AtomicBool>,
     crossbar_client: CrossbarMaintainer,
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
+    clock: Arc<Mutex<Clock>>,
 }
 
 impl Rebalancer {
@@ -85,6 +86,7 @@ impl Rebalancer {
         pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
         geyser_receiver: Receiver<GeyserUpdate>,
         stop_liquidations: Arc<AtomicBool>,
+        clock: Arc<Mutex<Clock>>,
     ) -> anyhow::Result<Self> {
         let txn_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
         let non_blocking_rpc_client = NonBlockingRpcClient::new(general_config.rpc_url.clone());
@@ -113,6 +115,7 @@ impl Rebalancer {
             stop_liquidations,
             crossbar_client: CrossbarMaintainer::new(),
             cache_oracle_needed_accounts: HashMap::new(),
+            clock,
         })
     }
 
@@ -219,9 +222,7 @@ impl Rebalancer {
 
     pub fn start(&mut self) -> anyhow::Result<()> {
         let max_duration = std::time::Duration::from_secs(20);
-        let rpc_client = RpcClient::new(self.general_config.rpc_url.clone());
         let mut start = std::time::Instant::now();
-        let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
 
         info!("Starting the Rebalancer loop");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
@@ -262,7 +263,7 @@ impl Rebalancer {
                             ))
                         }
                         OracleSetup::StakedWithPythPush => {
-                            let clock = ward!(cached_clock.get_clock(&rpc_client).ok(), continue);
+                            let clock = ward!(clock_manager::get_clock(&self.clock).ok(), continue);
 
                             let keys = &bank_to_update.bank.config.oracle_keys[1..3];
 
@@ -292,7 +293,7 @@ impl Rebalancer {
                             )
                         }
                         _ => {
-                            let clock = ward!(cached_clock.get_clock(&rpc_client).ok(), continue);
+                            let clock = ward!(clock_manager::get_clock(&self.clock).ok(), continue);
                             let oracle_account_info =
                                 (&msg.address, &mut msg.account).into_account_info();
 

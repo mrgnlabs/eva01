@@ -106,6 +106,7 @@ pub fn setup() -> anyhow::Result<()> {
         marginfi_group_address,
         account_whitelist: GeneralConfig::default_account_whitelist(),
         address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
+        solana_clock_refresh_interval: GeneralConfig::default_sol_clock_refresh_interval(),
     };
 
     let liquidator_config = LiquidatorCfg {
@@ -203,6 +204,7 @@ pub fn setup_from_cfg(
         marginfi_group_address,
         account_whitelist: None,
         address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
+        solana_clock_refresh_interval: GeneralConfig::default_sol_clock_refresh_interval(),
     };
 
     let liquidator_config = LiquidatorCfg {
