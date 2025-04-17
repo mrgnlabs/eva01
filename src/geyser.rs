@@ -6,12 +6,7 @@ use log::{error, info, trace};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
-use std::{
-    collections::HashMap,
-    mem::size_of,
-    sync::{atomic::AtomicBool, Arc},
-    thread,
-};
+use std::{collections::HashMap, mem::size_of, thread};
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
 
@@ -48,14 +43,13 @@ pub struct GeyserServiceConfig {
 pub struct GeyserService {}
 
 impl GeyserService {
-    pub async fn connect(
+    pub async fn start(
         config: GeyserServiceConfig,
         tracked_accounts: HashMap<Pubkey, AccountType>,
         marginfi_program_id: Pubkey,
         marginfi_group_pk: Pubkey,
         liquidator_sender: Sender<GeyserUpdate>,
         rebalancer_sender: Sender<GeyserUpdate>,
-        stop_liquidator: Arc<AtomicBool>,
     ) -> anyhow::Result<()> {
         info!("Staring the Geyser loop.");
         let mut client = GeyserGrpcClient::build_from_shared(config.endpoint.clone())?
@@ -122,15 +116,7 @@ impl GeyserService {
                     }
                 }
             }
-
-            if stop_liquidator.load(std::sync::atomic::Ordering::Relaxed) {
-                info!("Stopping the Geyser loop.");
-                break;
-            }
         }
-        info!("The Geyser loop is stopped.");
-
-        Ok(())
     }
 
     fn send_update(

@@ -12,7 +12,6 @@ pub struct ClockManager {
     rpc_client: RpcClient,
     clock: Arc<Mutex<Clock>>,
     refresh_interval: Duration,
-    stop: Arc<AtomicBool>,
 }
 
 impl ClockManager {
@@ -20,7 +19,6 @@ impl ClockManager {
         clock: Arc<Mutex<Clock>>,
         rpc_url: String,
         refresh_interval_sec: u64,
-        stop: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
         info!("Initializing ClockManager with RPC URL: {}", rpc_url);
 
@@ -32,7 +30,6 @@ impl ClockManager {
             rpc_client,
             clock,
             refresh_interval,
-            stop,
         })
     }
 
@@ -41,7 +38,7 @@ impl ClockManager {
             "Thread {:?}: Starting the ClockManager loop.",
             thread::current().id()
         );
-        while !(self.stop.load(std::sync::atomic::Ordering::Relaxed)) {
+        loop {
             std::thread::sleep(self.refresh_interval);
             debug!(
                 "Thread {:?}: Updating the Solana Clock...",
@@ -76,10 +73,6 @@ impl ClockManager {
                 }
             }
         }
-        info!(
-            "Thread {:?}: The ClockManager is stopped.",
-            thread::current().id()
-        );
     }
 }
 

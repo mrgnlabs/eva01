@@ -113,7 +113,11 @@ impl TransactionManager {
     }
 
     /// Starts the transaction manager
-    pub fn start(&mut self, jito_tx: Sender<(Pubkey, String)>, txn_rx: Receiver<TransactionData>) {
+    pub fn start(
+        &mut self,
+        jito_tx: Sender<(Pubkey, String)>,
+        txn_rx: Receiver<TransactionData>,
+    ) -> anyhow::Result<()> {
         info!("Starting the Transaction manager loop.");
         while let Ok(TransactionData {
             transactions,
@@ -172,6 +176,7 @@ impl TransactionManager {
         }
 
         info!("The Transaction manager loop is stopped.");
+        Ok(())
     }
 
     /// Configures the instructions

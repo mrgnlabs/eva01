@@ -72,7 +72,7 @@ pub struct Rebalancer {
     //FIXME: consider remove the Option wrapper. Rebalancing will not work w/o the swap mint bank.
     swap_mint_bank_pk: Option<Pubkey>,
     geyser_receiver: Receiver<GeyserUpdate>,
-    stop_liquidations: Arc<AtomicBool>,
+    stop_liquidator: Arc<AtomicBool>,
     crossbar_client: CrossbarMaintainer,
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
     clock: Arc<Mutex<Clock>>,
@@ -86,7 +86,7 @@ impl Rebalancer {
         transaction_tx: Sender<TransactionData>,
         pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
         geyser_receiver: Receiver<GeyserUpdate>,
-        stop_liquidations: Arc<AtomicBool>,
+        stop_liquidator: Arc<AtomicBool>,
         clock: Arc<Mutex<Clock>>,
     ) -> anyhow::Result<Self> {
         let txn_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
@@ -119,7 +119,7 @@ impl Rebalancer {
             preferred_mints,
             swap_mint_bank_pk: None,
             geyser_receiver,
-            stop_liquidations,
+            stop_liquidator,
             crossbar_client: CrossbarMaintainer::new(),
             cache_oracle_needed_accounts: HashMap::new(),
             clock,
@@ -396,7 +396,7 @@ impl Rebalancer {
             bank.oracle_adapter.simulated_price = Some(price);
         }
 
-        self.should_stop_liquidations();
+        self.should_stop_liquidator();
 
         self.has_tokens_in_token_accounts()
             || self.has_non_preferred_deposits()
@@ -459,34 +459,33 @@ impl Rebalancer {
         Ok(())
     }
 
-    // If our margin is at 50% or lower, we should stop liquidations and waits until the account
-    // is fully rebalanced
-    pub fn should_stop_liquidations(&self) {
+    // If our margin is at 50% or lower, we should stop the Liquidator and manually adjust it's balances.
+    pub fn should_stop_liquidator(&self) {
         let (assets, liabs) = self.calc_health(
             &self.liquidator_account.account_wrapper,
             RequirementType::Initial,
         );
 
         if assets.is_zero() {
-            warn!(
-                "Assets are zero for the Liquidator account {:?}. Stopping liquidations.",
+            error!(
+                "The Liquidator {:?} has no assets!",
                 self.liquidator_account.account_wrapper.address
             );
 
-            self.stop_liquidations
+            self.stop_liquidator
                 .store(true, std::sync::atomic::Ordering::Relaxed);
 
             return;
         }
 
-        if (assets - liabs) / assets <= 0.5 {
-            warn!(
-                "The Assets ({}) to Liabilities ({}) ratio is low for the Liquidator account {:?}. Stopping liquidations.",
-                assets, liabs,
-                self.liquidator_account.account_wrapper.address
+        let ratio = (assets - liabs) / assets;
+        if ratio <= 0.5 {
+            error!(
+                "The Assets ({}) to Liabilities ({}) ratio ({}) too low for the Liquidator {:?}!",
+                assets, liabs, ratio, self.liquidator_account.account_wrapper.address
             );
 
-            self.stop_liquidations
+            self.stop_liquidator
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }

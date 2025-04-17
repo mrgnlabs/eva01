@@ -47,7 +47,6 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         clock.clone(),
         config.general_config.rpc_url.clone(),
         config.general_config.solana_clock_refresh_interval,
-        stop_liquidator.clone(),
     )?;
 
     // Geyser -> Liquidator
@@ -88,10 +87,6 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     info!("Loading data for rebalancer...");
     rebalancer.load_data(liquidator.get_banks_and_map())?;
 
-    thread::spawn(move || {
-        clock_manager.start();
-    });
-
     // Fetch accounts to track
     let mut accounts_to_track = HashMap::new();
     for (key, value) in liquidator.get_accounts_to_track() {
@@ -101,21 +96,23 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         accounts_to_track.insert(key, value);
     }
 
+    thread::spawn(move || clock_manager.start());
+
+    // Start Geyser service
+    // TODO: encapsulate the Tokio runtime in the Geyser service
     let tokio_rt = Builder::new_multi_thread()
         .thread_name("geyser")
         .worker_threads(2)
         .enable_all()
         .build()?;
-
     tokio_rt.spawn(async move {
-        if let Err(e) = GeyserService::connect(
+        if let Err(e) = GeyserService::start(
             config.general_config.get_geyser_service_config(),
             accounts_to_track,
             config.general_config.marginfi_program_id,
             config.general_config.marginfi_group_address,
             liquidator_tx,
             rebalancer_tx,
-            stop_liquidator,
         )
         .await
         {
@@ -125,9 +122,15 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
     thread::spawn(move || {
-        transaction_manager.start(jito_tx, transaction_rx);
+        if let Err(e) = transaction_manager.start(jito_tx, transaction_rx) {
+            panic!("TransactionManager failed! {:?}", e);
+        }
     });
-    thread::spawn(move || transaction_checker.check_bundle_status(jito_rx, pending_bundles));
+    thread::spawn(move || {
+        if let Err(e) = transaction_checker.start(jito_rx, pending_bundles) {
+            panic!("TransactionChecker failed! {:?}", e);
+        }
+    });
 
     thread::spawn(move || {
         if let Err(e) = rebalancer.start() {

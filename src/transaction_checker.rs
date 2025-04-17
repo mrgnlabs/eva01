@@ -39,11 +39,11 @@ impl TransactionChecker {
         Ok(Self { jito_sdk, tokio_rt })
     }
 
-    pub fn check_bundle_status(
+    pub fn start(
         &self,
         jito_rx: Receiver<(Pubkey, String)>,
         pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
-    ) {
+    ) -> anyhow::Result<()> {
         let max_retries = 10;
         let retry_delay = std::time::Duration::from_millis(500);
 
@@ -134,6 +134,7 @@ impl TransactionChecker {
             pending_bundles.write().unwrap().remove(&bundle_id);
         }
         info!("The Transaction checker loop stopped.");
+        Ok(())
     }
 
     fn check_final_bundle_status(&self, uuid: &str) -> anyhow::Result<()> {

@@ -67,7 +67,7 @@ pub struct Liquidator {
     marginfi_accounts: HashMap<Pubkey, MarginfiAccountWrapper>,
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
-    stop_liquidation: Arc<AtomicBool>,
+    stop_liquidator: Arc<AtomicBool>,
     crossbar_client: CrossbarMaintainer,
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
     clock: Arc<Mutex<Clock>>,
@@ -91,7 +91,7 @@ impl Liquidator {
         geyser_receiver: Receiver<GeyserUpdate>,
         transaction_sender: Sender<TransactionData>,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
-        stop_liquidation: Arc<AtomicBool>,
+        stop_liquidator: Arc<AtomicBool>,
         clock: Arc<Mutex<Clock>>,
     ) -> anyhow::Result<Self> {
         let liquidator_account =
@@ -111,7 +111,7 @@ impl Liquidator {
             banks: HashMap::new(),
             liquidator_account,
             oracle_to_bank: HashMap::new(),
-            stop_liquidation,
+            stop_liquidator,
             crossbar_client: CrossbarMaintainer::new(),
             cache_oracle_needed_accounts: HashMap::new(),
             clock,
@@ -272,7 +272,7 @@ impl Liquidator {
             };
 
             if self
-                .stop_liquidation
+                .stop_liquidator
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 break;
