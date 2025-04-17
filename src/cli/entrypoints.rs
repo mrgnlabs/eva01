@@ -1,4 +1,5 @@
 use crate::{
+    clock_manager::ClockManager,
     config::Eva01Config,
     geyser::{GeyserService, GeyserUpdate},
     liquidator::Liquidator,
@@ -31,15 +32,21 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     info!("Starting eva01 liquidator! {:#?}", &config);
 
+    // This is to stop liquidator when rebalancer asks for it
+    let stop_liquidator = Arc::new(AtomicBool::new(false));
+
+    let clock_manager = ClockManager::new(
+        config.general_config.rpc_url.clone(),
+        config.general_config.clock_update_interval,
+        stop_liquidator.clone(),
+    )?;
+
     // Geyser -> Liquidator
     // Geyser -> Rebalancer
     // Liquidator/Rebalancer -> TransactionManager
     let (liquidator_tx, liquidator_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
-
-    // This is to stop liquidator when rebalancer asks for it
-    let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
     let transaction_checker =

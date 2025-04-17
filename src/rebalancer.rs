@@ -225,8 +225,8 @@ impl Rebalancer {
 
         info!("Starting the Rebalancer loop");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            debug!(
-                "Thread {:?}. Rebalancer received geyser update: {:?} for {:?}",
+            info!(
+                "Thread {:?}: Received geyser update: {:?} for {:?}",
                 thread::current().id(),
                 msg.account_type,
                 msg.address

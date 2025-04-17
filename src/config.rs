@@ -88,6 +88,7 @@ pub struct GeneralConfig {
         serialize_with = "vec_pubkey_to_str"
     )]
     pub address_lookup_tables: Vec<Pubkey>,
+    pub solana_clock_refresh_interval: u64,
 }
 
 impl std::fmt::Display for GeneralConfig {

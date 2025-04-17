@@ -41,6 +41,9 @@ mod transaction_manager;
 /// Crossbar client
 mod crossbar;
 
+/// Solana Clock manager
+mod clock_manager;
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger, with INFO as default log level
