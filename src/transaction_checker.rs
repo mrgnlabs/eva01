@@ -9,7 +9,7 @@ use futures::executor::block_on;
 use jito_sdk_rust::JitoJsonRpcSDK;
 use solana_sdk::pubkey::Pubkey;
 
-use log::{debug, error};
+use log::{debug, error, info};
 
 use crate::metrics::ERROR_COUNT;
 
@@ -38,6 +38,8 @@ impl TransactionChecker {
     ) {
         let max_retries = 10;
         let retry_delay = std::time::Duration::from_millis(500);
+
+        info!("Starting the Transaction checker loop.");
         while let Ok((bundle_id, uuid)) = jito_rx.recv() {
             for attempt in 1..=max_retries {
                 debug!(
@@ -123,6 +125,7 @@ impl TransactionChecker {
             );
             pending_bundles.write().unwrap().remove(&bundle_id);
         }
+        info!("The Transaction checker loop stopped.");
     }
 }
 

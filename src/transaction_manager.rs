@@ -1,4 +1,4 @@
-use crate::{config::GeneralConfig, metrics::ERROR_COUNT, ward};
+use crate::{config::GeneralConfig, metrics::ERROR_COUNT};
 use crossbeam::channel::{Receiver, Sender};
 use futures::executor::block_on;
 use jito_sdk_rust::JitoJsonRpcSDK;
@@ -18,7 +18,7 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::str::FromStr;
+use std::{str::FromStr, thread};
 
 /// Manages transactions for the liquidator and rebalancer
 #[allow(dead_code)]
@@ -74,7 +74,7 @@ impl TransactionManager {
 
         debug!("Initializing RPC client with URL: {}", config.rpc_url);
         let rpc_client =
-            RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
+            RpcClient::new_with_commitment(config.rpc_url, CommitmentConfig::confirmed());
 
         // Loads the Address Lookup Table's accounts
         let mut lookup_tables = vec![];
@@ -112,7 +112,11 @@ impl TransactionManager {
             bundle_id,
         }) = txn_rx.recv()
         {
-            debug!("Bundle ID: {:?}", bundle_id);
+            debug!(
+                "Thread {:?}. Transaction manager received txn for Bundle ID: {:?}",
+                thread::current().id(),
+                bundle_id
+            );
 
             let serialized_txs = match self.configure_instructions(transactions) {
                 Ok(txs) => txs,
@@ -128,7 +132,7 @@ impl TransactionManager {
                 Ok(response) => response,
                 Err(e) => {
                     ERROR_COUNT.inc();
-                    error!("Failed to send JITO bundle: {:?}", e);
+                    error!("Failed to send JITO bundle: {:?}! {:?}", serialized_txs, e);
                     continue;
                 }
             };
@@ -138,16 +142,24 @@ impl TransactionManager {
                 Some(uuid) => uuid,
                 None => {
                     ERROR_COUNT.inc();
-                    error!("Failed to get bundle UUID from response: {:?}", response);
+                    error!(
+                        "Failed to obtain bundle UUID from JITO response: {:?}",
+                        response
+                    );
                     continue;
                 }
             };
 
-            ward!(
-                jito_tx.send((bundle_id, bundle_uuid.to_string())).ok(),
-                break
-            );
+            if let Err(error) = jito_tx.send((bundle_id, bundle_uuid.to_string())) {
+                ERROR_COUNT.inc();
+                error!(
+                    "Failed to submit UUID JITO bundle id {:?} to JITO channel! {:?}",
+                    bundle_id, error
+                );
+                break;
+            }
         }
+
         info!("The Transaction manager loop is stopped.");
     }
 

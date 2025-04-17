@@ -143,12 +143,9 @@ impl Rebalancer {
             .into_iter()
             .collect::<Vec<_>>();
 
-        let all_accounts = batch_get_multiple_accounts(
-            self.txn_client.clone(),
-            &all_keys,
-            BatchLoadingConfig::DEFAULT,
-        )
-        .unwrap();
+        let all_accounts =
+            batch_get_multiple_accounts(&self.txn_client, &all_keys, BatchLoadingConfig::DEFAULT)
+                .unwrap();
 
         self.cache_oracle_needed_accounts = all_keys
             .into_iter()
@@ -170,7 +167,7 @@ impl Rebalancer {
             .load_initial_data(&self.txn_client, mints.clone())?;
 
         let accounts = batch_get_multiple_accounts(
-            self.txn_client.clone(),
+            &self.txn_client,
             &token_account_addresses,
             BatchLoadingConfig::DEFAULT,
         )?;
@@ -228,8 +225,8 @@ impl Rebalancer {
 
         info!("Starting the Rebalancer loop");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            info!(
-                "Thread {:?}. Received geyser update: {:?} for {:?}",
+            debug!(
+                "Thread {:?}. Rebalancer received geyser update: {:?} for {:?}",
                 thread::current().id(),
                 msg.account_type,
                 msg.address
@@ -237,7 +234,11 @@ impl Rebalancer {
             match msg.account_type {
                 AccountType::Oracle => {
                     let bank_to_update_pk = ward!(self.oracle_to_bank.get(&msg.address), continue);
-                    //debug!("Received oracle update for bank: {:?}", bank_to_update_pk);
+                    debug!(
+                        "Thread {:?}: Received oracle update for bank: {:?}",
+                        thread::current().id(),
+                        bank_to_update_pk
+                    );
 
                     let bank_to_update = ward!(self.banks.get_mut(bank_to_update_pk), continue);
 
@@ -317,7 +318,11 @@ impl Rebalancer {
                     }
                 }
                 AccountType::Marginfi => {
-                    debug!("Received marginfi account update: {:?}", msg.address);
+                    debug!(
+                        "Thread {:?}: Received marginfi account update: {:?}",
+                        thread::current().id(),
+                        msg.address
+                    );
                     if msg.address == self.general_config.liquidator_account {
                         let marginfi_account =
                             bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
@@ -330,8 +335,10 @@ impl Rebalancer {
                     let mint = accessor::mint(&msg.account.data);
                     let balance = accessor::amount(&msg.account.data);
                     debug!(
-                        "Received token account update: mint - {:?}, balance - {}",
-                        mint, balance
+                        "Thread {:?}: Received token account update: mint - {:?}, balance - {}",
+                        thread::current().id(),
+                        mint,
+                        balance
                     );
 
                     if let Some(account_to_update) = self.token_accounts.get_mut(&mint) {
@@ -343,14 +350,18 @@ impl Rebalancer {
 
             if start.elapsed() > max_duration && self.needs_to_be_relanced() {
                 if let Err(e) = self.rebalance_accounts() {
-                    error!("Failed to rebalance account: {:?}", e);
+                    error!(
+                        "Thread {:?}: Failed to rebalance account: {:?}",
+                        thread::current().id(),
+                        e
+                    );
                     ERROR_COUNT.inc();
                 }
                 start = std::time::Instant::now();
                 continue;
             }
         }
-        info!("Rebalancer stopped.");
+        info!("Thread {:?}: Rebalancer stopped.", thread::current().id());
         Ok(())
     }
 
@@ -382,7 +393,9 @@ impl Rebalancer {
     }
 
     fn fetch_swb_prices(&self) -> anyhow::Result<()> {
-        let active_banks = self.liquidator_account.account_wrapper.get_active_banks();
+        let active_banks = MarginfiAccountWrapper::get_active_banks(
+            &self.liquidator_account.account_wrapper.lending_account,
+        );
 
         let active_swb_oracles: Vec<Pubkey> = active_banks
             .iter()
@@ -398,7 +411,7 @@ impl Rebalancer {
             .collect();
 
         if !active_swb_oracles.is_empty() {
-            debug!("Fetching SWB prices.");
+            debug!("Thread {:?}: Fetching SWB prices.", thread::current().id());
             let (ix, lut) = block_on(PullFeed::fetch_update_many_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
@@ -444,7 +457,10 @@ impl Rebalancer {
         );
 
         if assets.is_zero() {
-            warn!("Assets are zero, stopping liquidations");
+            warn!(
+                "Assets are zero for the Liquidator account {:?}. Stopping liquidations.",
+                self.liquidator_account.account_wrapper.address
+            );
 
             self.stop_liquidations
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -453,11 +469,14 @@ impl Rebalancer {
         }
 
         if (assets - liabs) / assets <= 0.5 {
+            warn!(
+                "The Assets ({}) to Liabilities ({}) ratio is low for the Liquidator account {:?}. Stopping liquidations.",
+                assets, liabs,
+                self.liquidator_account.account_wrapper.address
+            );
+
             self.stop_liquidations
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            self.stop_liquidations
-                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -487,7 +506,10 @@ impl Rebalancer {
             .get_deposits(&self.config.preferred_mints, &self.banks);
 
         if !non_preferred_deposits.is_empty() {
-            debug!("Selling non-preferred deposits.");
+            debug!(
+                "Thread {:?}: Selling non-preferred deposits.",
+                thread::current().id()
+            );
 
             for bank_pk in non_preferred_deposits {
                 if let Err(error) = self.withdraw_and_sell_deposit(&bank_pk) {
@@ -507,7 +529,7 @@ impl Rebalancer {
             .get_liabilities_shares();
 
         if !liabilities.is_empty() {
-            debug!("Repaying liabilities.");
+            debug!("Thread {:?}: Repaying liabilities.", thread::current().id());
             for (_, bank_pk) in liabilities {
                 if let Err(err) = self.repay_liability(bank_pk) {
                     error!(
@@ -562,8 +584,10 @@ impl Rebalancer {
             BalanceSide::Liabilities,
         )?;
         debug!(
-            "Liability {:?} needs to be repaid with {:?} USD",
-            bank_pk, liab_usd_value
+            "Thread {:?}: Liability {:?} needs to be repaid with {:?} USD",
+            thread::current().id(),
+            bank_pk,
+            liab_usd_value
         );
 
         // Get the amount of USDC needed to repay the liability
@@ -621,8 +645,11 @@ impl Rebalancer {
 
         let amount_to_swap = min(liab_balance + withdraw_amount, required_swap_token);
         debug!(
-            "SWAPPING {:?} of {:?} for {:?}",
-            amount_to_swap, self.swap_mint_bank_pk, bank_pk
+            "Thread {:?}: SWAPPING {:?} of {:?} for {:?}",
+            thread::current().id(),
+            amount_to_swap,
+            self.swap_mint_bank_pk,
+            bank_pk
         );
 
         if amount_to_swap.is_positive() {
@@ -637,7 +664,11 @@ impl Rebalancer {
             self.refresh_token_account(&bank_pk)?;
         }
 
-        debug!("Repaying liability for bank {}", bank_pk);
+        debug!(
+            "Thread {:?}: Repaying liability for bank {}",
+            thread::current().id(),
+            bank_pk
+        );
 
         let token_balance = self
             .get_token_balance_for_bank(&bank_pk)
@@ -668,7 +699,8 @@ impl Rebalancer {
         if let Some(balance) = self.get_token_balance_for_bank(&swap_mint_bank) {
             if !balance.is_zero() {
                 debug!(
-                    "Depositing preferred tokens for the Swap mint bank {:?}.",
+                    "Thread {:?}: Depositing preferred tokens for the Swap mint bank {:?}.",
+                    thread::current().id(),
                     swap_mint_bank
                 );
 
@@ -734,7 +766,10 @@ impl Rebalancer {
             self.token_accounts.values().cloned().collect();
 
         if !token_accounts.is_empty() {
-            debug!("Draining tokens from token accounts.");
+            debug!(
+                "Thread {:?}: Draining tokens from token accounts.",
+                thread::current().id()
+            );
             for account in token_accounts {
                 if account.bank.bank.mint == self.config.swap_mint {
                     continue;
@@ -771,8 +806,11 @@ impl Rebalancer {
         let amount = withdraw_amount.to_num::<u64>();
 
         debug!(
-            "Withdrawing {:?} of {:?} from bank {:?}",
-            amount, bank.bank.mint, bank_pk
+            "Thread {:?}: Withdrawing {:?} of {:?} from bank {:?}",
+            thread::current().id(),
+            amount,
+            bank.bank.mint,
+            bank_pk
         );
         self.liquidator_account.withdraw(
             bank,
@@ -796,7 +834,13 @@ impl Rebalancer {
     }
 
     fn swap(&mut self, amount: u64, src_bank: &Pubkey, dst_bank: &Pubkey) -> anyhow::Result<()> {
-        debug!("Swapping {} from {} to {}.", amount, src_bank, dst_bank);
+        debug!(
+            "Thread {:?}: Swapping {} from {} to {}.",
+            thread::current().id(),
+            amount,
+            src_bank,
+            dst_bank
+        );
 
         let input_mint = {
             let bank = self.banks.get(src_bank).unwrap();
@@ -843,7 +887,7 @@ impl Rebalancer {
             &[&read_keypair_file(&self.general_config.keypair_path).unwrap()],
         )?;
 
-        TransactionSender::aggressive_send_tx(self.txn_client.clone(), &tx, SenderCfg::DEFAULT)
+        TransactionSender::aggressive_send_tx(&self.txn_client, &tx, SenderCfg::DEFAULT)
             .map_err(|_| anyhow!("Failed to send swap transaction"))?;
 
         self.refresh_token_account(src_bank)?;

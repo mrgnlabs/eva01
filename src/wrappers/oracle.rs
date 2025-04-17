@@ -77,6 +77,7 @@ pub mod test_utils {
 
     const SOL_ORACLE_ADDRESS: &str = "11111119rSGfPZLcyCGzY4uYEL1fkzJr6fke9qKxb";
     const USDC_ORACLE_ADDRESS: &str = "1111111Af7Udc9v3L82dQM5b4zee1Xt77Be4czzbH";
+    const BONK_ORACLE_ADDRESS: &str = "8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN";
 
     impl Default for TestOracleWrapper {
         fn default() -> Self {
@@ -102,6 +103,14 @@ pub mod test_utils {
                 price: 1.0,
                 bias: 0.1,
                 address: Pubkey::from_str(USDC_ORACLE_ADDRESS).unwrap(),
+            }
+        }
+
+        pub fn test_bonk() -> Self {
+            Self {
+                price: 1000.0,
+                bias: 1.0,
+                address: Pubkey::from_str(BONK_ORACLE_ADDRESS).unwrap(),
             }
         }
     }

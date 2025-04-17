@@ -60,7 +60,7 @@ impl BatchLoadingConfig {
 /// Additionally, logs progress information including the number of accounts being fetched,
 /// the size of each chunk, and the current progress using trace and debug logs.
 pub fn batch_get_multiple_accounts(
-    rpc_client: Arc<solana_client::rpc_client::RpcClient>,
+    rpc_client: &solana_client::rpc_client::RpcClient,
     addresses: &[Pubkey],
     BatchLoadingConfig {
         max_batch_size,
@@ -87,14 +87,12 @@ pub fn batch_get_multiple_accounts(
         let mut batched_accounts = batch
             .par_chunks(max_batch_size)
             .map(|chunk| -> anyhow::Result<Vec<_>> {
-                let rpc_client = rpc_client.clone();
                 let chunk = chunk.to_vec();
                 let chunk_size = chunk.len();
 
                 log::trace!(" - Fetching chunk of size {}", chunk_size);
 
                 let chunk_res = backoff::retry(ExponentialBackoff::default(), move || {
-                    let rpc_client = rpc_client.clone();
                     let chunk = chunk.clone();
 
                     rpc_client

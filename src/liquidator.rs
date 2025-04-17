@@ -48,6 +48,7 @@ use std::{
     cmp::min,
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc, RwLock},
+    thread,
     time::{Duration, Instant},
 };
 use switchboard_on_demand::PullFeedAccountData;
@@ -106,13 +107,14 @@ impl Liquidator {
 
     /// Loads necessary data to the liquidator
     pub fn load_data(&mut self) -> anyhow::Result<()> {
-        let rpc_client = Arc::new(RpcClient::new(self.general_config.rpc_url.clone()));
-        self.load_marginfi_accounts(rpc_client.clone())?;
+        let rpc_client = &RpcClient::new(self.general_config.rpc_url.clone());
+
+        self.load_marginfi_accounts(rpc_client)?;
         info!("Loading banks...");
-        self.load_oracles_and_banks(rpc_client.clone())?;
+        self.load_oracles_and_banks(rpc_client)?;
         info!("Loading initial data for liquidator...");
         self.liquidator_account
-            .load_initial_data(rpc_client.as_ref(), self.get_all_mints())?;
+            .load_initial_data(rpc_client, self.get_all_mints())?;
         info!("Loading staked banks...");
 
         let all_keys = self
@@ -129,11 +131,8 @@ impl Liquidator {
             .into_iter()
             .collect::<Vec<_>>();
 
-        let all_accounts = batch_get_multiple_accounts(
-            rpc_client.clone(),
-            &all_keys,
-            BatchLoadingConfig::DEFAULT,
-        )?;
+        let all_accounts =
+            batch_get_multiple_accounts(rpc_client, &all_keys, BatchLoadingConfig::DEFAULT)?;
 
         self.cache_oracle_needed_accounts = all_keys
             .into_iter()
@@ -150,6 +149,12 @@ impl Liquidator {
 
         info!("Staring the Liquidator loop.");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
+            debug!(
+                "Thread {:?}. Liquidator received geyser update: {:?}",
+                thread::current().id(),
+                msg
+            );
+
             match msg.account_type {
                 AccountType::Oracle => {
                     if let Some(bank_to_update_pk) = self.oracle_to_bank.get(&msg.address) {
@@ -671,13 +676,13 @@ impl Liquidator {
     /// Loading marginfi accounts into the liquidator itself
     /// makes it easier and better, than holding it in a shared
     /// state engine, as it shouldn't be blocked by other threads
-    pub fn load_marginfi_accounts(&mut self, rpc_client: Arc<RpcClient>) -> anyhow::Result<()> {
+    pub fn load_marginfi_accounts(&mut self, rpc_client: &RpcClient) -> anyhow::Result<()> {
         info!("Loading marginfi accounts, this may take a few minutes, please wait!");
         let start = std::time::Instant::now();
-        let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(rpc_client.clone())?;
+        let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(rpc_client)?;
 
         let mut marginfi_accounts = batch_get_multiple_accounts(
-            rpc_client.clone(),
+            rpc_client,
             &marginfi_accounts_pubkeys,
             BatchLoadingConfig::DEFAULT,
         )?;
@@ -704,7 +709,7 @@ impl Liquidator {
 
     fn load_marginfi_account_addresses(
         &self,
-        rpc_client: Arc<RpcClient>,
+        rpc_client: &RpcClient,
     ) -> anyhow::Result<Vec<Pubkey>> {
         info!("Loading marginfi account addresses...");
         match &self.general_config.account_whitelist {
@@ -762,7 +767,7 @@ impl Liquidator {
     }
 
     /// Loads Oracles and banks into the Liquidator
-    fn load_oracles_and_banks(&mut self, rpc_client: Arc<RpcClient>) -> anyhow::Result<()> {
+    fn load_oracles_and_banks(&mut self, rpc_client: &RpcClient) -> anyhow::Result<()> {
         let anchor_client = anchor_client::Client::new(
             anchor_client::Cluster::Custom(self.general_config.rpc_url.clone(), String::from("")),
             Arc::new(Keypair::new()),
@@ -787,11 +792,8 @@ impl Liquidator {
             .collect::<Vec<_>>();
 
         info!("Loading oracles...");
-        let mut oracle_accounts = batch_get_multiple_accounts(
-            rpc_client.clone(),
-            &oracle_keys,
-            BatchLoadingConfig::DEFAULT,
-        )?;
+        let mut oracle_accounts =
+            batch_get_multiple_accounts(rpc_client, &oracle_keys, BatchLoadingConfig::DEFAULT)?;
 
         let oracle_map: HashMap<Pubkey, Option<Account>> = oracle_keys
             .iter()
@@ -800,7 +802,7 @@ impl Liquidator {
             .collect();
 
         let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
-        let clock = cached_clock.get_clock(&rpc_client)?;
+        let clock = cached_clock.get_clock(rpc_client)?;
 
         debug!("Filling the cache...");
         for (bank_address, bank) in banks.iter() {

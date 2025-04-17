@@ -4,8 +4,8 @@ use solana_client::rpc_client::{RpcClient, SerializableTransaction};
 use solana_client::rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig};
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Signature;
+use std::error::Error;
 use std::time::Duration;
-use std::{error::Error, sync::Arc};
 
 #[derive(Debug, Deserialize)]
 pub struct SenderCfg {
@@ -41,7 +41,7 @@ pub struct TransactionSender;
 
 impl TransactionSender {
     pub fn aggressive_send_tx(
-        rpc: Arc<RpcClient>,
+        rpc: &RpcClient,
         transaction: &impl SerializableTransaction,
         cfg: SenderCfg,
     ) -> Result<Signature, Box<dyn Error>> {

@@ -15,6 +15,7 @@ use solana_client::{
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
+    compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
     pubkey,
     signature::{read_keypair_file, Keypair},
@@ -42,6 +43,7 @@ pub struct LiquidatorAccount {
     rpc_client: RpcClient,
     pub non_blocking_rpc_client: NonBlockingRpcClient,
     pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
+    compute_unit_limit: u32,
 }
 
 impl LiquidatorAccount {
@@ -79,6 +81,7 @@ impl LiquidatorAccount {
             rpc_client,
             non_blocking_rpc_client,
             pending_liquidations,
+            compute_unit_limit: config.compute_unit_limit,
         })
     }
 
@@ -113,7 +116,8 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
-        let liquidator_observation_accounts = self.account_wrapper.get_observation_accounts(
+        let liquidator_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
+            &self.account_wrapper.lending_account,
             &[liab_bank.address, asset_bank.address],
             &[],
             banks,
@@ -123,8 +127,12 @@ impl LiquidatorAccount {
             liquidator_observation_accounts
         );
 
-        let liquidatee_observation_accounts =
-            liquidatee_account.get_observation_accounts(&[], &[], banks);
+        let liquidatee_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
+            &liquidatee_account.lending_account,
+            &[],
+            &[],
+            banks,
+        );
         debug!(
             "liquidatee_observation_accounts: {:?}",
             liquidatee_observation_accounts
@@ -174,6 +182,8 @@ impl LiquidatorAccount {
             None
         };
 
+        let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
+
         let liquidate_ix = make_liquidate_ix(
             self.program_id,
             self.group,
@@ -215,7 +225,7 @@ impl LiquidatorAccount {
             //     )
             //     .await;
 
-            transactions.push(RawTransaction::new(vec![liquidate_ix]));
+            transactions.push(RawTransaction::new(vec![cu_limit_ix, liquidate_ix]));
 
             debug!(
                 "SENDING DOUBLE liquidate: bundle length: {:?}",
@@ -232,15 +242,16 @@ impl LiquidatorAccount {
         } else {
             let tx: solana_sdk::transaction::Transaction =
                 solana_sdk::transaction::Transaction::new_signed_with_payer(
-                    &[liquidate_ix.clone()],
+                    &[cu_limit_ix.clone(), liquidate_ix.clone()],
                     Some(&signer_pk),
                     &[&self.signer_keypair],
                     recent_blockhash,
                 );
 
             debug!(
-                "Thread {:?}. liquidate_ix: {:?}",
+                "Thread {:?}: cu_limit_ix: ({:?}), liquidate_ix: ({:?})",
                 thread::current().id(),
+                cu_limit_ix,
                 liquidate_ix
             );
 
@@ -291,9 +302,12 @@ impl LiquidatorAccount {
             vec![]
         };
 
-        let observation_accounts =
-            self.account_wrapper
-                .get_observation_accounts(&[], &banks_to_exclude, banks);
+        let observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
+            &self.account_wrapper.lending_account,
+            &[],
+            &banks_to_exclude,
+            banks,
+        );
 
         let mint = bank.bank.mint;
         let token_program = *self.token_program_per_mint.get(&mint).unwrap();

@@ -95,6 +95,7 @@ pub mod test_utils {
 
     const SOL_BANK_ADDRESS: &str = "1111111Bs8Haw3nAsWf5hmLfKzc6PMEzcxUCKkVYK";
     const USDC_BANK_ADDRESS: &str = "11111117353mdUKehx9GW6JNHznGt5oSZs9fWkVkB";
+    const BONK_BANK_ADDRESS: &str = "DeyH7QxWvnbbaVB4zFrf4hoq7Q8z1ZT14co42BGwGtfM";
 
     impl TestBankWrapper {
         pub fn test_sol() -> Self {
@@ -137,6 +138,27 @@ pub mod test_utils {
             );
             let oracle = TestOracleWrapper::test_usdc();
             BankWrapperT::new(Pubkey::from_str(USDC_BANK_ADDRESS).unwrap(), bank, oracle)
+        }
+
+        pub fn test_bonk() -> Self {
+            let bank = Bank::new(
+                Pubkey::new_unique(),
+                BankConfig::default(),
+                Pubkey::new_unique(),
+                2u8,
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                0i64,
+                0u8,
+                0u8,
+                0u8,
+                0u8,
+                0u8,
+                0u8,
+            );
+            let oracle = TestOracleWrapper::test_bonk();
+            BankWrapperT::new(Pubkey::from_str(BONK_BANK_ADDRESS).unwrap(), bank, oracle)
         }
     }
 }
