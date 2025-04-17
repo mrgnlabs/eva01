@@ -2,6 +2,7 @@ use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
+    thread_debug,
     transaction_manager::{RawTransaction, TransactionData},
 };
 use crossbeam::channel::Sender;
@@ -25,7 +26,6 @@ use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
     sync::{Arc, RwLock},
-    thread,
 };
 use switchboard_on_demand_client::{
     FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
@@ -257,9 +257,8 @@ impl LiquidatorAccount {
                     recent_blockhash,
                 );
 
-            debug!(
-                "Thread {:?}: cu_limit_ix: ({:?}), liquidate_ix: ({:?})",
-                thread::current().id(),
+            thread_debug!(
+                "cu_limit_ix: ({:?}), liquidate_ix: ({:?})",
                 cu_limit_ix,
                 liquidate_ix
             );

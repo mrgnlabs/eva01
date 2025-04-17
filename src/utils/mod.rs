@@ -622,3 +622,47 @@ macro_rules! ward {
         }
     };
 }
+
+#[macro_export]
+macro_rules! thread_debug {
+    ($($arg:tt)*) => {
+        log::debug!(
+            "Thread {:?}. {}",
+            std::thread::current().id(),
+            format_args!($($arg)*)
+        )
+    };
+}
+
+#[macro_export]
+macro_rules! thread_info {
+    ($($arg:tt)*) => {
+        log::info!(
+            "Thread {:?}. {}",
+            std::thread::current().id(),
+            format_args!($($arg)*)
+        )
+    };
+}
+
+#[macro_export]
+macro_rules! thread_warn {
+    ($($arg:tt)*) => {
+        log::warn!(
+            "Thread {:?}. {}",
+            std::thread::current().id(),
+            format_args!($($arg)*)
+        )
+    };
+}
+
+#[macro_export]
+macro_rules! thread_error {
+    ($($arg:tt)*) => {
+        log::error!(
+            "Thread {:?}. {}",
+            std::thread::current().id(),
+            format_args!($($arg)*)
+        )
+    };
+}

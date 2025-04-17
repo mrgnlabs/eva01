@@ -1,11 +1,12 @@
 use bincode::deserialize;
-use log::{debug, error, info};
+use log::info;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::clock::Clock;
 use solana_sdk::sysvar::{self};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
+
+use crate::{thread_debug, thread_error, thread_info};
 
 pub struct ClockManager {
     rpc_client: RpcClient,
@@ -33,16 +34,10 @@ impl ClockManager {
     }
 
     pub fn start(&mut self) {
-        info!(
-            "Thread {:?}: Starting the ClockManager loop.",
-            thread::current().id()
-        );
+        thread_info!("Starting the ClockManager loop.");
         loop {
             std::thread::sleep(self.refresh_interval);
-            debug!(
-                "Thread {:?}: Updating the Solana Clock...",
-                thread::current().id()
-            );
+            thread_debug!("Updating the Solana Clock...");
             match fetch_clock(&self.rpc_client) {
                 Ok(clock) => {
                     match self.clock.lock() {
@@ -50,25 +45,13 @@ impl ClockManager {
                             *clock_guard = clock;
                         }
                         Err(err) => {
-                            error!(
-                                "Thread {:?}: Failed to lock the clock mutex for update: {:?}",
-                                thread::current().id(),
-                                err
-                            );
+                            thread_error!("Failed to lock the clock mutex for update: {:?}", err);
                         }
                     }
-                    debug!(
-                        "Thread {:?}: Updated the Solana Clock: {:?}",
-                        thread::current().id(),
-                        self.clock
-                    );
+                    thread_debug!("Updated the Solana Clock: {:?}", self.clock);
                 }
                 Err(e) => {
-                    error!(
-                        "Thread {:?}: Failed to update the Solana Clock! {:?}",
-                        thread::current().id(),
-                        e
-                    );
+                    thread_error!("Failed to update the Solana Clock! {:?}", e);
                 }
             }
         }

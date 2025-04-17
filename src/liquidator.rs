@@ -4,6 +4,7 @@ use crate::{
     crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
+    thread_debug,
     transaction_manager::TransactionData,
     utils::{
         batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
@@ -50,7 +51,6 @@ use std::{
     cmp::min,
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
-    thread,
     time::Instant,
 };
 use switchboard_on_demand::PullFeedAccountData;
@@ -160,11 +160,7 @@ impl Liquidator {
     pub fn start(&mut self) -> anyhow::Result<()> {
         info!("Staring the Liquidator loop.");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            debug!(
-                "Thread {:?}. Liquidator received geyser update: {:?}",
-                thread::current().id(),
-                msg
-            );
+            thread_debug!("Liquidator received geyser update: {:?}", msg);
 
             match msg.account_type {
                 AccountType::Oracle => {

@@ -1,4 +1,4 @@
-use crate::{config::GeneralConfig, metrics::ERROR_COUNT};
+use crate::{config::GeneralConfig, metrics::ERROR_COUNT, thread_debug};
 use crossbeam::channel::{Receiver, Sender};
 use jito_sdk_rust::JitoJsonRpcSDK;
 use log::{debug, error, info};
@@ -17,7 +17,7 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::{str::FromStr, thread};
+use std::str::FromStr;
 use tokio::runtime::{Builder, Runtime};
 
 /// Manages transactions for the liquidator and rebalancer
@@ -124,9 +124,8 @@ impl TransactionManager {
             bundle_id,
         }) = txn_rx.recv()
         {
-            debug!(
-                "Thread {:?}. Transaction manager received txn for Bundle ID: {:?}",
-                thread::current().id(),
+            thread_debug!(
+                "Transaction manager received txn for Bundle ID: {:?}",
                 bundle_id
             );
 
