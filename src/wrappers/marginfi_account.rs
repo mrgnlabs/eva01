@@ -1,6 +1,5 @@
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
-use indexmap::IndexSet;
 use log::debug;
 use marginfi::state::marginfi_account::{BalanceSide, LendingAccount};
 use solana_program::pubkey::Pubkey;
@@ -103,42 +102,45 @@ impl MarginfiAccountWrapper {
         (deposits, liabilities)
     }
 
-    pub fn get_active_banks(&self) -> Vec<Pubkey> {
-        self.lending_account
+    // TODO: Create Unit test
+    pub fn get_active_banks(lending_account: &LendingAccount) -> Vec<Pubkey> {
+        lending_account
             .balances
             .iter()
             .filter_map(|balance| balance.active.then_some(balance.bank_pk))
             .collect::<Vec<_>>()
     }
 
+    // TODO: add more unit tests
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         banks: &HashMap<Pubkey, BankWrapperT<T>>,
     ) -> Vec<Pubkey> {
-        let mut include_banks_queue = include_banks.to_vec();
-        let mut bank_pks: IndexSet<Pubkey> = IndexSet::new();
+        // This is a temporary fix to ensure the proper order of the remaining accounts.
+        // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320
+        let active_bank_pks = MarginfiAccountWrapper::get_active_banks(lending_account);
 
-        // Loop thru the lending account banks and make sure they are not in the excluded_banks list
-        for balance in lending_account
-            .balances
-            .iter()
-            .filter(|balance| !exclude_banks.contains(&balance.bank_pk))
-        {
+        let mut bank_pks: Vec<Pubkey> = vec![];
+        let mut bank_to_include_index = 0;
+
+        for balance in lending_account.balances.iter() {
             if balance.active {
-                // Collect active banks
-                bank_pks.insert(balance.bank_pk);
-            } else if let Some(include_bank) = include_banks_queue.pop() {
-                // Replace inactive banks with banks from the include_banks list
-                bank_pks.insert(include_bank);
+                bank_pks.push(balance.bank_pk);
+            } else if include_banks.len() > bank_to_include_index {
+                for bank_pk in &include_banks[bank_to_include_index..] {
+                    bank_to_include_index += 1;
+                    if !active_bank_pks.contains(bank_pk) {
+                        bank_pks.push(*bank_pk);
+                        break;
+                    }
+                }
             }
         }
+        // The end of the complex logic-to-be-removed
 
-        // Collect remaining banks from the include_banks list
-        for include_bank in include_banks_queue {
-            bank_pks.insert(include_bank);
-        }
+        bank_pks.retain(|bank_pk| !exclude_banks.contains(bank_pk));
 
         // Add bank oracles
         bank_pks
@@ -308,7 +310,7 @@ mod tests {
             )
         );
         assert_eq!(
-            healthy.get_active_banks(),
+            MarginfiAccountWrapper::get_active_banks(&healthy.lending_account),
             vec![sol_bank.address, usdc_bank.address]
         );
 
@@ -342,7 +344,7 @@ mod tests {
             )
         );
         assert_eq!(
-            unhealthy.get_active_banks(),
+            MarginfiAccountWrapper::get_active_banks(&unhealthy.lending_account),
             vec![usdc_bank.address, sol_bank.address]
         );
     }

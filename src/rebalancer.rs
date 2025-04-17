@@ -393,7 +393,9 @@ impl Rebalancer {
     }
 
     fn fetch_swb_prices(&self) -> anyhow::Result<()> {
-        let active_banks = self.liquidator_account.account_wrapper.get_active_banks();
+        let active_banks = MarginfiAccountWrapper::get_active_banks(
+            &self.liquidator_account.account_wrapper.lending_account,
+        );
 
         let active_swb_oracles: Vec<Pubkey> = active_banks
             .iter()
