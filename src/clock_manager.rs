@@ -3,7 +3,6 @@ use log::{debug, error, info};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::clock::Clock;
 use solana_sdk::sysvar::{self};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;

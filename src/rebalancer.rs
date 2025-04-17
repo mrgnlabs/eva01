@@ -28,7 +28,7 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
