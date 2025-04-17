@@ -99,7 +99,7 @@ impl Liquidator {
 
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("liquidator")
-            .worker_threads(4)
+            .worker_threads(2)
             .enable_all()
             .build()?;
 

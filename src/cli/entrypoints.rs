@@ -15,6 +15,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
     thread,
 };
+use tokio::runtime::Builder;
 
 pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // register_metrics();
@@ -100,7 +101,13 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         accounts_to_track.insert(key, value);
     }
 
-    tokio::task::spawn(async move {
+    let tokio_rt = Builder::new_multi_thread()
+        .thread_name("geyser")
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+
+    tokio_rt.spawn(async move {
         if let Err(e) = GeyserService::connect(
             config.general_config.get_geyser_service_config(),
             accounts_to_track,
@@ -117,7 +124,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     });
 
     let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
-    tokio::task::spawn(async move {
+    thread::spawn(move || {
         transaction_manager.start(jito_tx, transaction_rx);
     });
     thread::spawn(move || transaction_checker.check_bundle_status(jito_rx, pending_bundles));
