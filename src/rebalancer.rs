@@ -540,7 +540,7 @@ impl Rebalancer {
     ///
     /// - Find any bank tokens in token accounts
     /// - Calc $ value of liab
-    /// - Find USDC in token accounts
+    /// - Find USDC account
     /// - Calc additional USDC to withdraw
     /// - Withdraw USDC
     /// - Swap USDC for bank tokens
@@ -548,20 +548,22 @@ impl Rebalancer {
     fn repay_liability(&mut self, bank_pk: Pubkey) -> anyhow::Result<()> {
         let bank = self.banks.get(&bank_pk).unwrap();
 
-        // Get the balance for the liability and check if it's valid
-        let balance = self
+        thread_debug!("Evaluating the {:?} Bank liability.", &bank_pk);
+
+        // Get the balance for the liability bank and check if it's valid
+        let liab_balance_opt = self
             .liquidator_account
             .account_wrapper
             .get_balance_for_bank(bank);
 
-        if balance.is_none() || matches!(balance, Some((_, BalanceSide::Assets))) {
+        if liab_balance_opt.is_none() || matches!(liab_balance_opt, Some((_, BalanceSide::Assets)))
+        {
             return Ok(());
         }
 
-        let (liab_balance, _) = balance.unwrap();
+        let (liab_balance, _) = liab_balance_opt.unwrap();
 
         // Gets how much tokens of needing repay asset to purchase
-
         let token_balance = self
             .get_token_balance_for_bank(&bank_pk)
             .unwrap_or_default();
@@ -578,8 +580,19 @@ impl Rebalancer {
             RequirementType::Initial,
             BalanceSide::Liabilities,
         )?;
+        if liab_usd_value < self.config.token_account_dust_threshold {
+            thread_debug!(
+                "The {:?} unscaled Liability tokens of Bank {:?} are below the dust threshold {}.",
+                liab_to_purchase,
+                bank_pk,
+                self.config.token_account_dust_threshold
+            );
+            return Ok(());
+        }
+
         thread_debug!(
-            "Liability {:?} needs to be repaid with {:?} USD",
+            "The {:?} unscaled Liability tokens of Bank {:?} need to be repaid with {:?} USD.",
+            liab_to_purchase,
             bank_pk,
             liab_usd_value
         );
@@ -638,14 +651,13 @@ impl Rebalancer {
         };
 
         let amount_to_swap = min(liab_balance + withdraw_amount, required_swap_token);
-        thread_debug!(
-            "SWAPPING {:?} of {:?} for {:?}",
-            amount_to_swap,
-            self.swap_mint_bank_pk,
-            bank_pk
-        );
-
         if amount_to_swap.is_positive() {
+            thread_debug!(
+                "Repaying {:?} unscaled Liability tokens of the Bank {:?} from the Bank {:?}",
+                amount_to_swap,
+                bank_pk,
+                self.swap_mint_bank_pk,
+            );
             self.swap(
                 amount_to_swap.to_num(),
                 &self
@@ -818,7 +830,12 @@ impl Rebalancer {
     }
 
     fn swap(&mut self, amount: u64, src_bank: &Pubkey, dst_bank: &Pubkey) -> anyhow::Result<()> {
-        thread_debug!("Swapping {} from {} to {}.", amount, src_bank, dst_bank);
+        thread_debug!(
+            "Swapping {} unscaled tokens from {} to {}.",
+            amount,
+            src_bank,
+            dst_bank
+        );
 
         let input_mint = {
             let bank = self.banks.get(src_bank).unwrap();
