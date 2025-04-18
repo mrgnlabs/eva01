@@ -1,12 +1,14 @@
 use crate::{
+    clock_manager::{self},
     config::{GeneralConfig, LiquidatorCfg},
     crossbar::CrossbarMaintainer,
     geyser::{AccountType, GeyserUpdate},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
+    thread_debug,
     transaction_manager::TransactionData,
     utils::{
-        batch_get_multiple_accounts, clock::CachedClock, find_oracle_keys,
-        load_swb_pull_account_from_bytes, BankAccountWithPriceFeedEva, BatchLoadingConfig,
+        batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
+        BankAccountWithPriceFeedEva, BatchLoadingConfig,
     },
     ward,
     wrappers::{
@@ -22,7 +24,6 @@ use core::panic;
 use crossbeam::channel::{Receiver, Sender};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use futures::executor::block_on;
 use log::{debug, error, info};
 use marginfi::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
@@ -43,15 +44,17 @@ use solana_client::{
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{account::Account, account_info::IntoAccountInfo, bs58, signature::Keypair};
+use solana_sdk::{
+    account::Account, account_info::IntoAccountInfo, bs58, clock::Clock, signature::Keypair,
+};
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc, RwLock},
-    thread,
-    time::{Duration, Instant},
+    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    time::Instant,
 };
 use switchboard_on_demand::PullFeedAccountData;
+use tokio::runtime::{Builder, Runtime};
 
 /// Bank group private key offset
 const BANK_GROUP_PK_OFFSET: usize = 32 + 1 + 8;
@@ -64,9 +67,11 @@ pub struct Liquidator {
     marginfi_accounts: HashMap<Pubkey, MarginfiAccountWrapper>,
     banks: HashMap<Pubkey, BankWrapper>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
-    stop_liquidation: Arc<AtomicBool>,
+    stop_liquidator: Arc<AtomicBool>,
     crossbar_client: CrossbarMaintainer,
     cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
+    clock: Arc<Mutex<Clock>>,
+    tokio_rt: Runtime,
 }
 
 pub struct PreparedLiquidatableAccount {
@@ -86,10 +91,17 @@ impl Liquidator {
         geyser_receiver: Receiver<GeyserUpdate>,
         transaction_sender: Sender<TransactionData>,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
-        stop_liquidation: Arc<AtomicBool>,
+        stop_liquidator: Arc<AtomicBool>,
+        clock: Arc<Mutex<Clock>>,
     ) -> anyhow::Result<Self> {
         let liquidator_account =
             LiquidatorAccount::new(transaction_sender, &general_config, pending_liquidations)?;
+
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("liquidator")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
 
         Ok(Liquidator {
             general_config,
@@ -99,14 +111,18 @@ impl Liquidator {
             banks: HashMap::new(),
             liquidator_account,
             oracle_to_bank: HashMap::new(),
-            stop_liquidation,
+            stop_liquidator,
             crossbar_client: CrossbarMaintainer::new(),
             cache_oracle_needed_accounts: HashMap::new(),
+            clock,
+            tokio_rt,
         })
     }
 
     /// Loads necessary data to the liquidator
     pub fn load_data(&mut self) -> anyhow::Result<()> {
+        info!("Loading Liquidator data.");
+
         let rpc_client = &RpcClient::new(self.general_config.rpc_url.clone());
 
         self.load_marginfi_accounts(rpc_client)?;
@@ -144,16 +160,9 @@ impl Liquidator {
 
     /// Liquidator starts receiving messages and processing them
     pub fn start(&mut self) -> anyhow::Result<()> {
-        let rpc_client = RpcClient::new(self.general_config.rpc_url.clone());
-        let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
-
         info!("Staring the Liquidator loop.");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            debug!(
-                "Thread {:?}. Liquidator received geyser update: {:?}",
-                thread::current().id(),
-                msg
-            );
+            thread_debug!("Liquidator received geyser update: {:?}", msg);
 
             match msg.account_type {
                 AccountType::Oracle => {
@@ -185,7 +194,7 @@ impl Liquidator {
                                     msg.address, bank_to_update_pk
                                 );
                                 let clock =
-                                    ward!(cached_clock.get_clock(&rpc_client).ok(), continue);
+                                    ward!(clock_manager::get_clock(&self.clock).ok(), continue);
                                 let keys = &bank_to_update.bank.config.oracle_keys[1..3];
 
                                 let mut accounts_info =
@@ -218,7 +227,7 @@ impl Liquidator {
                             }
                             _ => {
                                 let clock =
-                                    ward!(cached_clock.get_clock(&rpc_client).ok(), continue);
+                                    ward!(clock_manager::get_clock(&self.clock).ok(), continue);
                                 // info!(
                                 //     "Getting update for oracle: {:?} for bank: {:?}",
                                 //     msg.address, bank_to_update_pk
@@ -261,7 +270,7 @@ impl Liquidator {
             };
 
             if self
-                .stop_liquidation
+                .stop_liquidator
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 break;
@@ -315,7 +324,9 @@ impl Liquidator {
             })
             .collect::<Vec<_>>();
 
-        let simulated_prices = block_on(self.crossbar_client.simulate(swb_feed_hashes));
+        let simulated_prices = self
+            .tokio_rt
+            .block_on(self.crossbar_client.simulate(swb_feed_hashes));
 
         for (bank_pk, price) in simulated_prices {
             let bank = self.banks.get_mut(&bank_pk).unwrap();
@@ -777,12 +788,14 @@ impl Liquidator {
             anchor_client.program(self.general_config.marginfi_program_id)?;
 
         info!("Loading banks internally...");
-        let banks = block_on(program.accounts::<Bank>(vec![RpcFilterType::Memcmp(
-            Memcmp::new_base58_encoded(
-                BANK_GROUP_PK_OFFSET,
-                self.general_config.marginfi_group_address.as_ref(),
-            ),
-        )]))?;
+        let banks =
+            self.tokio_rt
+                .block_on(program.accounts::<Bank>(vec![RpcFilterType::Memcmp(
+                    Memcmp::new_base58_encoded(
+                        BANK_GROUP_PK_OFFSET,
+                        self.general_config.marginfi_group_address.as_ref(),
+                    ),
+                )]))?;
 
         info!("Fetched {} banks", banks.len());
 
@@ -800,9 +813,6 @@ impl Liquidator {
             .zip(oracle_accounts.iter_mut())
             .map(|(pk, account)| (*pk, account.take()))
             .collect();
-
-        let cached_clock = CachedClock::new(Duration::from_secs(1)); // Cache for 1 second
-        let clock = cached_clock.get_clock(rpc_client)?;
 
         debug!("Filling the cache...");
         for (bank_address, bank) in banks.iter() {
@@ -871,7 +881,7 @@ impl Liquidator {
                         OraclePriceFeedAdapter::try_from_bank_config(
                             &bank.config,
                             &[oracle_account_info],
-                            &clock,
+                            &clock_manager::get_clock(&self.clock)?,
                         )
                         .ok(),
                         continue
@@ -920,7 +930,7 @@ impl Liquidator {
                         OraclePriceFeedAdapter::try_from_bank_config(
                             &bank.config,
                             &oracle_account_infos,
-                            &clock,
+                            &clock_manager::get_clock(&self.clock)?,
                         )
                         .ok(),
                         continue

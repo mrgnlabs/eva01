@@ -1,4 +1,4 @@
-use crate::{utils::account_update_to_account, ward};
+use crate::{config::GeneralConfig, utils::account_update_to_account, ward};
 use anchor_lang::AccountDeserialize;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
@@ -6,12 +6,8 @@ use log::{error, info, trace};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
-use std::{
-    collections::HashMap,
-    mem::size_of,
-    sync::{atomic::AtomicBool, Arc},
-    thread,
-};
+use std::{collections::HashMap, mem::size_of, thread};
+use tokio::runtime::{Builder, Runtime};
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
 
@@ -45,32 +41,67 @@ pub struct GeyserServiceConfig {
 
 /// Geyser service is responsible for receiving and distrubuting the
 /// messages to the other services.
-pub struct GeyserService {}
+pub struct GeyserService {
+    endpoint: String,
+    x_token: Option<String>,
+    tracked_accounts: HashMap<Pubkey, AccountType>,
+    marginfi_program_id: Pubkey,
+    marginfi_group_pk: Pubkey,
+    liquidator_sender: Sender<GeyserUpdate>,
+    rebalancer_sender: Sender<GeyserUpdate>,
+    tokio_rt: Runtime,
+}
 
 impl GeyserService {
-    pub async fn connect(
-        config: GeyserServiceConfig,
+    pub fn new(
+        config: GeneralConfig,
         tracked_accounts: HashMap<Pubkey, AccountType>,
-        marginfi_program_id: Pubkey,
-        marginfi_group_pk: Pubkey,
         liquidator_sender: Sender<GeyserUpdate>,
         rebalancer_sender: Sender<GeyserUpdate>,
-        stop_liquidator: Arc<AtomicBool>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Self> {
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("geyser")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+
+        let geyser_config = config.get_geyser_service_config();
+
+        Ok(Self {
+            endpoint: geyser_config.endpoint,
+            x_token: geyser_config.x_token,
+            tracked_accounts,
+            marginfi_program_id: config.marginfi_program_id,
+            marginfi_group_pk: config.marginfi_group_address,
+            liquidator_sender,
+            rebalancer_sender,
+            tokio_rt,
+        })
+    }
+
+    pub fn start(&self) -> anyhow::Result<()> {
         info!("Staring the Geyser loop.");
-        let mut client = GeyserGrpcClient::build_from_shared(config.endpoint.clone())?
-            .x_token(config.x_token.clone())?
-            .connect()
-            .await?;
-        let tracked_accounts_vec: Vec<Pubkey> = tracked_accounts.keys().cloned().collect();
-        let sub_req =
-            Self::build_geyser_subscribe_request(&tracked_accounts_vec, &marginfi_program_id);
+
+        let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().cloned().collect();
 
         loop {
             info!("Connecting to geyser...");
-            let (_, mut stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;
+            let sub_req = Self::build_geyser_subscribe_request(
+                &tracked_accounts_vec,
+                &self.marginfi_program_id,
+            );
+            let mut client = self.tokio_rt.block_on(
+                GeyserGrpcClient::build_from_shared(self.endpoint.clone())?
+                    .x_token(self.x_token.clone())?
+                    .connect(),
+            )?;
 
-            while let Some(msg) = stream.next().await {
+            let (_, mut stream) = self
+                .tokio_rt
+                .block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
+
+            info!("Entering the Geyser loop.");
+            while let Some(msg) = self.tokio_rt.block_on(stream.next()) {
                 trace!(
                     "Thread {:?}. Received geyser msg: {:?}",
                     thread::current().id(),
@@ -92,7 +123,7 @@ impl GeyserService {
                         continue
                     );
 
-                    if account.owner == marginfi_program_id
+                    if account.owner == self.marginfi_program_id
                         && account_update.data.len() == MARGIN_ACCOUNT_SIZE
                     {
                         let marginfi_account = ward!(
@@ -100,21 +131,21 @@ impl GeyserService {
                             continue
                         );
 
-                        if marginfi_account.group != marginfi_group_pk {
+                        if marginfi_account.group != self.marginfi_group_pk {
                             continue;
                         }
 
                         Self::send_update(
-                            &liquidator_sender,
-                            &rebalancer_sender,
+                            &self.liquidator_sender,
+                            &self.rebalancer_sender,
                             AccountType::Marginfi,
                             address,
                             &account,
                         );
-                    } else if let Some(account_type) = tracked_accounts.get(&address) {
+                    } else if let Some(account_type) = self.tracked_accounts.get(&address) {
                         Self::send_update(
-                            &liquidator_sender,
-                            &rebalancer_sender,
+                            &self.liquidator_sender,
+                            &self.rebalancer_sender,
                             account_type.clone(),
                             address,
                             &account,
@@ -122,15 +153,7 @@ impl GeyserService {
                     }
                 }
             }
-
-            if stop_liquidator.load(std::sync::atomic::Ordering::Relaxed) {
-                info!("Stopping the Geyser loop.");
-                break;
-            }
         }
-        info!("The Geyser loop is stopped.");
-
-        Ok(())
     }
 
     fn send_update(

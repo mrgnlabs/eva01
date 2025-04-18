@@ -88,6 +88,7 @@ pub struct GeneralConfig {
         serialize_with = "vec_pubkey_to_str"
     )]
     pub address_lookup_tables: Vec<Pubkey>,
+    pub solana_clock_refresh_interval: u64,
 }
 
 impl std::fmt::Display for GeneralConfig {
@@ -165,6 +166,10 @@ impl GeneralConfig {
             pubkey!("HGmknUTUmeovMc9ryERNWG6UFZDFDVr9xrum3ZhyL4fC"),
             pubkey!("5FuKF7C1tJji2mXZuJ14U9oDb37is5mmvYLf4KwojoF1"),
         ]
+    }
+
+    pub fn default_sol_clock_refresh_interval() -> u64 {
+        10 // 10 seconds
     }
 }
 
