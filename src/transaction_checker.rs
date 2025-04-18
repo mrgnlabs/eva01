@@ -138,8 +138,8 @@ impl TransactionChecker {
     }
 
     fn check_final_bundle_status(&self, uuid: &str) -> anyhow::Result<()> {
-        let max_retries = 10;
-        let retry_delay = std::time::Duration::from_millis(500);
+        let max_retries = 5;
+        let retry_delay = std::time::Duration::from_secs(2);
 
         for attempt in 1..=max_retries {
             debug!(
