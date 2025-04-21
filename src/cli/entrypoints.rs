@@ -149,14 +149,14 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let monitor_transaction_rx = transaction_rx.clone();
     while !stop_liquidator.load(std::sync::atomic::Ordering::SeqCst) {
         thread_info!(
-            "Channel depth: [Lq,Rb,Tnx,Jito] -> [{},{},{},{}]",
+            "Channel depth: [Liquidation, Rebalancer, Txn, Jito] -> [{}, {}, {}, {}]",
             monitor_liquidator_rx.len(),
             monitor_rebalancer_rx.len(),
             monitor_transaction_rx.len(),
             monitor_jito_rx.len()
         );
         thread_info!(
-            "[Lq att, Failed Lqs] -> [{},{}]",
+            "Liqudations [attemps, failed] -> [{},{}]",
             LIQUIDATION_ATTEMPTS.get(),
             FAILED_LIQUIDATIONS.get()
         );
