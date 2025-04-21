@@ -143,7 +143,7 @@ impl LiquidatorAccount {
         );
 
         let liquidatee_observation_accounts =
-            MarginfiAccountWrapper::get_observation_accounts(&liquidatee_account, &[], &[], banks);
+            MarginfiAccountWrapper::get_observation_accounts(liquidatee_account, &[], &[], banks);
         thread_debug!(
             "Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address,
