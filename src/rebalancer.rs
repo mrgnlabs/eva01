@@ -780,6 +780,13 @@ impl Rebalancer {
                         &account.bank.address,
                         &swap_mint_bank,
                     )?;
+                } else {
+                    thread_debug!(
+                        "The {:?} unscaled Drain tokens of Bank {:?} are below the dust threshold {}.",
+                        account.get_amount(),
+                        &account.bank.address,
+                        self.config.token_account_dust_threshold
+                    );
                 }
             }
         }
