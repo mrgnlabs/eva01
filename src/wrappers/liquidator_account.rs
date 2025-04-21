@@ -121,28 +121,32 @@ impl LiquidatorAccount {
     ) -> anyhow::Result<()> {
         let liquidator_account_address = self.account_wrapper.address;
         let liquidatee_account_address = liquidatee_account.address;
+        thread_info!(
+            "Liquidating account {:?} with liquidator account {:?}",
+            liquidatee_account_address,
+            liquidator_account_address
+        );
+
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
         let liquidator_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &self.account_wrapper.lending_account,
+            &self.account_wrapper,
             &[liab_bank.address, asset_bank.address],
             &[],
             banks,
         );
         thread_debug!(
-            "liquidator_observation_accounts: {:?}",
+            "Liquidator {:?} observation accounts: {:?}",
+            liquidator_account_address,
             liquidator_observation_accounts
         );
 
-        let liquidatee_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &liquidatee_account.lending_account,
-            &[],
-            &[],
-            banks,
-        );
+        let liquidatee_observation_accounts =
+            MarginfiAccountWrapper::get_observation_accounts(&liquidatee_account, &[], &[], banks);
         thread_debug!(
-            "liquidatee_observation_accounts: {:?}",
+            "Liquidatee {:?} observation accounts: {:?}",
+            liquidatee_account_address,
             liquidatee_observation_accounts
         );
 
@@ -165,12 +169,8 @@ impl LiquidatorAccount {
             })
             .collect::<Vec<_>>();
 
-        thread_debug!(
-            "liquidate: observation_swb_oracles length: {:?}",
-            observation_swb_oracles.len()
-        );
-
         let crank_data = if !observation_swb_oracles.is_empty() {
+            thread_debug!("Cranking Swb Oracles for observation accounts.",);
             if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
@@ -184,7 +184,7 @@ impl LiquidatorAccount {
             )) {
                 Some((ix, luts))
             } else {
-                return Err(anyhow::anyhow!("Failed to fetch crank data"));
+                return Err(anyhow::anyhow!("Failed to crank/fetch Swb Oracles data."));
             }
         } else {
             None
@@ -312,7 +312,7 @@ impl LiquidatorAccount {
         };
 
         let observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &self.account_wrapper.lending_account,
+            &self.account_wrapper,
             &[],
             &banks_to_exclude,
             banks,

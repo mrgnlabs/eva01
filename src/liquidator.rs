@@ -254,17 +254,27 @@ impl Liquidator {
                 AccountType::Marginfi => {
                     let marginfi_account =
                         bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
-                    self.marginfi_accounts
-                        .entry(msg.address)
-                        .and_modify(|mrgn_account| {
-                            mrgn_account.lending_account = marginfi_account.lending_account;
-                        })
-                        .or_insert_with(|| {
-                            MarginfiAccountWrapper::new(
-                                msg.address,
-                                marginfi_account.lending_account,
-                            )
-                        });
+                    if msg.address == self.general_config.liquidator_account {
+                        thread_debug!("Received Liquidator account {:?} update.", msg.address);
+                        let marginfi_account =
+                            bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
+
+                        self.liquidator_account.account_wrapper.lending_account =
+                            marginfi_account.lending_account;
+                    } else {
+                        thread_debug!("Received Marginfi account {:?} update", msg.address);
+                        self.marginfi_accounts
+                            .entry(msg.address)
+                            .and_modify(|mrgn_account| {
+                                mrgn_account.lending_account = marginfi_account.lending_account;
+                            })
+                            .or_insert_with(|| {
+                                MarginfiAccountWrapper::new(
+                                    msg.address,
+                                    marginfi_account.lending_account,
+                                )
+                            });
+                    }
                 }
                 _ => {}
             };
@@ -280,10 +290,6 @@ impl Liquidator {
                 accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                 accounts.reverse();
                 for account in accounts {
-                    info!(
-                        "Liquidating account {:?}",
-                        account.liquidatee_account.address
-                    );
                     LIQUIDATION_ATTEMPTS.inc();
                     let start = Instant::now();
                     if let Err(e) = self.liquidator_account.liquidate(

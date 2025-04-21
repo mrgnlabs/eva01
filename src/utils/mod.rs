@@ -624,6 +624,17 @@ macro_rules! ward {
 }
 
 #[macro_export]
+macro_rules! thread_trace {
+    ($($arg:tt)*) => {
+        log::trace!(
+            "Thread {:?}. {}",
+            std::thread::current().id(),
+            format_args!($($arg)*)
+        )
+    };
+}
+
+#[macro_export]
 macro_rules! thread_debug {
     ($($arg:tt)*) => {
         log::debug!(

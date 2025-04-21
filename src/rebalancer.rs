@@ -236,7 +236,7 @@ impl Rebalancer {
 
         info!("Starting the Rebalancer loop");
         while let Ok(mut msg) = self.geyser_receiver.recv() {
-            thread_info!(
+            thread_debug!(
                 "Received geyser update: {:?} for {:?}",
                 msg.account_type,
                 msg.address
@@ -324,7 +324,7 @@ impl Rebalancer {
                     }
                 }
                 AccountType::Marginfi => {
-                    thread_debug!("Received marginfi account update: {:?}", msg.address);
+                    thread_debug!("Received Marginfi account {:?} update.", msg.address);
                     if msg.address == self.general_config.liquidator_account {
                         let marginfi_account =
                             bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
