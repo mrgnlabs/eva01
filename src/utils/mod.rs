@@ -284,7 +284,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
         let active_balances = lending_account
             .balances
             .iter()
-            .filter(|balance| balance.active);
+            .filter(|balance| balance.is_active());
 
         active_balances
             .map(move |balance| {

@@ -741,7 +741,7 @@ impl Rebalancer {
             .lending_account
             .balances
             .iter()
-            .filter(|balance| balance.active)
+            .filter(|balance| balance.is_active())
             .any(|balance| {
                 let mint = self
                     .banks

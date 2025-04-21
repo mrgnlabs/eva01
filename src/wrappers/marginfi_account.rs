@@ -25,14 +25,14 @@ impl MarginfiAccountWrapper {
         self.lending_account
             .balances
             .iter()
-            .any(|b| b.active && matches!(b.get_side(), Some(BalanceSide::Liabilities)))
+            .any(|b| b.is_active() && matches!(b.get_side(), Some(BalanceSide::Liabilities)))
     }
 
     pub fn get_liabilities_shares(&self) -> Vec<(I80F48, Pubkey)> {
         self.lending_account
             .balances
             .iter()
-            .filter(|b| matches!(b.get_side(), Some(BalanceSide::Liabilities)) && b.active)
+            .filter(|b| matches!(b.get_side(), Some(BalanceSide::Liabilities)) && b.is_active())
             .map(|b| (b.liability_shares.into(), b.bank_pk))
             .collect::<Vec<_>>()
     }
@@ -46,7 +46,7 @@ impl MarginfiAccountWrapper {
             .balances
             .iter()
             .filter_map(|b| {
-                if b.active
+                if b.is_active()
                     && matches!(b.get_side(), Some(BalanceSide::Assets))
                     && !mints_to_exclude.contains(&banks.get(&b.bank_pk).unwrap().bank.mint)
                 {
@@ -86,7 +86,7 @@ impl MarginfiAccountWrapper {
         let mut deposits = Vec::new();
 
         for balance in &self.lending_account.balances {
-            if balance.active {
+            if balance.is_active() {
                 match balance.get_side() {
                     Some(BalanceSide::Liabilities) => {
                         liabilities.push((balance.liability_shares.into(), balance.bank_pk))
@@ -107,7 +107,7 @@ impl MarginfiAccountWrapper {
         lending_account
             .balances
             .iter()
-            .filter_map(|balance| balance.active.then_some(balance.bank_pk))
+            .filter_map(|balance| balance.is_active().then_some(balance.bank_pk))
             .collect::<Vec<_>>()
     }
 
@@ -126,7 +126,7 @@ impl MarginfiAccountWrapper {
         let mut bank_to_include_index = 0;
 
         for balance in lending_account.balances.iter() {
-            if balance.active {
+            if balance.is_active() {
                 bank_pks.push(balance.bank_pk);
             } else if include_banks.len() > bank_to_include_index {
                 for bank_pk in &include_banks[bank_to_include_index..] {
@@ -192,7 +192,7 @@ pub mod test_utils {
         ) -> Self {
             let balances: [Balance; 16] = array::from_fn(|i| match i {
                 0 => Balance {
-                    active: true,
+                    active: 1,
                     bank_pk: asset_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
                     _pad0: [0; 6],
@@ -203,7 +203,7 @@ pub mod test_utils {
                     _padding: [0; 1],
                 },
                 1 => Balance {
-                    active: true,
+                    active: 1,
                     bank_pk: liability_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
                     _pad0: [0; 6],
@@ -232,7 +232,7 @@ pub mod test_utils {
             let liability_bank = TestBankWrapper::test_sol();
             let balances: [Balance; 16] = array::from_fn(|i| match i {
                 0 => Balance {
-                    active: true,
+                    active: 1,
                     bank_pk: asset_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
                     _pad0: [0; 6],
@@ -243,7 +243,7 @@ pub mod test_utils {
                     _padding: [0; 1],
                 },
                 1 => Balance {
-                    active: true,
+                    active: 1,
                     bank_pk: liability_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
                     _pad0: [0; 6],

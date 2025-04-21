@@ -664,7 +664,7 @@ impl Liquidator {
             .lending_account
             .balances
             .iter()
-            .find(|b| b.bank_pk == *bank_pk && b.active)
+            .find(|b| b.bank_pk == *bank_pk && b.is_active())
             .map(|b| match b.get_side()? {
                 BalanceSide::Assets => {
                     let amount = bank.bank.get_asset_amount(b.asset_shares.into()).ok()?;
