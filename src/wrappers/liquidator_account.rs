@@ -2,11 +2,10 @@ use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
-    thread_debug,
+    thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
 };
 use crossbeam::channel::Sender;
-use log::{debug, error, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
@@ -131,7 +130,7 @@ impl LiquidatorAccount {
             &[],
             banks,
         );
-        debug!(
+        thread_debug!(
             "liquidator_observation_accounts: {:?}",
             liquidator_observation_accounts
         );
@@ -142,7 +141,7 @@ impl LiquidatorAccount {
             &[],
             banks,
         );
-        debug!(
+        thread_debug!(
             "liquidatee_observation_accounts: {:?}",
             liquidatee_observation_accounts
         );
@@ -166,7 +165,7 @@ impl LiquidatorAccount {
             })
             .collect::<Vec<_>>();
 
-        debug!(
+        thread_debug!(
             "liquidate: observation_swb_oracles length: {:?}",
             observation_swb_oracles.len()
         );
@@ -236,7 +235,7 @@ impl LiquidatorAccount {
 
             transactions.push(RawTransaction::new(vec![cu_limit_ix, liquidate_ix]));
 
-            debug!(
+            thread_debug!(
                 "SENDING DOUBLE liquidate: bundle length: {:?}",
                 transactions.len()
             );
@@ -275,15 +274,17 @@ impl LiquidatorAccount {
                 );
             match res {
                 Ok(res) => {
-                    info!(
+                    thread_info!(
                         "Single Transaction sent for address {:?} landed successfully: {:?} ",
-                        liquidatee_account.address, res
+                        liquidatee_account.address,
+                        res
                     );
                 }
                 Err(err) => {
-                    error!(
+                    thread_error!(
                         "Single Transaction sent for address {:?} failed: {:?} ",
-                        liquidatee_account.address, err
+                        liquidatee_account.address,
+                        err
                     );
                 }
             }
@@ -343,7 +344,7 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        debug!("Withdrawing {:?} from {:?}", amount, token_account);
+        thread_debug!("Withdrawing {:?} from {:?}", amount, token_account);
 
         let res = self
             .rpc_client
@@ -355,9 +356,10 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             );
-        debug!(
+        thread_debug!(
             "Withdrawing result for account {:?} (without preflight check): {:?} ",
-            marginfi_account, res
+            marginfi_account,
+            res
         );
 
         Ok(())
@@ -399,7 +401,7 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        debug!("Repaying {:?}, token account {:?}", amount, token_account);
+        thread_debug!("Repaying {:?}, token account {:?}", amount, token_account);
 
         let res = self
             .rpc_client
@@ -411,9 +413,10 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             );
-        debug!(
+        thread_debug!(
             "Repaying result for account {:?} (without preflight check): {:?} ",
-            marginfi_account, res
+            marginfi_account,
+            res
         );
 
         Ok(())
@@ -460,7 +463,7 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        debug!("Depositing {:?}, token account {:?}", amount, token_account);
+        thread_debug!("Depositing {:?}, token account {:?}", amount, token_account);
 
         let res = self
             .rpc_client
@@ -472,9 +475,10 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             );
-        debug!(
+        thread_debug!(
             "Depositing result for account {:?} (without preflight check): {:?} ",
-            marginfi_account, res
+            marginfi_account,
+            res
         );
 
         Ok(())

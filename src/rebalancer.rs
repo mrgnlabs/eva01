@@ -700,7 +700,8 @@ impl Rebalancer {
         if let Some(balance) = self.get_token_balance_for_bank(&swap_mint_bank) {
             if !balance.is_zero() {
                 thread_debug!(
-                    "Depositing preferred tokens for the Swap mint bank {:?}.",
+                    "Depositing {} of preferred tokens for the Swap mint bank {:?}.",
+                    balance,
                     swap_mint_bank
                 );
 
