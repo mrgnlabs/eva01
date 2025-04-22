@@ -120,7 +120,6 @@ impl MarginfiAccountWrapper {
     ) -> Vec<Pubkey> {
         // This is a temporary fix to ensure the proper order of the remaining accounts.
         // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320
-        let lending_account = lending_account;
         let active_bank_pks = MarginfiAccountWrapper::get_active_banks(lending_account);
 
         let mut bank_pks: Vec<Pubkey> = vec![];
