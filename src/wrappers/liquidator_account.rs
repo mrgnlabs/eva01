@@ -130,10 +130,14 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
+        let banks_to_include: Vec<Pubkey> = vec![liab_bank.address, asset_bank.address];
+        let banks_to_exclude: Vec<Pubkey> = vec![];
+        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
+        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
         let liquidator_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &self.account_wrapper,
-            &[liab_bank.address, asset_bank.address],
-            &[],
+            &self.account_wrapper.lending_account,
+            &banks_to_include,
+            &banks_to_exclude,
             banks,
         );
         thread_debug!(
@@ -142,8 +146,16 @@ impl LiquidatorAccount {
             liquidator_observation_accounts
         );
 
-        let liquidatee_observation_accounts =
-            MarginfiAccountWrapper::get_observation_accounts(liquidatee_account, &[], &[], banks);
+        let banks_to_include: Vec<Pubkey> = vec![];
+        let banks_to_exclude: Vec<Pubkey> = vec![];
+        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
+        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
+        let liquidatee_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
+            &liquidatee_account.lending_account,
+            &banks_to_include,
+            &banks_to_exclude,
+            banks,
+        );
         thread_debug!(
             "Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address,
@@ -305,15 +317,17 @@ impl LiquidatorAccount {
 
         let signer_pk = self.signer_keypair.pubkey();
 
+        let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude = if withdraw_all.unwrap_or(false) {
             vec![bank.address]
         } else {
             vec![]
         };
-
+        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
+        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
         let observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &self.account_wrapper,
-            &[],
+            &self.account_wrapper.lending_account,
+            &banks_to_include,
             &banks_to_exclude,
             banks,
         );

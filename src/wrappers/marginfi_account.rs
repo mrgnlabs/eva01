@@ -1,5 +1,3 @@
-use crate::thread_debug;
-
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
 use log::debug;
@@ -115,16 +113,14 @@ impl MarginfiAccountWrapper {
 
     // TODO: add more unit tests
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
-        account_wrapper: &MarginfiAccountWrapper,
+        lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         banks: &HashMap<Pubkey, BankWrapperT<T>>,
     ) -> Vec<Pubkey> {
-        thread_debug!("Collecting observation accounts for the account: {:?} with include_banks {:?} and exclude_banks {:?}", 
-            account_wrapper.address, include_banks, exclude_banks);
         // This is a temporary fix to ensure the proper order of the remaining accounts.
         // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320
-        let lending_account = &account_wrapper.lending_account;
+        let lending_account = lending_account;
         let active_bank_pks = MarginfiAccountWrapper::get_active_banks(lending_account);
 
         let mut bank_pks: Vec<Pubkey> = vec![];
@@ -367,7 +363,12 @@ mod tests {
         banks.insert(sol_bank.address, sol_bank.clone());
         banks.insert(usdc_bank.address, usdc_bank.clone());
         assert_eq!(
-            MarginfiAccountWrapper::get_observation_accounts(&healthy_wrapper, &[], &[], &banks),
+            MarginfiAccountWrapper::get_observation_accounts(
+                &healthy_wrapper.lending_account,
+                &[],
+                &[],
+                &banks
+            ),
             vec![
                 sol_bank.address,
                 sol_bank.oracle_adapter.get_address(),
@@ -388,7 +389,12 @@ mod tests {
         banks.insert(usdc_bank.address.clone(), usdc_bank.clone());
         //        let banks_to_exclude = vec![sol_bank.address.clone(), usdc_bank.address.clone()];
         assert_eq!(
-            MarginfiAccountWrapper::get_observation_accounts(&unhealthy_wrapper, &[], &[], &banks),
+            MarginfiAccountWrapper::get_observation_accounts(
+                &unhealthy_wrapper.lending_account,
+                &[],
+                &[],
+                &banks
+            ),
             vec![]
         );
     }
@@ -408,7 +414,7 @@ mod tests {
         let banks_to_exclude = vec![];
         assert_eq!(
             MarginfiAccountWrapper::get_observation_accounts(
-                &healthy_wrapper,
+                &healthy_wrapper.lending_account,
                 &banks_to_include,
                 &banks_to_exclude,
                 &banks
