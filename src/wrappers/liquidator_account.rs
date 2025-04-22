@@ -2,11 +2,10 @@ use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     config::GeneralConfig,
     marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
-    thread_debug,
+    thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
 };
 use crossbeam::channel::Sender;
-use log::{debug, error, info};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
@@ -122,28 +121,44 @@ impl LiquidatorAccount {
     ) -> anyhow::Result<()> {
         let liquidator_account_address = self.account_wrapper.address;
         let liquidatee_account_address = liquidatee_account.address;
+        thread_info!(
+            "Liquidating account {:?} with liquidator account {:?}",
+            liquidatee_account_address,
+            liquidator_account_address
+        );
+
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
+        let banks_to_include: Vec<Pubkey> = vec![liab_bank.address, asset_bank.address];
+        let banks_to_exclude: Vec<Pubkey> = vec![];
+        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
+        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
         let liquidator_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
             &self.account_wrapper.lending_account,
-            &[liab_bank.address, asset_bank.address],
-            &[],
+            &banks_to_include,
+            &banks_to_exclude,
             banks,
         );
-        debug!(
-            "liquidator_observation_accounts: {:?}",
+        thread_debug!(
+            "Liquidator {:?} observation accounts: {:?}",
+            liquidator_account_address,
             liquidator_observation_accounts
         );
 
+        let banks_to_include: Vec<Pubkey> = vec![];
+        let banks_to_exclude: Vec<Pubkey> = vec![];
+        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
+        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
         let liquidatee_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
             &liquidatee_account.lending_account,
-            &[],
-            &[],
+            &banks_to_include,
+            &banks_to_exclude,
             banks,
         );
-        debug!(
-            "liquidatee_observation_accounts: {:?}",
+        thread_debug!(
+            "Liquidatee {:?} observation accounts: {:?}",
+            liquidatee_account_address,
             liquidatee_observation_accounts
         );
 
@@ -166,12 +181,8 @@ impl LiquidatorAccount {
             })
             .collect::<Vec<_>>();
 
-        debug!(
-            "liquidate: observation_swb_oracles length: {:?}",
-            observation_swb_oracles.len()
-        );
-
         let crank_data = if !observation_swb_oracles.is_empty() {
+            thread_debug!("Cranking Swb Oracles for observation accounts.",);
             if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
@@ -185,7 +196,7 @@ impl LiquidatorAccount {
             )) {
                 Some((ix, luts))
             } else {
-                return Err(anyhow::anyhow!("Failed to fetch crank data"));
+                return Err(anyhow::anyhow!("Failed to crank/fetch Swb Oracles data."));
             }
         } else {
             None
@@ -236,7 +247,7 @@ impl LiquidatorAccount {
 
             transactions.push(RawTransaction::new(vec![cu_limit_ix, liquidate_ix]));
 
-            debug!(
+            thread_debug!(
                 "SENDING DOUBLE liquidate: bundle length: {:?}",
                 transactions.len()
             );
@@ -275,15 +286,17 @@ impl LiquidatorAccount {
                 );
             match res {
                 Ok(res) => {
-                    info!(
+                    thread_info!(
                         "Single Transaction sent for address {:?} landed successfully: {:?} ",
-                        liquidatee_account.address, res
+                        liquidatee_account.address,
+                        res
                     );
                 }
                 Err(err) => {
-                    error!(
+                    thread_error!(
                         "Single Transaction sent for address {:?} failed: {:?} ",
-                        liquidatee_account.address, err
+                        liquidatee_account.address,
+                        err
                     );
                 }
             }
@@ -304,15 +317,17 @@ impl LiquidatorAccount {
 
         let signer_pk = self.signer_keypair.pubkey();
 
+        let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude = if withdraw_all.unwrap_or(false) {
             vec![bank.address]
         } else {
             vec![]
         };
-
+        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
+        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
         let observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
             &self.account_wrapper.lending_account,
-            &[],
+            &banks_to_include,
             &banks_to_exclude,
             banks,
         );
@@ -343,7 +358,7 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        debug!("Withdrawing {:?} from {:?}", amount, token_account);
+        thread_debug!("Withdrawing {:?} from {:?}", amount, token_account);
 
         let res = self
             .rpc_client
@@ -355,9 +370,10 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             );
-        debug!(
+        thread_debug!(
             "Withdrawing result for account {:?} (without preflight check): {:?} ",
-            marginfi_account, res
+            marginfi_account,
+            res
         );
 
         Ok(())
@@ -399,7 +415,7 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        debug!("Repaying {:?}, token account {:?}", amount, token_account);
+        thread_debug!("Repaying {:?}, token account {:?}", amount, token_account);
 
         let res = self
             .rpc_client
@@ -411,9 +427,10 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             );
-        debug!(
+        thread_debug!(
             "Repaying result for account {:?} (without preflight check): {:?} ",
-            marginfi_account, res
+            marginfi_account,
+            res
         );
 
         Ok(())
@@ -460,7 +477,7 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        debug!("Depositing {:?}, token account {:?}", amount, token_account);
+        thread_debug!("Depositing {:?}, token account {:?}", amount, token_account);
 
         let res = self
             .rpc_client
@@ -472,9 +489,10 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             );
-        debug!(
+        thread_debug!(
             "Depositing result for account {:?} (without preflight check): {:?} ",
-            marginfi_account, res
+            marginfi_account,
+            res
         );
 
         Ok(())

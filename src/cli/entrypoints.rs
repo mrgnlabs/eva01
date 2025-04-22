@@ -1,9 +1,11 @@
 use crate::{
     clock_manager::{self, ClockManager},
     config::Eva01Config,
-    geyser::{GeyserService, GeyserUpdate},
+    geyser::{AccountType, GeyserService, GeyserUpdate},
     liquidator::Liquidator,
+    metrics::{FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS},
     rebalancer::Rebalancer,
+    thread_info,
     transaction_checker::TransactionChecker,
     transaction_manager::{TransactionData, TransactionManager},
 };
@@ -54,6 +56,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let (liquidator_tx, liquidator_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
+    let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
 
     let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
     let transaction_checker =
@@ -63,7 +66,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         config.liquidator_config.clone(),
-        liquidator_rx,
+        liquidator_rx.clone(),
         transaction_tx.clone(),
         Arc::clone(&pending_bundles),
         stop_liquidator.clone(),
@@ -75,7 +78,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.rebalancer_config.clone(),
         transaction_tx,
         Arc::clone(&pending_bundles),
-        rebalancer_rx,
+        rebalancer_rx.clone(),
         stop_liquidator.clone(),
         clock.clone(),
     )?;
@@ -92,6 +95,10 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     for (key, value) in rebalancer.get_accounts_to_track() {
         accounts_to_track.insert(key, value);
     }
+    accounts_to_track.insert(
+        config.general_config.liquidator_account,
+        AccountType::Marginfi,
+    );
 
     let geyser_service = GeyserService::new(
         config.general_config,
@@ -110,14 +117,15 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         }
     });
 
-    let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
+    let tm_txn_rx = transaction_rx.clone();
     thread::spawn(move || {
-        if let Err(e) = transaction_manager.start(jito_tx, transaction_rx) {
+        if let Err(e) = transaction_manager.start(jito_tx, tm_txn_rx) {
             panic!("TransactionManager failed! {:?}", e);
         }
     });
+    let tc_jito_rx = jito_rx.clone();
     thread::spawn(move || {
-        if let Err(e) = transaction_checker.start(jito_rx, pending_bundles) {
+        if let Err(e) = transaction_checker.start(tc_jito_rx, pending_bundles) {
             panic!("TransactionChecker failed! {:?}", e);
         }
     });
@@ -128,9 +136,33 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         }
     });
 
-    if let Err(e) = liquidator.start() {
-        panic!("Liquidator failed! {:?}", e);
+    thread::spawn(move || {
+        if let Err(e) = liquidator.start() {
+            panic!("Liquidator failed! {:?}", e);
+        }
+    });
+
+    thread_info!("Entering main loop.");
+    let monitor_liquidator_rx = liquidator_rx.clone();
+    let monitor_rebalancer_rx = rebalancer_rx.clone();
+    let monitor_jito_rx = jito_rx.clone();
+    let monitor_transaction_rx = transaction_rx.clone();
+    while !stop_liquidator.load(std::sync::atomic::Ordering::SeqCst) {
+        thread_info!(
+            "Stats: Channel depth [Liquidation, Rebalancer, Txn, Jito] -> [{}, {}, {}, {}]",
+            monitor_liquidator_rx.len(),
+            monitor_rebalancer_rx.len(),
+            monitor_transaction_rx.len(),
+            monitor_jito_rx.len()
+        );
+        thread_info!(
+            "Stats: Liqudations [attemps, failed] -> [{},{}]",
+            LIQUIDATION_ATTEMPTS.get(),
+            FAILED_LIQUIDATIONS.get()
+        );
+        thread::sleep(std::time::Duration::from_secs(5));
     }
+    thread_info!("Main loop stopped.");
 
     Ok(())
 }

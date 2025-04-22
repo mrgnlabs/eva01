@@ -1,8 +1,10 @@
-use crate::{config::GeneralConfig, utils::account_update_to_account, ward};
+use crate::{
+    config::GeneralConfig, thread_error, thread_info, thread_trace,
+    utils::account_update_to_account, ward,
+};
 use anchor_lang::AccountDeserialize;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
-use log::{error, info, trace};
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
@@ -80,12 +82,12 @@ impl GeyserService {
     }
 
     pub fn start(&self) -> anyhow::Result<()> {
-        info!("Staring the Geyser loop.");
+        thread_info!("Staring the Geyser loop.");
 
         let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().cloned().collect();
 
         loop {
-            info!("Connecting to geyser...");
+            thread_info!("Connecting to geyser...");
             let sub_req = Self::build_geyser_subscribe_request(
                 &tracked_accounts_vec,
                 &self.marginfi_program_id,
@@ -100,16 +102,16 @@ impl GeyserService {
                 .tokio_rt
                 .block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
 
-            info!("Entering the Geyser loop.");
+            thread_info!("Entering the Geyser loop.");
             while let Some(msg) = self.tokio_rt.block_on(stream.next()) {
-                trace!(
+                thread_trace!(
                     "Thread {:?}. Received geyser msg: {:?}",
                     thread::current().id(),
                     msg
                 );
 
                 if let Err(e) = msg {
-                    error!("Received error message from Geyser! {:?}", e);
+                    thread_error!("Received error message from Geyser! {:?}", e);
                     break;
                 }
 
@@ -172,15 +174,15 @@ impl GeyserService {
         match update.account_type {
             AccountType::Oracle | AccountType::Marginfi => {
                 if let Err(e) = liquidator_sender.send(update.clone()) {
-                    error!("Error sending update to the liquidator sender: {:?}", e);
+                    thread_error!("Error sending update to the liquidator sender: {:?}", e);
                 }
                 if let Err(e) = rebalancer_sender.send(update.clone()) {
-                    error!("Error sending update to the rebalancer sender: {:?}", e);
+                    thread_error!("Error sending update to the rebalancer sender: {:?}", e);
                 }
             }
             AccountType::Token => {
                 if let Err(e) = rebalancer_sender.send(update.clone()) {
-                    error!("Error sending update to the rebalancer sender: {:?}", e);
+                    thread_error!("Error sending update to the rebalancer sender: {:?}", e);
                 }
             }
         }

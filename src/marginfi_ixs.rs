@@ -21,13 +21,13 @@ pub fn make_deposit_ix(
     amount: u64,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountDeposit {
-        marginfi_group,
         marginfi_account,
-        signer,
-        bank: bank.address,
+        authority: signer,
         signer_token_account,
-        bank_liquidity_vault: bank.bank.liquidity_vault,
+        liquidity_vault: bank.bank.liquidity_vault,
         token_program,
+        bank: bank.address,
+        group: marginfi_group,
     }
     .to_account_metas(Some(true));
 
@@ -36,7 +36,11 @@ pub fn make_deposit_ix(
     Instruction {
         program_id: marginfi_program_id,
         accounts,
-        data: marginfi::instruction::LendingAccountDeposit { amount }.data(),
+        data: marginfi::instruction::LendingAccountDeposit {
+            amount,
+            deposit_up_to_limit: None,
+        }
+        .data(),
     }
 }
 
@@ -53,13 +57,13 @@ pub fn make_repay_ix(
     repay_all: Option<bool>,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountRepay {
-        marginfi_group,
         marginfi_account,
-        signer,
-        bank: bank.address,
+        authority: signer,
         signer_token_account,
-        bank_liquidity_vault: bank.bank.liquidity_vault,
+        liquidity_vault: bank.bank.liquidity_vault,
         token_program,
+        bank: bank.address,
+        group: marginfi_group,
     }
     .to_account_metas(Some(true));
 
@@ -86,17 +90,17 @@ pub fn make_withdraw_ix(
     withdraw_all: Option<bool>,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountWithdraw {
-        marginfi_group,
         marginfi_account,
-        signer,
-        bank: bank.address,
         destination_token_account,
+        liquidity_vault: bank.bank.liquidity_vault,
+        token_program,
+        authority: signer,
         bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
             &bank.address,
             &marginfi_program_id,
         ),
-        bank_liquidity_vault: bank.bank.liquidity_vault,
-        token_program,
+        bank: bank.address,
+        group: marginfi_group,
     }
     .to_account_metas(Some(true));
 
@@ -142,7 +146,7 @@ pub fn make_liquidate_ix(
         asset_bank: asset_bank.address,
         liab_bank: liab_bank.address,
         liquidator_marginfi_account: marginfi_account,
-        signer,
+        authority: signer,
         liquidatee_marginfi_account,
         bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
             &liab_bank.address,
@@ -158,7 +162,7 @@ pub fn make_liquidate_ix(
         "LendingAccountLiquidate {{ group: {:?}, liquidator_marginfi_account: {:?}, signer: {:?}, liquidatee_marginfi_account: {:?}, bank_liquidity_vault_authority: {:?}, bank_liquidity_vault: {:?}, bank_insurance_vault: {:?}, token_program: {:?}, asset_bank: {:?}, liab_bank: {:?} }}",
         accounts_raw.group,
         accounts_raw.liquidator_marginfi_account,
-        accounts_raw.signer,
+        accounts_raw.authority,
         accounts_raw.liquidatee_marginfi_account,
         accounts_raw.bank_liquidity_vault_authority,
         accounts_raw.bank_liquidity_vault,
