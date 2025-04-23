@@ -44,6 +44,8 @@ mod crossbar;
 /// Solana Clock manager
 mod clock_manager;
 
+mod cache;
+
 fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger, with INFO as default log level
     Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

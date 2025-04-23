@@ -1,4 +1,5 @@
 use crate::{
+    cache::{Cache, CacheLoader},
     clock_manager::{self, ClockManager},
     config::Eva01Config,
     geyser::{AccountType, GeyserService, GeyserUpdate},
@@ -84,7 +85,14 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     )?;
 
     info!("Loading data.");
-    liquidator.load_data()?;
+    let mut cache = Cache::new(
+        config.general_config.marginfi_program_id,
+        config.general_config.marginfi_group_address,
+    );
+
+    let cache_loader = CacheLoader::new(config.general_config.rpc_url.clone());
+    cache_loader.load_marginfi_accounts(&mut cache)?;
+
     rebalancer.load_data(liquidator.get_banks_and_map())?;
 
     info!("Fetching accounts to track.");
