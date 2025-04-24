@@ -63,6 +63,7 @@ pub struct GeneralConfig {
     pub liquidator_account: Pubkey,
     #[serde(default = "GeneralConfig::default_compute_unit_price_micro_lamports")]
     pub compute_unit_price_micro_lamports: Option<u64>,
+    #[serde(default = "GeneralConfig::default_compute_unit_limit")]
     pub compute_unit_limit: u32,
     #[serde(
         deserialize_with = "from_pubkey_string",
@@ -88,6 +89,7 @@ pub struct GeneralConfig {
         serialize_with = "vec_pubkey_to_str"
     )]
     pub address_lookup_tables: Vec<Pubkey>,
+    #[serde(default = "GeneralConfig::default_sol_clock_refresh_interval")]
     pub solana_clock_refresh_interval: u64,
 }
 
