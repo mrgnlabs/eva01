@@ -245,7 +245,7 @@ impl LiquidatorAccount {
             //     )
             //     .await;
 
-            transactions.push(RawTransaction::new(vec![cu_limit_ix, liquidate_ix]));
+            transactions.push(RawTransaction::new(vec![liquidate_ix]));
 
             thread_debug!(
                 "SENDING DOUBLE liquidate: bundle length: {:?}",
