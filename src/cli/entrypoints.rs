@@ -9,7 +9,7 @@ use crate::{
     transaction_checker::TransactionChecker,
     transaction_manager::{TransactionData, TransactionManager},
 };
-use log::info;
+use log::{error, info};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::{
@@ -113,33 +113,38 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     thread::spawn(move || {
         if let Err(e) = geyser_service.start() {
-            panic!("Geyser service failed! {:?}", e);
+            error!("Geyser service failed! {:?}", e);
         }
+        panic!();
     });
 
     let tm_txn_rx = transaction_rx.clone();
     thread::spawn(move || {
         if let Err(e) = transaction_manager.start(jito_tx, tm_txn_rx) {
-            panic!("TransactionManager failed! {:?}", e);
+            error!("TransactionManager failed! {:?}", e);
         }
+        panic!();
     });
     let tc_jito_rx = jito_rx.clone();
     thread::spawn(move || {
         if let Err(e) = transaction_checker.start(tc_jito_rx, pending_bundles) {
-            panic!("TransactionChecker failed! {:?}", e);
+            error!("TransactionChecker failed! {:?}", e);
         }
+        panic!();
     });
 
     thread::spawn(move || {
         if let Err(e) = rebalancer.start() {
-            panic!("Rebalancer failed! {:?}", e);
+            error!("Rebalancer failed! {:?}", e);
         }
+        panic!();
     });
 
     thread::spawn(move || {
         if let Err(e) = liquidator.start() {
-            panic!("Liquidator failed! {:?}", e);
+            error!("Liquidator failed! {:?}", e);
         }
+        panic!();
     });
 
     thread_info!("Entering main loop.");
