@@ -1,9 +1,11 @@
+use crate::cache::Cache;
+
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::marginfi_account::{BalanceSide, LendingAccount};
 use solana_program::pubkey::Pubkey;
-use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct MarginfiAccountWrapper {
@@ -37,18 +39,19 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_deposits<T: OracleWrapperTrait>(
-        &self,
-        mints_to_exclude: &[Pubkey],
-        banks: &HashMap<Pubkey, BankWrapperT<T>>,
-    ) -> Vec<Pubkey> {
+    pub fn get_deposits(&self, mints_to_exclude: &[Pubkey], cache: Arc<Cache>) -> Vec<Pubkey> {
         self.lending_account
             .balances
             .iter()
             .filter_map(|b| {
                 if b.is_active()
                     && matches!(b.get_side(), Some(BalanceSide::Assets))
-                    && !mints_to_exclude.contains(&banks.get(&b.bank_pk).unwrap().bank.mint)
+                    && !mints_to_exclude.contains(
+                        &cache
+                            .banks
+                            .get_bank_account(&b.bank_pk)
+                            .map(|bank| bank.mint)?,
+                    )
                 {
                     Some(b.bank_pk)
                 } else {
@@ -112,11 +115,11 @@ impl MarginfiAccountWrapper {
     }
 
     // TODO: add more unit tests
-    pub fn get_observation_accounts<T: OracleWrapperTrait>(
+    pub fn get_observation_accounts(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
-        banks: &HashMap<Pubkey, BankWrapperT<T>>,
+        cache: Arc<Cache>,
     ) -> Vec<Pubkey> {
         // This is a temporary fix to ensure the proper order of the remaining accounts.
         // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320
@@ -146,30 +149,34 @@ impl MarginfiAccountWrapper {
         bank_pks
             .iter()
             .flat_map(|bank_pk| {
-                let bank = banks.get(bank_pk).unwrap();
+                let bank = cache.banks.get_bank_account(bank_pk).unwrap();
+                let bank_oracle = cache
+                    .oracles
+                    .get_by_oracle_account_by_bank(bank_pk)
+                    .unwrap();
                 debug!(
                     "Observation account Bank: {:?}, asset tag type: {:?}.",
-                    bank.address, bank.bank.config.asset_tag
+                    bank_pk, bank.config.asset_tag
                 );
 
-                if bank.bank.config.oracle_keys[1] != Pubkey::default()
-                    && bank.bank.config.oracle_keys[2] != Pubkey::default()
+                if bank.config.oracle_keys[1] != Pubkey::default()
+                    && bank.config.oracle_keys[2] != Pubkey::default()
                 {
                     debug!(
                         "Observation accounts for the bank {:?} will contain Oracle keys!",
-                        bank.address
+                        bank_pk
                     );
                     vec![
-                        bank.address,
-                        bank.oracle_adapter.get_address(),
-                        bank.bank.config.oracle_keys[1],
-                        bank.bank.config.oracle_keys[2],
+                        bank_pk.clone(),
+                        bank_oracle.address,
+                        bank.config.oracle_keys[1],
+                        bank.config.oracle_keys[2],
                     ]
                 } else {
-                    vec![bank.address, bank.oracle_adapter.get_address()]
+                    vec![bank_pk.clone(), bank_oracle.address]
                 }
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<Pubkey>>()
     }
 }
 
@@ -292,7 +299,7 @@ mod tests {
             healthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), usdc_bank.address)]
         );
-        assert_eq!(healthy.get_deposits(&[], &banks), vec![(sol_bank.address)]);
+        assert_eq!(healthy.get_deposits(&[]), vec![(sol_bank.address)]);
         let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
@@ -323,10 +330,7 @@ mod tests {
             unhealthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), sol_bank.address)]
         );
-        assert_eq!(
-            unhealthy.get_deposits(&[], &banks),
-            vec![(usdc_bank.address)]
-        );
+        assert_eq!(unhealthy.get_deposits(&[]), vec![(usdc_bank.address)]);
         let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {

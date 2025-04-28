@@ -1,5 +1,6 @@
 use crate::{
-    cache::{Cache, CacheLoader},
+    cache::Cache,
+    cache_loader::CacheLoader,
     clock_manager::{self, ClockManager},
     config::Eva01Config,
     geyser::{AccountType, GeyserService, GeyserUpdate},
@@ -51,6 +52,27 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.general_config.solana_clock_refresh_interval,
     )?;
 
+    info!("Loading data.");
+    let mut cache = Cache::new(
+        config.general_config.signer_pubkey,
+        config.general_config.marginfi_program_id,
+        config.general_config.marginfi_group_address,
+    );
+
+    let cache_loader = CacheLoader::new(
+        config.general_config.keypair_path.clone(),
+        config.general_config.rpc_url.clone(),
+        clock.clone(),
+    )?;
+    cache_loader.load_marginfi_accounts(&mut cache)?;
+    cache_loader.load_banks(&mut cache)?;
+    cache_loader.load_mints(&mut cache)?;
+    cache_loader.load_oracles(&mut cache)?;
+    cache_loader.load_tokens(&mut cache)?;
+
+    // Now we can wrap cache in the Smart pointer.
+    let cache = Arc::new(cache);
+
     // Geyser -> Liquidator
     // Geyser -> Rebalancer
     // Liquidator/Rebalancer -> TransactionManager
@@ -72,6 +94,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         Arc::clone(&pending_bundles),
         stop_liquidator.clone(),
         clock.clone(),
+        cache.clone(),
     )?;
 
     let mut rebalancer = Rebalancer::new(
@@ -82,18 +105,8 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         rebalancer_rx.clone(),
         stop_liquidator.clone(),
         clock.clone(),
+        cache.clone(),
     )?;
-
-    info!("Loading data.");
-    let mut cache = Cache::new(
-        config.general_config.marginfi_program_id,
-        config.general_config.marginfi_group_address,
-    );
-
-    let cache_loader = CacheLoader::new(config.general_config.rpc_url.clone());
-    cache_loader.load_marginfi_accounts(&mut cache)?;
-
-    rebalancer.load_data(liquidator.get_banks_and_map())?;
 
     info!("Fetching accounts to track.");
     let mut accounts_to_track = HashMap::new();
