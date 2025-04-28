@@ -1,7 +1,7 @@
 use crate::{
     clock_manager::{self, ClockManager},
     config::Eva01Config,
-    geyser::{AccountType, GeyserService, GeyserUpdate},
+    geyser::{GeyserService, GeyserUpdate},
     liquidator::Liquidator,
     metrics::{FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS},
     rebalancer::Rebalancer,
@@ -95,10 +95,6 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     for (key, value) in rebalancer.get_accounts_to_track() {
         accounts_to_track.insert(key, value);
     }
-    accounts_to_track.insert(
-        config.general_config.liquidator_account,
-        AccountType::Marginfi,
-    );
 
     let geyser_service = GeyserService::new(
         config.general_config,

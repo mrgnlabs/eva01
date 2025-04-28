@@ -161,6 +161,7 @@ impl Liquidator {
     /// Liquidator starts receiving messages and processing them
     pub fn start(&mut self) -> anyhow::Result<()> {
         info!("Staring the Liquidator loop.");
+        let mut liquidator_updated = true;
         while let Ok(mut msg) = self.geyser_receiver.recv() {
             thread_debug!("Liquidator received geyser update: {:?}", msg);
 
@@ -261,6 +262,8 @@ impl Liquidator {
 
                         self.liquidator_account.account_wrapper.lending_account =
                             marginfi_account.lending_account;
+
+                        liquidator_updated = true;
                     } else {
                         thread_debug!("Received Marginfi account {:?} update", msg.address);
                         self.marginfi_accounts
@@ -285,6 +288,10 @@ impl Liquidator {
             {
                 break;
             }
+            if !liquidator_updated {
+                debug!("Liquidator account not updated, skipping liquidation...");
+                continue;
+            }
             if let Ok(mut accounts) = self.process_all_accounts() {
                 // Accounts are sorted from the highest profit to the lowest
                 accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
@@ -308,6 +315,12 @@ impl Liquidator {
                     }
                     let duration = start.elapsed().as_secs_f64();
                     LIQUIDATION_LATENCY.observe(duration);
+
+                    // We currently allow only one liquidation at a time because the next one can have a non-actual state of the liquidator account
+                    liquidator_updated = false;
+                    if !liquidator_updated {
+                        break;
+                    }
                 }
             }
         }

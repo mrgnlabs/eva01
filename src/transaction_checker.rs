@@ -44,7 +44,7 @@ impl TransactionChecker {
         jito_rx: Receiver<(Pubkey, String)>,
         pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
     ) -> anyhow::Result<()> {
-        let max_retries = 5;
+        let max_retries = 10;
         let retry_delay = std::time::Duration::from_secs(2);
 
         info!("Starting the Transaction checker loop.");
@@ -58,32 +58,39 @@ impl TransactionChecker {
                 let status_response = self
                     .tokio_rt
                     .block_on(self.jito_sdk.get_bundle_statuses(vec![uuid.to_string()]))?;
-                let bundle_status = get_bundle_status(&status_response)?;
-
-                match bundle_status.confirmation_status.as_deref() {
-                    Some("confirmed") => {
+                let bundle_status = get_bundle_status(&status_response);
+                match bundle_status {
+                    Ok(status) => match status.confirmation_status.as_deref() {
+                        Some("confirmed") => {
+                            debug!(
+                                "({}) Bundle confirmed on-chain. Waiting for finalization...",
+                                uuid
+                            );
+                            check_transaction_error(&status)?;
+                        }
+                        Some("finalized") => {
+                            debug!("({}) Bundle finalized on-chain successfully!", uuid);
+                            check_transaction_error(&status)?;
+                            print_transaction_url(&status);
+                            break;
+                        }
+                        Some(status) => {
+                            debug!(
+                                "({}) Unexpected final bundle status: {}. Continuing to poll...",
+                                uuid, status
+                            );
+                        }
+                        None => {
+                            debug!(
+                                "({}) Unable to parse final bundle status. Continuing to poll...",
+                                uuid
+                            );
+                        }
+                    },
+                    Err(e) => {
                         debug!(
-                            "({}) Bundle confirmed on-chain. Waiting for finalization...",
-                            uuid
-                        );
-                        check_transaction_error(&bundle_status)?;
-                    }
-                    Some("finalized") => {
-                        debug!("({}) Bundle finalized on-chain successfully!", uuid);
-                        check_transaction_error(&bundle_status)?;
-                        print_transaction_url(&bundle_status);
-                        return Ok(());
-                    }
-                    Some(status) => {
-                        debug!(
-                            "({}) Unexpected final bundle status: {}. Continuing to poll...",
-                            uuid, status
-                        );
-                    }
-                    None => {
-                        debug!(
-                            "({}) Unable to parse final bundle status. Continuing to poll...",
-                            uuid
+                            "Failed to get bundle status: uuid = {}, bundle_id = {}: {:?}",
+                            uuid, bundle_id, e
                         );
                     }
                 }
