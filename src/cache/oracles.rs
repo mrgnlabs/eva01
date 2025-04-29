@@ -1,13 +1,14 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::RwLock};
 
-use solana_sdk::pubkey::Pubkey;
+use marginfi::state::price::OraclePriceFeedAdapter;
+use solana_sdk::{account::Account, pubkey::Pubkey};
 
 use crate::wrappers::oracle::OracleWrapper;
-use anyhow::Result;
-use log::error;
+use anyhow::{anyhow, Result};
 
 pub struct OraclesCache {
-    oracles: HashMap<Pubkey, OracleWrapper>,
+    accounts: HashMap<Pubkey, Account>,
+    account_wrappers: RwLock<HashMap<Pubkey, OracleWrapper>>,
     oracle_to_bank: HashMap<Pubkey, Pubkey>,
     bank_to_oracle: HashMap<Pubkey, Pubkey>,
 }
@@ -15,51 +16,128 @@ pub struct OraclesCache {
 impl OraclesCache {
     pub fn new() -> Self {
         Self {
-            oracles: HashMap::new(),
+            accounts: HashMap::new(),
+            account_wrappers: RwLock::new(HashMap::new()),
             oracle_to_bank: HashMap::new(),
             bank_to_oracle: HashMap::new(),
         }
     }
 
-    pub fn insert(&mut self, oracle: OracleWrapper, bank_address: Pubkey) {
+    pub fn try_insert(
+        &mut self,
+        account: Account,
+        oracle: OracleWrapper,
+        bank_address: Pubkey,
+    ) -> Result<()> {
         let oracle_address = oracle.address.clone();
-        self.oracles.insert(oracle_address, oracle);
+        self.accounts.insert(oracle_address, account);
+        self.account_wrappers
+            .write()
+            .map_err(|e| anyhow!("Failed to lock the account_wrappers map for insert! {}", e))?
+            .insert(oracle_address, oracle);
         self.oracle_to_bank.insert(oracle_address, bank_address);
         self.bank_to_oracle.insert(bank_address, oracle_address);
+
+        Ok(())
     }
 
-    pub fn get_oracle_account(&self, address: &Pubkey) -> Option<OracleWrapper> {
-        self.oracles
-            .get(address)
-            .or_else(|| {
-                error!(
-                    "Failed ot find the Oracle with the Address {} in Cache!",
-                    &address,
-                );
-                None
+    pub fn try_update_account_wrapper(
+        &self,
+        address: &Pubkey,
+        price_adapter: OraclePriceFeedAdapter,
+    ) -> Result<()> {
+        let mut wrapper = {
+            self.account_wrappers
+                .read()
+                .map_err(|e| anyhow!("Failed to lock the account_wrappers map for search! {}", e))?
+                .get(&address)
+                .ok_or(anyhow::anyhow!(
+                    "Failed ot find the Oracle Wrapper for the Address {} in Cache!",
+                    address
+                ))?
+                .clone()
+        };
+
+        wrapper.price_adapter = price_adapter;
+        self.account_wrappers
+            .write()
+            .map_err(|e| anyhow!("Failed to lock the account_wrappers map for update! {}", e))?
+            .insert(address.clone(), wrapper);
+
+        Ok(())
+    }
+
+    pub fn get_accounts(&self, addresses: &[Pubkey]) -> Vec<(Pubkey, Account)> {
+        addresses
+            .iter()
+            .filter_map(|address| {
+                self.accounts
+                    .get(address)
+                    .map(|account| (address.clone(), account.clone()))
             })
-            .map(|oracle| oracle.clone())
+            .collect()
     }
 
-    pub fn get_by_oracle_account_by_bank(&self, bank_address: &Pubkey) -> Option<OracleWrapper> {
-        self.bank_to_oracle
-            .get(bank_address)
-            .map(|pubkey| self.oracles.get(pubkey))?
-            .map(|oracle| oracle.clone())
+    pub fn get_addresses(&self) -> Vec<Pubkey> {
+        if let Ok(wrappers) = self.account_wrappers.read().inspect_err(|e| {
+            eprintln!(
+                "Failed to lock the account_wrappers map for collecting addresses! {}",
+                e
+            )
+        }) {
+            wrappers.keys().cloned().collect()
+        } else {
+            vec![]
+        }
     }
-    pub fn try_get_by_bank(&self, bank_pk: &Pubkey) -> Result<OracleWrapper> {
+
+    pub fn get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Option<OracleWrapper> {
+        let oracle = self.bank_to_oracle.get(bank_address)?;
+        let wrapper = self
+            .account_wrappers
+            .read()
+            .inspect_err(|e| {
+                eprintln!(
+                    "Failed to lock the account_wrappers map searching address! {}",
+                    e
+                )
+            })
+            .ok()?
+            .get(oracle)
+            .cloned()?;
+        Some(wrapper.clone())
+    }
+    pub fn try_get_wrapper_from_bank(&self, bank_pk: &Pubkey) -> Result<OracleWrapper> {
         let oracle_pk = self.bank_to_oracle.get(bank_pk).ok_or(anyhow::anyhow!(
             "Failed ot find the Oracle Pubkey for the Bank {} in Cache!",
             bank_pk
         ))?;
-        let oracle = self.oracles.get(oracle_pk).ok_or(anyhow::anyhow!(
-            "Failed ot find the Oracle for the Pubkey {} in Cache!",
-            oracle_pk
-        ))?;
-        Ok(oracle.clone())
+        let oracle = self
+            .account_wrappers
+            .read()
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to lock the account_wrappers map for search address by bank! {}",
+                    e
+                )
+            })?
+            .get(oracle_pk)
+            .ok_or(anyhow::anyhow!(
+                "Failed ot find the Oracle for the Pubkey {} in Cache!",
+                oracle_pk
+            ))?
+            .clone();
+        Ok(oracle)
     }
 
-    pub fn get_oracle_pks(&self) -> Vec<Pubkey> {
-        self.oracles.keys().cloned().collect()
+    pub fn try_get_bank_from_oracle(&self, oracle_address: &Pubkey) -> Result<Pubkey> {
+        let bank_address = self
+            .oracle_to_bank
+            .get(oracle_address)
+            .ok_or(anyhow::anyhow!(
+                "Failed ot find the Bank address for the Oracle {} in Cache!",
+                oracle_address
+            ))?;
+        Ok(bank_address.clone())
     }
 }

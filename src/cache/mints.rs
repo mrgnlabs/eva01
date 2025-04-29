@@ -18,26 +18,24 @@ impl MintsCache {
         }
     }
 
-    pub fn insert(
+    pub fn try_insert(
         &mut self,
         mint_address: Pubkey,
         mint: Account,
         token_address: Pubkey,
     ) -> anyhow::Result<()> {
-        self.mints.insert(
-            mint_address,
-            MintWrapper::new(mint_address, token_address, mint),
-        );
+        self.mints
+            .insert(mint_address, MintWrapper::new(token_address, mint));
         self.token_to_mint.insert(token_address, mint_address);
         Ok(())
     }
 
-    pub fn get_mint_account(&self, address: &Pubkey) -> Option<MintWrapper> {
+    pub fn get_account(&self, address: &Pubkey) -> Option<MintWrapper> {
         self.mints.get(address).map(|mint| mint.clone())
     }
 
-    pub fn try_get_mint_account(&self, address: &Pubkey) -> Result<MintWrapper> {
-        self.get_mint_account(address)
+    pub fn try_get_account(&self, address: &Pubkey) -> Result<MintWrapper> {
+        self.get_account(address)
             .ok_or(anyhow!(
                 "Failed ot find Mint for the Address {} in Cache!",
                 &address
@@ -45,15 +43,8 @@ impl MintsCache {
             .map(|mint| mint.clone())
     }
 
-    pub fn get_token_addresses(&self) -> Vec<Pubkey> {
+    pub fn get_token(&self) -> Vec<Pubkey> {
         self.mints.values().map(|mint| mint.token.clone()).collect()
-    }
-
-    pub fn get_mint_token_addresses(&self) -> Vec<(Pubkey, Pubkey)> {
-        self.mints
-            .iter()
-            .map(|(mint_address, mint)| (mint_address.clone(), mint.token.clone()))
-            .collect()
     }
 
     pub fn try_get_mint_for_token(&self, token_address: &Pubkey) -> Result<Pubkey> {
@@ -64,11 +55,6 @@ impl MintsCache {
                 &token_address
             ))
             .map(|address| address.clone())
-    }
-
-    pub fn try_get_mint_account_for_token(&self, token_address: &Pubkey) -> Result<MintWrapper> {
-        let mint_address = self.try_get_mint_for_token(token_address)?;
-        self.try_get_mint_account(&mint_address)
     }
 
     pub fn len(&self) -> usize {

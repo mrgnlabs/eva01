@@ -1,18 +1,17 @@
 use crate::{
     cache::Cache,
     config::{GeneralConfig, LiquidatorCfg},
-    crossbar::CrossbarMaintainer,
-    geyser::{AccountType, GeyserUpdate},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
     thread_debug,
     transaction_manager::TransactionData,
-    utils::BankAccountWithPriceFeedEva,
+    utils::{swb_cranker::SwbCranker, BankAccountWithPriceFeedEva},
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait,
     },
 };
-use crossbeam::channel::{Receiver, Sender};
+use anyhow::{anyhow, Result};
+use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{debug, error, info};
@@ -25,26 +24,21 @@ use marginfi::{
     },
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{account::Account, clock::Clock};
 use std::{
     cmp::min,
-    collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
-    time::Instant,
+    collections::HashSet,
+    sync::{atomic::AtomicBool, Arc, RwLock},
+    time::{Duration, Instant},
 };
-use tokio::runtime::{Builder, Runtime};
+use std::{sync::atomic::Ordering, thread};
 
 pub struct Liquidator {
     liquidator_account: LiquidatorAccount,
-    general_config: GeneralConfig,
     config: LiquidatorCfg,
-    geyser_receiver: Receiver<GeyserUpdate>,
+    run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
-    crossbar_client: CrossbarMaintainer,
-    cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
-    clock: Arc<Mutex<Clock>>,
-    tokio_rt: Runtime,
     cache: Arc<Cache>,
+    swb_price_simulator: Arc<SwbCranker>,
 }
 
 pub struct PreparedLiquidatableAccount {
@@ -55,17 +49,17 @@ pub struct PreparedLiquidatableAccount {
     profit: u64,
 }
 
-impl Liquidator {
+impl<'a> Liquidator {
     pub fn new(
         general_config: GeneralConfig,
         liquidator_config: LiquidatorCfg,
-        geyser_receiver: Receiver<GeyserUpdate>,
+        run_liquidation: Arc<AtomicBool>,
         transaction_sender: Sender<TransactionData>,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         stop_liquidator: Arc<AtomicBool>,
-        clock: Arc<Mutex<Clock>>,
         cache: Arc<Cache>,
-    ) -> anyhow::Result<Self> {
+        swb_price_simulator: Arc<SwbCranker>,
+    ) -> Result<Self> {
         let liquidator_account = LiquidatorAccount::new(
             transaction_sender,
             &general_config,
@@ -73,213 +67,65 @@ impl Liquidator {
             cache.clone(),
         )?;
 
-        let tokio_rt = Builder::new_multi_thread()
-            .thread_name("liquidator")
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
-
         Ok(Liquidator {
-            general_config,
             config: liquidator_config,
-            geyser_receiver,
+            run_liquidation,
             liquidator_account,
             stop_liquidator,
-            crossbar_client: CrossbarMaintainer::new(),
-            cache_oracle_needed_accounts: HashMap::new(),
-            clock,
-            tokio_rt,
             cache,
+            swb_price_simulator,
         })
     }
 
-    pub fn start(&mut self) -> anyhow::Result<()> {
+    pub fn start(&mut self) -> Result<()> {
         info!("Staring the Liquidator loop.");
-        while let Ok(msg) = self.geyser_receiver.recv() {
-            thread_debug!("Liquidator received geyser update: {:?}", msg);
-            /*
-                        match msg.account_type {
-                            AccountType::Oracle => {
-                                if let Some(bank_to_update_pk) = self.cache.banks.get(&msg.address) {
-                                    let bank_to_update: &mut BankWrapper =
-                                        self.banks.get_mut(bank_to_update_pk).unwrap();
+        while !self.stop_liquidator.load(Ordering::Relaxed) {
+            if self.run_liquidation.load(Ordering::Relaxed) {
+                thread_debug!("Running the Liquidation process...");
+                self.run_liquidation.store(false, Ordering::Relaxed);
 
-                                    let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup {
-                                        OracleSetup::SwitchboardPull => {
-                                            let mut offsets_data =
-                                                [0u8; std::mem::size_of::<PullFeedAccountData>()];
-                                            offsets_data.copy_from_slice(
-                                                &msg.account.data
-                                                    [8..std::mem::size_of::<PullFeedAccountData>() + 8],
-                                            );
-                                            let swb_feed =
-                                                load_swb_pull_account_from_bytes(&offsets_data).unwrap();
-
-                                            let feed_hash = hex::encode(swb_feed.feed_hash);
-                                            bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
-
-                                            OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
-                                                feed: Box::new((&swb_feed).into()),
-                                            })
-                                        }
-                                        OracleSetup::StakedWithPythPush => {
-                                            debug!(
-                                                "Getting update for STAKED oracle: {:?} for bank: {:?}",
-                                                msg.address, bank_to_update_pk
-                                            );
-                                            let clock =
-                                                ward!(clock_manager::get_clock(&self.clock).ok(), continue);
-                                            let oracle_keys = &bank_to_update.bank.config.oracle_keys[1..3];
-
-                                            let mut accounts_info =
-                                                vec![(&msg.address, &mut msg.account).into_account_info()];
-
-                                            let mut owned_accounts: Vec<_> = oracle_keys
-                                                .iter()
-                                                .map(|key| {
-                                                    self.cache_oracle_needed_accounts
-                                                        .iter()
-                                                        .find(|(k, _)| *k == key)
-                                                        .unwrap()
-                                                        .1
-                                                        .clone()
-                                                })
-                                                .collect();
-
-                                            accounts_info.extend(
-                                                oracle_keys
-                                                    .iter()
-                                                    .zip(owned_accounts.iter_mut())
-                                                    .map(|(key, account)| (key, account).into_account_info()),
-                                            );
-
-                                            OraclePriceFeedAdapter::try_from_bank_config(
-                                                &bank_to_update.bank.config,
-                                                &accounts_info,
-                                                &clock,
-                                            )
-                                            .unwrap()
-                                        }
-                                        _ => {
-                                            let clock =
-                                                ward!(clock_manager::get_clock(&self.clock).ok(), continue);
-                                            // info!(
-                                            //     "Getting update for oracle: {:?} for bank: {:?}",
-                                            //     msg.address, bank_to_update_pk
-                                            // );
-                                            let oracle_account_info =
-                                                (&msg.address, &mut msg.account).into_account_info();
-                                            ward!(
-                                                OraclePriceFeedAdapter::try_from_bank_config(
-                                                    &bank_to_update.bank.config,
-                                                    &[oracle_account_info],
-                                                    &clock,
-                                                )
-                                                // .map_err(|_| {
-                                                //     //debug!("Error creating oracle price feed adapter: {:?}", e);
-                                                // })
-                                                .ok(),
-                                                continue
-                                            )
-                                        }
-                                    };
-                                    bank_to_update.oracle_adapter.price_adapter = oracle_price_adapter;
-                                }
-                            }
-                            AccountType::Marginfi => {
-                                let marginfi_account =
-                                    bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
-                                if msg.address == self.general_config.liquidator_account {
-                                    thread_debug!("Received Liquidator account {:?} update.", msg.address);
-                                    let marginfi_account =
-                                        bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
-
-                                    self.liquidator_account.account_wrapper.lending_account =
-                                        marginfi_account.lending_account;
-                                } else {
-                                    thread_debug!("Received Marginfi account {:?} update", msg.address);
-
-                                    self.marginfi_accounts
-                                        .entry(msg.address)
-                                        .and_modify(|mrgn_account| {
-                                            mrgn_account.lending_account = marginfi_account.lending_account;
-                                        })
-                                        .or_insert_with(|| {
-                                            MarginfiAccountWrapper::new(
-                                                msg.address,
-                                                marginfi_account.lending_account,
-                                            )
-                                        });
-                                }
-                            }
-                            _ => {}
-                        };
-            */
-            if self
-                .stop_liquidator
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                break;
-            }
-            if let Ok(mut accounts) = self.process_all_accounts() {
-                // Accounts are sorted from the highest profit to the lowest
-                accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
-                accounts.reverse();
-                for account in accounts {
-                    LIQUIDATION_ATTEMPTS.inc();
-                    let start = Instant::now();
-                    if let Err(e) = self.liquidator_account.liquidate(
-                        &account.liquidatee_account,
-                        &account.asset_bank,
-                        &account.liab_bank,
-                        account.asset_amount,
-                    ) {
-                        error!(
-                            "Failed to liquidate account {:?}, error: {:?}",
-                            account.liquidatee_account.address, e
-                        );
-                        FAILED_LIQUIDATIONS.inc();
-                        ERROR_COUNT.inc();
+                if let Ok(mut accounts) = self.process_all_accounts() {
+                    // Accounts are sorted from the highest profit to the lowest
+                    accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
+                    accounts.reverse();
+                    for account in accounts {
+                        LIQUIDATION_ATTEMPTS.inc();
+                        let start = Instant::now();
+                        if let Err(e) = self.liquidator_account.liquidate(
+                            &account.liquidatee_account,
+                            &account.asset_bank,
+                            &account.liab_bank,
+                            account.asset_amount,
+                        ) {
+                            error!(
+                                "Failed to liquidate account {:?}, error: {:?}",
+                                account.liquidatee_account.address, e
+                            );
+                            FAILED_LIQUIDATIONS.inc();
+                            ERROR_COUNT.inc();
+                        }
+                        let duration = start.elapsed().as_secs_f64();
+                        LIQUIDATION_LATENCY.observe(duration);
                     }
-                    let duration = start.elapsed().as_secs_f64();
-                    LIQUIDATION_LATENCY.observe(duration);
                 }
+
+                thread_debug!("The Liquidation process is complete.");
+            } else {
+                thread::sleep(Duration::from_millis(1000))
             }
         }
-
         info!("The Liquidator loop is stopped.");
+
         Ok(())
     }
 
     /// Checks if liquidation is needed, for each account one by one
-    fn process_all_accounts(&mut self) -> anyhow::Result<Vec<PreparedLiquidatableAccount>> {
-        /*
-                // Update switchboard pull prices with crossbar
-                let swb_feed_hashes = self
-                    .cache
-                    .banks
-                    .values()
-                    .filter_map(|bank| {
-                        bank.oracle_adapter
-                            .swb_feed_hash
-                            .as_ref()
-                            .map(|feed_hash| (bank.address, feed_hash.clone()))
-                    })
-                    .collect::<Vec<_>>();
-
-                let simulated_prices = self
-                    .tokio_rt
-                    .block_on(self.crossbar_client.simulate(swb_feed_hashes));
-
-                for (bank_pk, price) in simulated_prices {
-                    let bank = self.banks.get_mut(&bank_pk).unwrap();
-                    bank.oracle_adapter.simulated_price = Some(price);
-                }
-        */
+    fn process_all_accounts(&mut self) -> Result<Vec<PreparedLiquidatableAccount>> {
+        self.swb_price_simulator.simulate_swb_prices()?;
 
         let mut index: usize = 0;
         let mut accounts: Vec<PreparedLiquidatableAccount> = vec![];
-        while index < self.cache.marginfi_accounts.len() {
+        while index < self.cache.marginfi_accounts.len()? {
             if let Some(account) = self.cache.marginfi_accounts.get_account_by_index(index) {
                 self.process_account(&account).map(|acc| accounts.push(acc));
             }
@@ -395,13 +241,18 @@ impl Liquidator {
         })
     }
 
-    fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> anyhow::Result<I80F48> {
-        let free_collateral = self.get_free_collateral();
+    fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> Result<I80F48> {
+        let free_collateral = self.get_free_collateral()?;
 
         let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
 
-        let (asset_amount, _) =
-            self.get_balance_for_bank(&self.liquidator_account.account_wrapper, bank_pk)?;
+        let (asset_amount, _) = self.get_balance_for_bank(
+            &self
+                .cache
+                .marginfi_accounts
+                .try_get_account(&self.liquidator_account.liquidator_address)?,
+            bank_pk,
+        )?;
         debug!(
             "Liquidator Asset amount: {:?}, free collateral: {:?}",
             asset_amount, free_collateral
@@ -456,19 +307,20 @@ impl Liquidator {
         Ok(max_borrow_value)
     }
 
-    fn get_free_collateral(&self) -> I80F48 {
-        let collateral = self
-            .calc_health(
-                &self.liquidator_account.account_wrapper,
-                RequirementType::Initial,
-                false,
-            )
-            .unwrap();
+    fn get_free_collateral(&self) -> Result<I80F48> {
+        let collateral = self.calc_health(
+            &self
+                .cache
+                .marginfi_accounts
+                .try_get_account(&self.liquidator_account.liquidator_address)?,
+            RequirementType::Initial,
+            false,
+        )?;
 
         if collateral > I80F48::ZERO {
-            collateral
+            Ok(collateral)
         } else {
-            I80F48::ZERO
+            Ok(I80F48::ZERO)
         }
     }
 
@@ -476,7 +328,7 @@ impl Liquidator {
         &self,
         deposit_values: Vec<(I80F48, Pubkey)>,
         liab_values: Vec<(I80F48, Pubkey)>,
-    ) -> anyhow::Result<Option<(Pubkey, Pubkey)>> {
+    ) -> Result<Option<(Pubkey, Pubkey)>> {
         if deposit_values.is_empty() || liab_values.is_empty() {
             return Ok(None);
         }
@@ -496,7 +348,7 @@ impl Liquidator {
                 //debug!("Asset Bank {:?} value: {:?}", a.1, a.0);
                 a.0.cmp(&b.0)
             })
-            .ok_or_else(|| anyhow::anyhow!("No asset bank found"))?;
+            .ok_or_else(|| anyhow!("No asset bank found"))?;
 
         let (_, liab_bank) = liab_values
             .iter()
@@ -505,7 +357,7 @@ impl Liquidator {
 
                 a.0.cmp(&b.0)
             })
-            .ok_or_else(|| anyhow::anyhow!("No liability bank found"))?;
+            .ok_or_else(|| anyhow!("No liability bank found"))?;
 
         Ok(Some((*asset_bank, *liab_bank)))
     }
@@ -515,7 +367,7 @@ impl Liquidator {
         account: &MarginfiAccountWrapper,
         asset_bank_pk: &Pubkey,
         liab_bank_pk: &Pubkey,
-    ) -> anyhow::Result<(I80F48, I80F48)> {
+    ) -> Result<(I80F48, I80F48)> {
         let maintenance_health = self.calc_health(account, RequirementType::Maintenance, false)?;
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
@@ -580,7 +432,7 @@ impl Liquidator {
         account: &MarginfiAccountWrapper,
         requirement_type: RequirementType,
         print_logs: bool,
-    ) -> anyhow::Result<I80F48> {
+    ) -> Result<I80F48> {
         let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.cache.clone())?;
 
         let (total_weighted_assets, total_weighted_liabilities) = baws.iter().fold(
@@ -607,12 +459,12 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
         bank_pk: &Pubkey,
-    ) -> anyhow::Result<(I80F48, I80F48)> {
+    ) -> Result<(I80F48, I80F48)> {
         let bank = self
             .cache
             .banks
-            .get_bank_account(bank_pk)
-            .ok_or_else(|| anyhow::anyhow!("Bank {} not bound", bank_pk))?;
+            .get_account(bank_pk)
+            .ok_or_else(|| anyhow!("Bank {} not bound", bank_pk))?;
 
         let balance = account
             .lending_account
@@ -635,22 +487,12 @@ impl Liquidator {
         Ok(balance)
     }
 
-    pub fn get_accounts_to_track(&self) -> HashMap<Pubkey, AccountType> {
-        let mut tracked_accounts: HashMap<Pubkey, AccountType> = HashMap::new();
-
-        for oracle_pk in self.cache.oracles.get_oracle_pks() {
-            tracked_accounts.insert(oracle_pk, AccountType::Oracle);
-        }
-
-        tracked_accounts
-    }
-
     fn get_value_of_shares(
         &self,
         shares: Vec<(I80F48, Pubkey)>,
         balance_side: &BalanceSide,
         requirement_type: RequirementType,
-    ) -> anyhow::Result<Vec<(I80F48, Pubkey)>> {
+    ) -> Result<Vec<(I80F48, Pubkey)>> {
         let mut values: Vec<(I80F48, Pubkey)> = Vec::new();
 
         for (shares_amount, bank_pk) in shares {
@@ -671,17 +513,18 @@ impl Liquidator {
 
             let value = match balance_side {
                 BalanceSide::Liabilities => {
-                    let liabilities =
-                        bank.bank.get_liability_amount(shares_amount).map_err(|e| {
-                            anyhow::anyhow!("Couldn't calculate liability amount for: {}", e)
-                        })?;
+                    let liabilities = bank
+                        .bank
+                        .get_liability_amount(shares_amount)
+                        .map_err(|e| anyhow!("Couldn't calculate liability amount for: {}", e))?;
                     bank.calc_value(liabilities, BalanceSide::Liabilities, requirement_type)
                         .unwrap()
                 }
                 BalanceSide::Assets => {
-                    let assets = bank.bank.get_asset_amount(shares_amount).map_err(|e| {
-                        anyhow::anyhow!("Couldn't calculate asset amount for: {}", e)
-                    })?;
+                    let assets = bank
+                        .bank
+                        .get_asset_amount(shares_amount)
+                        .map_err(|e| anyhow!("Couldn't calculate asset amount for: {}", e))?;
                     bank.calc_value(assets, BalanceSide::Assets, requirement_type)
                         .unwrap()
                 }

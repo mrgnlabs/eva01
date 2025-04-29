@@ -9,8 +9,6 @@ pub trait OracleWrapperTrait {
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48>;
-
-    fn get_address(&self) -> Pubkey;
 }
 
 #[derive(Clone)]
@@ -55,10 +53,6 @@ impl OracleWrapperTrait for OracleWrapper {
                 .price_adapter
                 .get_price_of_type(oracle_type, price_bias)?),
         }
-    }
-
-    fn get_address(&self) -> Pubkey {
-        self.address
     }
 }
 
@@ -126,10 +120,6 @@ pub mod test_utils {
                 Some(PriceBias::High) => Ok(I80F48::from_num(self.price + self.bias)),
                 None => Ok(I80F48::from_num(self.price)),
             }
-        }
-
-        fn get_address(&self) -> Pubkey {
-            self.address
         }
     }
 }

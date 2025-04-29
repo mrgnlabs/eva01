@@ -1,20 +1,21 @@
 use crate::{
     cache::Cache,
     config::{GeneralConfig, RebalancerCfg},
-    crossbar::CrossbarMaintainer,
-    geyser::{AccountType, GeyserUpdate},
     metrics::ERROR_COUNT,
     sender::{SenderCfg, TransactionSender},
     thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
-    utils::{self, calc_weighted_assets_new, calc_weighted_liabs_new, BankAccountWithPriceFeedEva},
+    utils::{
+        self, calc_weighted_assets_new, calc_weighted_liabs_new, swb_cranker::SwbCranker,
+        BankAccountWithPriceFeedEva,
+    },
     wrappers::{
         liquidator_account::LiquidatorAccount, marginfi_account::MarginfiAccountWrapper,
         oracle::OracleWrapperTrait,
     },
 };
-use anyhow::anyhow;
-use crossbeam::channel::{Receiver, Sender};
+use anyhow::{anyhow, Result};
+use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use jupiter_swap_api_client::{
@@ -36,15 +37,17 @@ use solana_client::{
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
-    account::{Account, ReadableAccount},
-    clock::Clock,
-    signature::read_keypair_file,
-    transaction::VersionedTransaction,
+    account::ReadableAccount, signature::read_keypair_file, transaction::VersionedTransaction,
 };
 use std::{
     cmp::min,
-    collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    collections::HashSet,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+    },
+    thread,
+    time::Duration,
 };
 use switchboard_on_demand_client::{FetchUpdateManyParams, PullFeed, SbContext};
 use tokio::runtime::{Builder, Runtime};
@@ -60,13 +63,11 @@ pub struct Rebalancer {
     preferred_mints: HashSet<Pubkey>,
     //FIXME: consider remove the Option wrapper. Rebalancing will not work w/o the swap mint bank.
     swap_mint_bank_pk: Pubkey,
-    geyser_receiver: Receiver<GeyserUpdate>,
+    run_rebalance: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
-    crossbar_client: CrossbarMaintainer,
-    cache_oracle_needed_accounts: HashMap<Pubkey, Account>,
-    clock: Arc<Mutex<Clock>>,
     tokio_rt: Runtime,
     cache: Arc<Cache>,
+    swb_price_simulator: Arc<SwbCranker>,
 }
 
 impl Rebalancer {
@@ -75,10 +76,10 @@ impl Rebalancer {
         config: RebalancerCfg,
         transaction_tx: Sender<TransactionData>,
         pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
-        geyser_receiver: Receiver<GeyserUpdate>,
+        run_rebalance: Arc<AtomicBool>,
         stop_liquidator: Arc<AtomicBool>,
-        clock: Arc<Mutex<Clock>>,
         cache: Arc<Cache>,
+        swb_price_simulator: Arc<SwbCranker>,
     ) -> anyhow::Result<Self> {
         let txn_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
         let non_blocking_rpc_client = NonBlockingRpcClient::new(general_config.rpc_url.clone());
@@ -92,7 +93,7 @@ impl Rebalancer {
 
         let preferred_mints = config.preferred_mints.iter().cloned().collect();
 
-        let swap_mint_bank_pk = cache.banks.try_get_bank_for_mint(&config.swap_mint)?;
+        let swap_mint_bank_pk = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
 
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("rebalancer")
@@ -100,7 +101,7 @@ impl Rebalancer {
             .enable_all()
             .build()?;
 
-        Ok(Rebalancer {
+        Ok(Self {
             config,
             general_config,
             liquidator_account,
@@ -108,182 +109,51 @@ impl Rebalancer {
             txn_client,
             preferred_mints,
             swap_mint_bank_pk,
-            geyser_receiver,
+            run_rebalance,
             stop_liquidator,
-            crossbar_client: CrossbarMaintainer::new(),
-            cache_oracle_needed_accounts: HashMap::new(),
-            clock,
             tokio_rt,
             cache,
+            swb_price_simulator,
         })
     }
 
     pub fn start(&mut self) -> anyhow::Result<()> {
-        let max_duration = std::time::Duration::from_secs(20);
-        let mut start = std::time::Instant::now();
-
         info!("Starting the Rebalancer loop");
-        while let Ok(msg) = self.geyser_receiver.recv() {
-            thread_debug!(
-                "Received geyser update: {:?} for {:?}",
-                msg.account_type,
-                msg.address
-            );
-            /*
-                        match msg.account_type {
-                            AccountType::Oracle => {
-                                let bank_to_update_pk = ward!(self.oracle_to_bank.get(&msg.address), continue);
-                                thread_debug!("Received oracle update for bank: {:?}", bank_to_update_pk);
+        while !self.stop_liquidator.load(Ordering::Relaxed) {
+            if self.run_rebalance.load(Ordering::Relaxed) && self.needs_to_be_rebalanced()? {
+                thread_debug!("Running the Rebalancing process...");
+                self.run_rebalance.store(false, Ordering::Relaxed);
 
-                                let bank_to_update = ward!(self.banks.get_mut(bank_to_update_pk), continue);
-
-                                let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup {
-                                    OracleSetup::SwitchboardPull => {
-                                        let mut offsets_data =
-                                            [0u8; std::mem::size_of::<PullFeedAccountData>()];
-                                        offsets_data.copy_from_slice(
-                                            &msg.account.data
-                                                [8..std::mem::size_of::<PullFeedAccountData>() + 8],
-                                        );
-                                        let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
-
-                                        let feed_hash = hex::encode(swb_feed.feed_hash);
-                                        bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
-
-                                        Ok(OraclePriceFeedAdapter::SwitchboardPull(
-                                            SwitchboardPullPriceFeed {
-                                                feed: Box::new((&swb_feed).into()),
-                                            },
-                                        ))
-                                    }
-                                    OracleSetup::StakedWithPythPush => {
-                                        let clock = ward!(clock_manager::get_clock(&self.clock).ok(), continue);
-
-                                        let keys = &bank_to_update.bank.config.oracle_keys[1..3];
-
-                                        let mut accounts_info =
-                                            vec![(&msg.address, &mut msg.account).into_account_info()];
-
-                                        let mut owned_accounts: Vec<_> = keys
-                                            .iter()
-                                            .filter_map(|key| {
-                                                self.cache_oracle_needed_accounts
-                                                    .iter()
-                                                    .find(|(k, _)| *k == key)
-                                                    .map(|(_, account)| account.clone())
-                                            })
-                                            .collect();
-
-                                        accounts_info.extend(
-                                            keys.iter()
-                                                .zip(owned_accounts.iter_mut())
-                                                .map(|(key, account)| (key, account).into_account_info()),
-                                        );
-
-                                        OraclePriceFeedAdapter::try_from_bank_config(
-                                            &bank_to_update.bank.config,
-                                            &accounts_info,
-                                            &clock,
-                                        )
-                                    }
-                                    _ => {
-                                        let clock = ward!(clock_manager::get_clock(&self.clock).ok(), continue);
-                                        let oracle_account_info =
-                                            (&msg.address, &mut msg.account).into_account_info();
-
-                                        OraclePriceFeedAdapter::try_from_bank_config(
-                                            &bank_to_update.bank.config,
-                                            &[oracle_account_info],
-                                            &clock,
-                                        )
-                                    }
-                                };
-
-                                match oracle_price_adapter {
-                                    Ok(adapter) => {
-                                        bank_to_update.oracle_adapter.price_adapter = adapter;
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Failed update Oracle price adapter for the bank ({})! {:?}",
-                                            bank_to_update.address, e
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-                            AccountType::Marginfi => {
-                                thread_debug!("Received Marginfi account {:?} update.", msg.address);
-                                if msg.address == self.general_config.liquidator_account {
-                                    let marginfi_account =
-                                        bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
-
-                                    self.liquidator_account.account_wrapper.lending_account =
-                                        marginfi_account.lending_account;
-                                }
-                            }
-                            AccountType::Token => {
-                                let mint = accessor::mint(&msg.account.data);
-                                let balance = accessor::amount(&msg.account.data);
-                                thread_debug!(
-                                    "Received token account update: mint - {:?}, balance - {}",
-                                    mint,
-                                    balance
-                                );
-
-                                if let Some(account_to_update) = self.token_accounts.get_mut(&mint) {
-                                    account_to_update.balance = balance;
-                                    // update_balance(&account_to_update.bank.bank.mint.to_string(), balance as f64,).await;
-                                }
-                            }
-                        }
-            */
-            if start.elapsed() > max_duration && self.needs_to_be_rebalanced() {
                 if let Err(e) = self.rebalance_accounts() {
                     thread_error!("Failed to rebalance account: {:?}", e);
                     ERROR_COUNT.inc();
                 }
-                start = std::time::Instant::now();
-                continue;
+                thread_debug!("The Rebalancing process is complete.");
+            } else {
+                thread::sleep(Duration::from_millis(1000))
             }
         }
-        thread_info!("Rebalancer stopped.");
+        thread_info!("The Rebalancer loop stopped.");
+
         Ok(())
     }
 
-    fn needs_to_be_rebalanced(&mut self) -> bool {
-        /*
-                // Update switchboard pull prices with crossbar
-                let swb_feed_hashes = self
-                    .banks
-                    .values()
-                    .filter_map(|bank| {
-                        bank.oracle_adapter
-                            .swb_feed_hash
-                            .as_ref()
-                            .map(|feed_hash| (bank.address, feed_hash.clone()))
-                    })
-                    .collect::<Vec<_>>();
+    fn needs_to_be_rebalanced(&mut self) -> Result<bool> {
+        self.should_stop_liquidator()?;
 
-                let simulated_prices = self
-                    .tokio_rt
-                    .block_on(self.crossbar_client.simulate(swb_feed_hashes));
-
-                for (bank_pk, price) in simulated_prices {
-                    let bank = self.banks.get_mut(&bank_pk).unwrap();
-                    bank.oracle_adapter.simulated_price = Some(price);
-                }
-        */
-        self.should_stop_liquidator();
-
-        self.has_tokens_in_token_accounts()
-            || self.has_non_preferred_deposits()
-            || self.has_liabilities()
+        Ok(self.has_tokens_in_token_accounts()?
+            || self.has_non_preferred_deposits()?
+            || self.has_liabilities()?)
     }
 
+    // TODO: move to SwbCranker
     fn fetch_swb_prices(&self) -> anyhow::Result<()> {
         let active_banks = MarginfiAccountWrapper::get_active_banks(
-            &self.liquidator_account.account_wrapper.lending_account,
+            &self
+                .cache
+                .marginfi_accounts
+                .try_get_account(&self.liquidator_account.liquidator_address)?
+                .lending_account,
         );
 
         let active_swb_oracles: Vec<Pubkey> = active_banks
@@ -316,7 +186,7 @@ impl Rebalancer {
                 .transaction_tx
                 .send(TransactionData {
                     transactions: vec![RawTransaction::new(vec![ix]).with_lookup_tables(lut)],
-                    bundle_id: self.liquidator_account.account_wrapper.address,
+                    bundle_id: self.liquidator_account.liquidator_address,
                 })?;
         }
 
@@ -324,11 +194,13 @@ impl Rebalancer {
     }
 
     fn rebalance_accounts(&mut self) -> anyhow::Result<()> {
+        self.swb_price_simulator.simulate_swb_prices()?;
+        //TODO: It is called right after simulation. Confirm that it is really needed.
         self.fetch_swb_prices()?;
 
-        self.sell_non_preferred_deposits();
+        self.sell_non_preferred_deposits()?;
 
-        self.repay_liabilities();
+        self.repay_liabilities()?;
 
         self.drain_tokens_from_token_accounts()?;
 
@@ -338,50 +210,44 @@ impl Rebalancer {
     }
 
     // If our margin is at 50% or lower, we should stop the Liquidator and manually adjust it's balances.
-    pub fn should_stop_liquidator(&self) {
+    pub fn should_stop_liquidator(&self) -> Result<()> {
         let (assets, liabs) = self.calc_health(
-            &self.liquidator_account.account_wrapper,
+            &self
+                .cache
+                .marginfi_accounts
+                .try_get_account(&self.liquidator_account.liquidator_address)?,
             RequirementType::Initial,
         );
 
         if assets.is_zero() {
             error!(
                 "The Liquidator {:?} has no assets!",
-                self.liquidator_account.account_wrapper.address
+                self.liquidator_account.liquidator_address
             );
 
             self.stop_liquidator
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-
-            return;
         }
 
         let ratio = (assets - liabs) / assets;
         if ratio <= 0.5 {
             error!(
                 "The Assets ({}) to Liabilities ({}) ratio ({}) too low for the Liquidator {:?}!",
-                assets, liabs, ratio, self.liquidator_account.account_wrapper.address
+                assets, liabs, ratio, self.liquidator_account.liquidator_address
             );
 
             self.stop_liquidator
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
+
+        Ok(())
     }
 
-    pub fn get_accounts_to_track(&self) -> HashMap<Pubkey, AccountType> {
-        let mut tracked_accounts: HashMap<Pubkey, AccountType> = HashMap::new();
-
-        for token in self.cache.mints.get_token_addresses() {
-            tracked_accounts.insert(token, AccountType::Token);
-        }
-
-        tracked_accounts
-    }
-
-    fn sell_non_preferred_deposits(&mut self) {
+    fn sell_non_preferred_deposits(&mut self) -> Result<()> {
         let non_preferred_deposits = self
-            .liquidator_account
-            .account_wrapper
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?
             .get_deposits(&self.config.preferred_mints, self.cache.clone());
 
         if !non_preferred_deposits.is_empty() {
@@ -396,12 +262,15 @@ impl Rebalancer {
                 }
             }
         }
+
+        Ok(())
     }
 
-    fn repay_liabilities(&mut self) {
+    fn repay_liabilities(&mut self) -> Result<()> {
         let liabilities = self
-            .liquidator_account
-            .account_wrapper
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?
             .get_liabilities_shares();
 
         if !liabilities.is_empty() {
@@ -415,6 +284,8 @@ impl Rebalancer {
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Repay a liability for a given bank
@@ -433,8 +304,9 @@ impl Rebalancer {
 
         // Get the balance for the liability bank and check if it's valid
         let liab_balance_opt = self
-            .liquidator_account
-            .account_wrapper
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?
             .get_balance_for_bank(&bank);
 
         if liab_balance_opt.is_none() || matches!(liab_balance_opt, Some((_, BalanceSide::Assets)))
@@ -570,16 +442,16 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn has_tokens_in_token_accounts(&self) -> bool {
+    fn has_tokens_in_token_accounts(&self) -> Result<bool> {
         let mut index: usize = 0;
-        let len = self.cache.tokens.len();
+        let len = self.cache.tokens.len()?;
         while index < len {
-            if let Some(token_address) = self.cache.tokens.get_token_address_by_index(index) {
+            if let Some(token_address) = self.cache.tokens.get_address_by_index(index) {
                 match self.cache.try_get_token_wrapper(&token_address) {
                     Ok(wrapper) => match wrapper.get_value() {
                         Ok(value) => {
                             if value > self.config.token_account_dust_threshold {
-                                return true;
+                                return Ok(true);
                             }
                         }
                         Err(error) => error!("Failed compute token value! {}", error),
@@ -590,12 +462,14 @@ impl Rebalancer {
             index += 1;
         }
 
-        false
+        Ok(false)
     }
 
-    fn has_non_preferred_deposits(&self) -> bool {
-        self.liquidator_account
-            .account_wrapper
+    fn has_non_preferred_deposits(&self) -> Result<bool> {
+        Ok(self
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?
             .lending_account
             .balances
             .iter()
@@ -603,23 +477,27 @@ impl Rebalancer {
             .any(|balance| {
                 self.cache
                     .banks
-                    .get_bank_account(&balance.bank_pk)
+                    .get_account(&balance.bank_pk)
                     .map_or(false, |bank| {
                         matches!(balance.get_side(), Some(BalanceSide::Assets))
                             && !self.preferred_mints.contains(&bank.mint)
                     })
-            })
+            }))
     }
 
-    fn has_liabilities(&self) -> bool {
-        self.liquidator_account.account_wrapper.has_liabs()
+    fn has_liabilities(&self) -> Result<bool> {
+        Ok(self
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?
+            .has_liabs())
     }
 
     fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<()> {
         let mut index: usize = 0;
-        let len = self.cache.tokens.len();
+        let len = self.cache.tokens.len()?;
         while index < len {
-            if let Some(token_address) = self.cache.tokens.get_token_address_by_index(index) {
+            if let Some(token_address) = self.cache.tokens.get_address_by_index(index) {
                 let account = self.cache.try_get_token_wrapper(&token_address)?;
                 if account.bank.bank.mint == self.config.swap_mint {
                     continue;
@@ -651,8 +529,9 @@ impl Rebalancer {
     fn withdraw_and_sell_deposit(&mut self, bank_pk: &Pubkey) -> anyhow::Result<()> {
         let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
         let balance = self
-            .liquidator_account
-            .account_wrapper
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?
             .get_balance_for_bank(&bank);
 
         if !matches!(&balance, Some((_, BalanceSide::Assets))) {
@@ -689,8 +568,8 @@ impl Rebalancer {
             dst_bank
         );
 
-        let input_mint = self.cache.banks.try_get_bank_account(src_bank)?.mint;
-        let output_mint = self.cache.banks.try_get_bank_account(dst_bank)?.mint;
+        let input_mint = self.cache.banks.try_get_account(src_bank)?.mint;
+        let output_mint = self.cache.banks.try_get_account(dst_bank)?.mint;
 
         let jup_swap_client = JupiterSwapApiClient::new(self.config.jup_swap_api_url.clone());
 
@@ -736,8 +615,9 @@ impl Rebalancer {
     pub fn get_max_withdraw_for_bank(&self, bank_pk: &Pubkey) -> anyhow::Result<(I80F48, bool)> {
         let free_collateral = self.get_free_collateral()?;
         let balance = self
-            .liquidator_account
-            .account_wrapper
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?
             .get_balance_for_bank(&self.cache.try_get_bank_wrapper(bank_pk)?);
         Ok(match balance {
             Some((balance, BalanceSide::Assets)) => {
@@ -779,7 +659,10 @@ impl Rebalancer {
 
     fn get_free_collateral(&self) -> anyhow::Result<I80F48> {
         let (assets, liabs) = self.calc_health(
-            &self.liquidator_account.account_wrapper,
+            &self
+                .cache
+                .marginfi_accounts
+                .try_get_account(&self.liquidator_account.liquidator_address)?,
             RequirementType::Initial,
         );
         if assets > liabs {

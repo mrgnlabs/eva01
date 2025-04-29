@@ -33,7 +33,7 @@ use switchboard_on_demand_client::{
 use tokio::runtime::{Builder, Runtime};
 
 pub struct LiquidatorAccount {
-    pub account_wrapper: MarginfiAccountWrapper,
+    pub liquidator_address: Pubkey,
     pub signer_keypair: Arc<Keypair>,
     program_id: Pubkey,
     token_program_per_mint: HashMap<Pubkey, Pubkey>,
@@ -56,14 +56,10 @@ impl LiquidatorAccount {
         cache: Arc<Cache>,
     ) -> anyhow::Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
-
+        let liquidator_address = config.liquidator_account;
         let rpc_client = RpcClient::new(config.rpc_url.clone());
         let account = rpc_client.get_account(&config.liquidator_account)?;
         let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-        let account_wrapper = MarginfiAccountWrapper::new(
-            config.liquidator_account,
-            marginfi_account.lending_account,
-        );
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
 
@@ -81,7 +77,7 @@ impl LiquidatorAccount {
             tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
 
         Ok(Self {
-            account_wrapper,
+            liquidator_address,
             signer_keypair,
             program_id: config.marginfi_program_id,
             group: marginfi_account.group,
@@ -104,12 +100,11 @@ impl LiquidatorAccount {
         liab_bank: &BankWrapper,
         asset_amount: u64,
     ) -> anyhow::Result<()> {
-        let liquidator_account_address = self.account_wrapper.address;
         let liquidatee_account_address = liquidatee_account.address;
         thread_info!(
             "Liquidating account {:?} with liquidator account {:?}",
             liquidatee_account_address,
-            liquidator_account_address
+            self.liquidator_address
         );
 
         let signer_pk = self.signer_keypair.pubkey();
@@ -118,23 +113,26 @@ impl LiquidatorAccount {
         let banks_to_include: Vec<Pubkey> = vec![liab_bank.address, asset_bank.address];
         let banks_to_exclude: Vec<Pubkey> = vec![];
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
-        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
+        &self.liquidator_address, &banks_to_include, &banks_to_exclude);
         let liquidator_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &self.account_wrapper.lending_account,
+            &self
+                .cache
+                .marginfi_accounts
+                .try_get_account(&self.liquidator_address)?
+                .lending_account,
             &banks_to_include,
             &banks_to_exclude,
             self.cache.clone(),
         );
         thread_debug!(
-            "Liquidator {:?} observation accounts: {:?}",
-            liquidator_account_address,
+            "Liquidator observation accounts: {:?}",
             liquidator_observation_accounts
         );
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
-        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
+        &self.liquidator_address, &banks_to_include, &banks_to_exclude);
         let liquidatee_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
             &liquidatee_account.lending_account,
             &banks_to_include,
@@ -192,7 +190,7 @@ impl LiquidatorAccount {
         let liquidate_ix = make_liquidate_ix(
             self.program_id,
             self.group,
-            liquidator_account_address,
+            self.liquidator_address,
             asset_bank,
             liab_bank,
             signer_pk,
@@ -297,7 +295,7 @@ impl LiquidatorAccount {
         amount: u64,
         withdraw_all: Option<bool>,
     ) -> anyhow::Result<()> {
-        let marginfi_account = self.account_wrapper.address;
+        let marginfi_account = self.liquidator_address;
 
         let signer_pk = self.signer_keypair.pubkey();
 
@@ -308,9 +306,13 @@ impl LiquidatorAccount {
             vec![]
         };
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
-        &self.account_wrapper.address, &banks_to_include, &banks_to_exclude);
+        &self.liquidator_address, &banks_to_include, &banks_to_exclude);
         let observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &self.account_wrapper.lending_account,
+            &self
+                .cache
+                .marginfi_accounts
+                .try_get_account(&self.liquidator_address)?
+                .lending_account,
             &banks_to_include,
             &banks_to_exclude,
             self.cache.clone(),
@@ -370,7 +372,7 @@ impl LiquidatorAccount {
         amount: u64,
         repay_all: Option<bool>,
     ) -> anyhow::Result<()> {
-        let marginfi_account = self.account_wrapper.address;
+        let marginfi_account = self.liquidator_address;
 
         let signer_pk = self.signer_keypair.pubkey();
 
@@ -426,7 +428,7 @@ impl LiquidatorAccount {
         token_account: Pubkey,
         amount: u64,
     ) -> anyhow::Result<()> {
-        let marginfi_account = self.account_wrapper.address;
+        let marginfi_account = self.liquidator_address;
 
         let signer_pk = self.signer_keypair.pubkey();
 

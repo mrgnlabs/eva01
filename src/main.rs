@@ -6,6 +6,7 @@ mod metrics;
 
 /// Geyser service
 mod geyser;
+mod geyser_processor;
 
 /// IX's for marginfi
 mod marginfi_ixs;

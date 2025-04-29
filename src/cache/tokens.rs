@@ -1,52 +1,78 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::RwLock};
 
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
 use solana_sdk::{account::Account, pubkey::Pubkey};
 
 pub struct TokensCache {
-    signer: Pubkey,
-    tokens: IndexMap<Pubkey, Account>,
+    tokens: RwLock<IndexMap<Pubkey, Account>>,
     mint_to_token: HashMap<Pubkey, Pubkey>,
 }
 
 impl TokensCache {
-    pub fn new(signer: Pubkey) -> Self {
+    pub fn new() -> Self {
         Self {
-            signer,
-            tokens: IndexMap::new(),
+            tokens: RwLock::new(IndexMap::new()),
             mint_to_token: HashMap::new(),
         }
     }
 
-    pub fn insert(
+    pub fn try_insert(
         &mut self,
         token_address: Pubkey,
         token: Account,
         mint_address: Pubkey,
     ) -> anyhow::Result<()> {
-        self.tokens.insert(token_address, token);
+        self.tokens
+            .write()
+            .map_err(|e| anyhow!("Failed to lock the token map for insert! {}", e))?
+            .insert(token_address, token);
         self.mint_to_token.insert(mint_address, token_address);
         Ok(())
     }
 
-    pub fn get_token_account(&self, address: &Pubkey) -> Option<Account> {
-        self.tokens.get(address).map(|account| account.clone())
-    }
-
-    pub fn get_token_address_by_index(&self, index: usize) -> Option<Pubkey> {
+    pub fn get_account(&self, address: &Pubkey) -> Option<Account> {
         self.tokens
-            .get_index(index)
-            .map(|(address, _)| address.clone())
+            .read()
+            .inspect_err(|e| eprintln!("Failed to lock the tokens map for search! {}", e))
+            .ok()?
+            .get(address)
+            .map(|account| account.clone())
     }
 
-    pub fn try_get_token_account(&self, address: &Pubkey) -> Result<Account> {
-        self.get_token_account(address)
+    pub fn try_get_account(&self, address: &Pubkey) -> Result<Account> {
+        self.get_account(address)
             .ok_or(anyhow!(
                 "Failed ot find Token for the Address {} in Cache!",
                 &address
             ))
             .map(|mint| mint.clone())
+    }
+
+    pub fn get_address_by_index(&self, index: usize) -> Option<Pubkey> {
+        self.tokens
+            .read()
+            .inspect_err(|e| {
+                eprintln!(
+                    "Failed to lock the tokens accounts map for search by index! {}",
+                    e
+                )
+            })
+            .ok()?
+            .get_index(index)
+            .map(|(address, _)| address.clone())
+    }
+
+    pub fn try_update_account(&self, address: Pubkey, account: Account) -> Result<()> {
+        self.tokens
+            .write()
+            .map_err(|e| anyhow!("Failed to lock the token map for update! {}", e))?
+            .insert(address, account)
+            .ok_or(anyhow!(
+                "Failed ot update Token for the Address {} in Cache!",
+                &address
+            ))?;
+        Ok(())
     }
 
     pub fn get_token_for_mint(&self, mint_address: &Pubkey) -> Option<Pubkey> {
@@ -65,7 +91,11 @@ impl TokensCache {
             .map(|address| address.clone())
     }
 
-    pub fn len(&self) -> usize {
-        self.tokens.len()
+    pub fn len(&self) -> Result<usize> {
+        Ok(self
+            .tokens
+            .read()
+            .map_err(|e| anyhow!("Failed to lock the tokens map for size! {}", e))?
+            .len())
     }
 }

@@ -37,6 +37,7 @@ use tokio::runtime::{Builder, Runtime};
 use crate::{
     cache::Cache,
     clock_manager,
+    geyser::AccountType,
     sender::{SenderCfg, TransactionSender},
     utils::{
         batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
@@ -92,7 +93,7 @@ impl CacheLoader {
             &self.rpc_client,
             &marginfi_accounts_pubkeys,
             BatchLoadingConfig {
-                max_batch_size: 100,
+                max_batch_size: BatchLoadingConfig::DEFAULT.max_batch_size,
                 max_concurrent_calls: 32,
             },
         )?;
@@ -109,7 +110,7 @@ impl CacheLoader {
                     address: *address,
                     lending_account: marginfi_account.lending_account,
                 };
-                cache.marginfi_accounts.insert(maw);
+                cache.marginfi_accounts.try_insert(maw)?;
             }
         }
 
@@ -209,7 +210,7 @@ impl CacheLoader {
             .filter_map(|(pk, account)| account.as_ref().map(|acc| (*pk, acc.clone())))
             .collect();
 
-        for (bank_address, bank) in cache.banks.get_bank_accounts().iter() {
+        for (bank_address, bank) in cache.banks.get_accounts().iter() {
             if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
                 debug!("Loading STAKED bank: {:?}", bank_address);
             }
@@ -342,7 +343,9 @@ impl CacheLoader {
                 );
             }
 
-            cache.oracles.insert(oracle, *bank_address);
+            cache
+                .oracles
+                .try_insert(oracle_account, oracle, *bank_address)?;
         }
 
         Ok(())
@@ -363,7 +366,7 @@ impl CacheLoader {
 
                 cache
                     .mints
-                    .insert(*mint_address, mint_account.clone(), token_address);
+                    .try_insert(*mint_address, mint_account.clone(), token_address)?;
             }
         }
 
@@ -374,7 +377,7 @@ impl CacheLoader {
     pub fn load_tokens(&self, cache: &mut Cache) -> anyhow::Result<()> {
         info!("Fetching Token accounts...");
 
-        let token_addresses = cache.mints.get_token_addresses();
+        let token_addresses = cache.mints.get_token();
         let token_accounts = self.rpc_client.get_multiple_accounts(&token_addresses)?;
 
         let mut new_token_addresses: Vec<Pubkey> = vec![];
@@ -385,7 +388,7 @@ impl CacheLoader {
                     let mint_address = cache.mints.try_get_mint_for_token(token_address)?;
                     cache
                         .tokens
-                        .insert(*token_address, token_account.clone(), mint_address)?;
+                        .try_insert(*token_address, token_account.clone(), mint_address)?;
                 }
                 None => {
                     new_token_addresses.push(*token_address);
@@ -393,7 +396,7 @@ impl CacheLoader {
                 }
             }
         }
-        info!("Fetched {}  Token accounts.", cache.tokens.len());
+        info!("Fetched {}  Token accounts.", cache.tokens.len()?);
 
         if new_token_addresses.len() > 0 {
             info!("Creating {} new Token accounts", new_token_addresses.len());
@@ -401,7 +404,7 @@ impl CacheLoader {
             let mut instructions: Vec<Instruction> = vec![];
             for token_address in &new_token_addresses {
                 let mint_account = cache.mints.try_get_mint_for_token(&token_address)?;
-                let mint = cache.mints.try_get_mint_account(&mint_account)?;
+                let mint = cache.mints.try_get_account(&mint_account)?;
                 let signer_pk = cache.signer_pk;
                 let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(&signer_pk, &signer_pk, &mint_account, &mint.account.owner);
                 instructions.push(ix);
@@ -418,7 +421,7 @@ impl CacheLoader {
             {
                 if let Some(new_token_account) = new_token_account_opt {
                     let mint_address = cache.mints.try_get_mint_for_token(new_token_address)?;
-                    cache.tokens.insert(
+                    cache.tokens.try_insert(
                         *new_token_address,
                         new_token_account.clone(),
                         mint_address,
@@ -470,5 +473,19 @@ impl CacheLoader {
             })?;
 
         Ok(())
+    }
+
+    pub fn get_accounts_to_track(&self, cache: &Cache) -> HashMap<Pubkey, AccountType> {
+        let mut accounts: HashMap<Pubkey, AccountType> = HashMap::new();
+
+        for oracle_pk in cache.oracles.get_addresses() {
+            accounts.insert(oracle_pk, AccountType::Oracle);
+        }
+
+        for token in cache.mints.get_token() {
+            accounts.insert(token, AccountType::Token);
+        }
+
+        return accounts;
     }
 }
