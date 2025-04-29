@@ -59,3 +59,95 @@ impl MintsCache {
         self.mints.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{account::Account, pubkey::Pubkey};
+
+    #[test]
+    fn test_mints_cache() {
+        let mut mints_cache = MintsCache::new();
+        let mint_address = Pubkey::new_unique();
+        let token_address = Pubkey::new_unique();
+        let mint_account = Account::new(0, 0, &Pubkey::new_unique());
+
+        assert!(mints_cache
+            .try_insert(mint_address, mint_account.clone(), token_address)
+            .is_ok());
+
+        assert_eq!(mints_cache.len(), 1);
+        assert!(mints_cache.get_account(&mint_address).is_some());
+        assert!(mints_cache.try_get_mint_for_token(&token_address).is_ok());
+    }
+
+    #[test]
+    fn test_try_get_account_not_found() {
+        let mints_cache = MintsCache::new();
+        let mint_address = Pubkey::new_unique();
+
+        let result = mints_cache.try_get_account(&mint_address);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_get_mint_for_token_not_found() {
+        let mints_cache = MintsCache::new();
+        let token_address = Pubkey::new_unique();
+
+        let result = mints_cache.try_get_mint_for_token(&token_address);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_token() {
+        let mut mints_cache = MintsCache::new();
+        let mint_address = Pubkey::new_unique();
+        let token_address = Pubkey::new_unique();
+        let mint_account = Account::new(0, 0, &Pubkey::new_unique());
+
+        mints_cache
+            .try_insert(mint_address, mint_account.clone(), token_address)
+            .unwrap();
+
+        let tokens = mints_cache.get_token();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], token_address);
+    }
+
+    #[test]
+    fn test_len() {
+        let mut mints_cache = MintsCache::new();
+        assert_eq!(mints_cache.len(), 0);
+
+        let mint_address = Pubkey::new_unique();
+        let token_address = Pubkey::new_unique();
+        let mint_account = Account::new(0, 0, &Pubkey::new_unique());
+
+        mints_cache
+            .try_insert(mint_address, mint_account.clone(), token_address)
+            .unwrap();
+
+        assert_eq!(mints_cache.len(), 1);
+    }
+
+    #[test]
+    fn test_insert_duplicate() {
+        let mut mints_cache = MintsCache::new();
+        let mint_address = Pubkey::new_unique();
+        let token_address = Pubkey::new_unique();
+        let mint_account = Account::new(0, 0, &Pubkey::new_unique());
+
+        assert!(mints_cache
+            .try_insert(mint_address, mint_account.clone(), token_address)
+            .is_ok());
+
+        // Insert the same mint again
+        assert!(mints_cache
+            .try_insert(mint_address, mint_account.clone(), token_address)
+            .is_ok());
+
+        // Ensure the length remains 1
+        assert_eq!(mints_cache.len(), 1);
+    }
+}
