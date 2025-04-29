@@ -29,7 +29,7 @@ impl OraclesCache {
         oracle: OracleWrapper,
         bank_address: Pubkey,
     ) -> Result<()> {
-        let oracle_address = oracle.address.clone();
+        let oracle_address = oracle.address;
         self.accounts.insert(oracle_address, account);
         self.account_wrappers
             .write()
@@ -50,7 +50,7 @@ impl OraclesCache {
             self.account_wrappers
                 .read()
                 .map_err(|e| anyhow!("Failed to lock the account_wrappers map for search! {}", e))?
-                .get(&address)
+                .get(address)
                 .ok_or(anyhow::anyhow!(
                     "Failed ot find the Oracle Wrapper for the Address {} in Cache!",
                     address
@@ -62,7 +62,7 @@ impl OraclesCache {
         self.account_wrappers
             .write()
             .map_err(|e| anyhow!("Failed to lock the account_wrappers map for update! {}", e))?
-            .insert(address.clone(), wrapper);
+            .insert(*address, wrapper);
 
         Ok(())
     }
@@ -73,7 +73,7 @@ impl OraclesCache {
             .filter_map(|address| {
                 self.accounts
                     .get(address)
-                    .map(|account| (address.clone(), account.clone()))
+                    .map(|account| (*address, account.clone()))
             })
             .collect()
     }
@@ -138,6 +138,6 @@ impl OraclesCache {
                 "Failed ot find the Bank address for the Oracle {} in Cache!",
                 oracle_address
             ))?;
-        Ok(bank_address.clone())
+        Ok(*bank_address)
     }
 }

@@ -478,7 +478,7 @@ impl Rebalancer {
                 self.cache
                     .banks
                     .get_account(&balance.bank_pk)
-                    .map_or(false, |bank| {
+                    .is_some_and(|bank| {
                         matches!(balance.get_side(), Some(BalanceSide::Assets))
                             && !self.preferred_mints.contains(&bank.mint)
                     })
@@ -695,7 +695,7 @@ impl Rebalancer {
     fn get_token_balance_for_bank(&self, bank_pk: &Pubkey) -> Option<I80F48> {
         self.cache
             .get_token_account_for_bank(bank_pk)
-            .map(|account| I80F48::from_num(utils::accessor::amount(&account.data())))
+            .map(|account| I80F48::from_num(utils::accessor::amount(account.data())))
     }
 
     pub fn get_amount(

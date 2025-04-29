@@ -160,13 +160,13 @@ impl MarginfiAccountWrapper {
                         bank_pk
                     );
                     vec![
-                        bank_pk.clone(),
+                        *bank_pk,
                         bank_oracle_wrapper.address,
                         bank.config.oracle_keys[1],
                         bank.config.oracle_keys[2],
                     ]
                 } else {
-                    vec![bank_pk.clone(), bank_oracle_wrapper.address]
+                    vec![*bank_pk, bank_oracle_wrapper.address]
                 }
             })
             .collect::<Vec<Pubkey>>()

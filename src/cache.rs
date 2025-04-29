@@ -47,14 +47,14 @@ impl Cache {
     }
 
     pub fn get_bank_wrapper(&self, bank_pk: &Pubkey) -> Option<BankWrapper> {
-        let bank = self.banks.get_account(&bank_pk)?;
-        let oracle = self.oracles.get_wrapper_from_bank(&bank_pk)?;
+        let bank = self.banks.get_account(bank_pk)?;
+        let oracle = self.oracles.get_wrapper_from_bank(bank_pk)?;
         Some(BankWrapper::new(*bank_pk, bank, oracle))
     }
 
     pub fn try_get_bank_wrapper(&self, bank_pk: &Pubkey) -> Result<BankWrapper> {
-        let bank = self.banks.try_get_account(&bank_pk)?;
-        let oracle = self.oracles.try_get_wrapper_from_bank(&bank_pk)?;
+        let bank = self.banks.try_get_account(bank_pk)?;
+        let oracle = self.oracles.try_get_wrapper_from_bank(bank_pk)?;
         Ok(BankWrapper::new(*bank_pk, bank, oracle))
     }
 

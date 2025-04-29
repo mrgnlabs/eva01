@@ -195,7 +195,7 @@ impl CacheLoader {
             .block_on(program.accounts::<Bank>(vec![RpcFilterType::Memcmp(
                 Memcmp::new_base58_encoded(
                     BANK_GROUP_PK_OFFSET,
-                    &cache.marginfi_group_address.as_ref(),
+                    cache.marginfi_group_address.as_ref(),
                 ),
             )]))?
             .iter()
@@ -401,18 +401,17 @@ impl CacheLoader {
                 }
                 None => {
                     new_token_addresses.push(*token_address);
-                    ()
                 }
             }
         }
         info!("Fetched {}  Token accounts.", cache.tokens.len()?);
 
-        if new_token_addresses.len() > 0 {
+        if !new_token_addresses.is_empty() {
             info!("Creating {} new Token accounts", new_token_addresses.len());
 
             let mut instructions: Vec<Instruction> = vec![];
             for token_address in &new_token_addresses {
-                let mint_account = cache.mints.try_get_mint_for_token(&token_address)?;
+                let mint_account = cache.mints.try_get_mint_for_token(token_address)?;
                 let mint = cache.mints.try_get_account(&mint_account)?;
                 let signer_pk = cache.signer_pk;
                 let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(&signer_pk, &signer_pk, &mint_account, &mint.account.owner);
@@ -435,7 +434,6 @@ impl CacheLoader {
                         new_token_account.clone(),
                         mint_address,
                     )?;
-                } else {
                 }
             }
             info!(
@@ -495,6 +493,6 @@ impl CacheLoader {
             accounts.insert(token, AccountType::Token);
         }
 
-        return accounts;
+        accounts
     }
 }

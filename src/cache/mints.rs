@@ -31,20 +31,18 @@ impl MintsCache {
     }
 
     pub fn get_account(&self, address: &Pubkey) -> Option<MintWrapper> {
-        self.mints.get(address).map(|mint| mint.clone())
+        self.mints.get(address).cloned()
     }
 
     pub fn try_get_account(&self, address: &Pubkey) -> Result<MintWrapper> {
-        self.get_account(address)
-            .ok_or(anyhow!(
-                "Failed ot find Mint for the Address {} in Cache!",
-                &address
-            ))
-            .map(|mint| mint.clone())
+        self.get_account(address).ok_or(anyhow!(
+            "Failed ot find Mint for the Address {} in Cache!",
+            &address
+        ))
     }
 
     pub fn get_token(&self) -> Vec<Pubkey> {
-        self.mints.values().map(|mint| mint.token.clone()).collect()
+        self.mints.values().map(|mint| mint.token).collect()
     }
 
     pub fn try_get_mint_for_token(&self, token_address: &Pubkey) -> Result<Pubkey> {
@@ -54,7 +52,7 @@ impl MintsCache {
                 "Failed ot find Mint for the Token {} in Cache!",
                 &token_address
             ))
-            .map(|address| address.clone())
+            .copied()
     }
 
     pub fn len(&self) -> usize {

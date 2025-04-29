@@ -37,16 +37,14 @@ impl TokensCache {
             .inspect_err(|e| eprintln!("Failed to lock the tokens map for search! {}", e))
             .ok()?
             .get(address)
-            .map(|account| account.clone())
+            .cloned()
     }
 
     pub fn try_get_account(&self, address: &Pubkey) -> Result<Account> {
-        self.get_account(address)
-            .ok_or(anyhow!(
-                "Failed ot find Token for the Address {} in Cache!",
-                &address
-            ))
-            .map(|mint| mint.clone())
+        self.get_account(address).ok_or(anyhow!(
+            "Failed ot find Token for the Address {} in Cache!",
+            &address
+        ))
     }
 
     pub fn get_address_by_index(&self, index: usize) -> Option<Pubkey> {
@@ -60,7 +58,7 @@ impl TokensCache {
             })
             .ok()?
             .get_index(index)
-            .map(|(address, _)| address.clone())
+            .map(|(address, _)| *address)
     }
 
     pub fn try_update_account(&self, address: Pubkey, account: Account) -> Result<()> {
@@ -76,9 +74,7 @@ impl TokensCache {
     }
 
     pub fn get_token_for_mint(&self, mint_address: &Pubkey) -> Option<Pubkey> {
-        self.mint_to_token
-            .get(mint_address)
-            .map(|address| address.clone())
+        self.mint_to_token.get(mint_address).copied()
     }
 
     pub fn try_get_token_for_mint(&self, mint_address: &Pubkey) -> Result<Pubkey> {
@@ -88,7 +84,7 @@ impl TokensCache {
                 "Failed to find Token for the Mint {} in Cache!",
                 &mint_address
             ))
-            .map(|address| address.clone())
+            .copied()
     }
 
     pub fn len(&self) -> Result<usize> {

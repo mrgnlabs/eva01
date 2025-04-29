@@ -24,7 +24,7 @@ impl BanksCache {
     }
 
     pub fn get_account(&self, address: &Pubkey) -> Option<Bank> {
-        self.banks.get(address).map(|bank| bank.clone())
+        self.banks.get(address).copied()
     }
 
     pub fn try_get_account(&self, address: &Pubkey) -> Result<Bank> {
@@ -35,7 +35,7 @@ impl BanksCache {
     pub fn get_accounts(&self) -> Vec<(Pubkey, Bank)> {
         self.banks
             .iter()
-            .map(|(address, bank)| (*address, bank.clone()))
+            .map(|(address, bank)| (*address, *bank))
             .collect()
     }
 
@@ -53,7 +53,7 @@ impl BanksCache {
                 "Failed to find Bank for the Mint {} in Cache!",
                 &mint_address
             ))
-            .map(|bank_address| bank_address.clone())
+            .copied()
     }
 
     pub fn get_mints(&self) -> Vec<Pubkey> {

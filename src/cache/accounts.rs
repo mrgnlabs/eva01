@@ -26,7 +26,7 @@ impl MarginfiAccountsCache {
                     e
                 )
             })?
-            .insert(account.address.clone(), account);
+            .insert(account.address, account);
         Ok(())
     }
 
@@ -44,7 +44,7 @@ impl MarginfiAccountsCache {
                 "Failed ot find the Marginfi account {} in Cache!",
                 &address
             ))
-            .map(|account| account.clone())
+            .cloned()
     }
 
     pub fn get_account_by_index(&self, index: usize) -> Option<MarginfiAccountWrapper> {

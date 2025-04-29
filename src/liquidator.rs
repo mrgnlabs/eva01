@@ -49,7 +49,7 @@ pub struct PreparedLiquidatableAccount {
     profit: u64,
 }
 
-impl<'a> Liquidator {
+impl Liquidator {
     pub fn new(
         general_config: GeneralConfig,
         liquidator_config: LiquidatorCfg,
@@ -127,7 +127,9 @@ impl<'a> Liquidator {
         let mut accounts: Vec<PreparedLiquidatableAccount> = vec![];
         while index < self.cache.marginfi_accounts.len()? {
             if let Some(account) = self.cache.marginfi_accounts.get_account_by_index(index) {
-                self.process_account(&account).map(|acc| accounts.push(acc));
+                self.process_account(&account)
+                    .into_iter()
+                    .for_each(|acc| accounts.push(acc));
             }
             index += 1;
         }
