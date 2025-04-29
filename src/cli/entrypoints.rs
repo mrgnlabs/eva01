@@ -66,11 +66,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.general_config.rpc_url.clone(),
         clock.clone(),
     )?;
-    cache_loader.load_marginfi_accounts(&mut cache)?;
-    cache_loader.load_banks(&mut cache)?;
-    cache_loader.load_mints(&mut cache)?;
-    cache_loader.load_oracles(&mut cache)?;
-    cache_loader.load_tokens(&mut cache)?;
+    cache_loader.load_cache(&mut cache)?;
 
     let accounts_to_track = cache_loader.get_accounts_to_track(&cache);
 

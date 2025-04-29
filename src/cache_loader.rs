@@ -81,7 +81,16 @@ impl CacheLoader {
         })
     }
 
-    pub fn load_marginfi_accounts(&self, cache: &mut Cache) -> anyhow::Result<()> {
+    pub fn load_cache(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        self.load_marginfi_accounts(cache)?;
+        self.load_banks(cache)?;
+        self.load_mints(cache)?;
+        self.load_oracles(cache)?;
+        self.load_tokens(cache)?;
+        Ok(())
+    }
+
+    fn load_marginfi_accounts(&self, cache: &mut Cache) -> anyhow::Result<()> {
         info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
         let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
@@ -172,7 +181,7 @@ impl CacheLoader {
         Ok(marginfi_account_pubkeys)
     }
 
-    pub fn load_banks(&self, cache: &mut Cache) -> anyhow::Result<()> {
+    fn load_banks(&self, cache: &mut Cache) -> anyhow::Result<()> {
         let anchor_client = anchor_client::Client::new(
             anchor_client::Cluster::Custom(self.rpc_url.clone(), String::from("")),
             Arc::new(Keypair::new()),
@@ -199,7 +208,7 @@ impl CacheLoader {
         Ok(())
     }
 
-    pub fn load_oracles(&self, cache: &mut Cache) -> anyhow::Result<()> {
+    fn load_oracles(&self, cache: &mut Cache) -> anyhow::Result<()> {
         info!("Loading oracles...");
 
         let oracle_keys = cache.banks.get_oracles();
@@ -351,7 +360,7 @@ impl CacheLoader {
         Ok(())
     }
 
-    pub fn load_mints(&self, cache: &mut Cache) -> anyhow::Result<()> {
+    fn load_mints(&self, cache: &mut Cache) -> anyhow::Result<()> {
         info!("Loading Mints");
         let mint_addresses = cache.banks.get_mints();
         let mint_accounts = self.rpc_client.get_multiple_accounts(&mint_addresses)?;
@@ -374,7 +383,7 @@ impl CacheLoader {
         Ok(())
     }
 
-    pub fn load_tokens(&self, cache: &mut Cache) -> anyhow::Result<()> {
+    fn load_tokens(&self, cache: &mut Cache) -> anyhow::Result<()> {
         info!("Fetching Token accounts...");
 
         let token_addresses = cache.mints.get_token();
