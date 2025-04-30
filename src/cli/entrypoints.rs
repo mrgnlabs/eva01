@@ -8,7 +8,7 @@ use crate::{
     liquidator::Liquidator,
     metrics::{FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS},
     rebalancer::Rebalancer,
-    thread_info,
+    thread_error, thread_info,
     transaction_checker::TransactionChecker,
     transaction_manager::{TransactionData, TransactionManager},
     utils::swb_cranker::SwbCranker,
@@ -130,36 +130,42 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let tm_txn_rx = transaction_rx.clone();
     thread::spawn(move || {
         if let Err(e) = transaction_manager.start(jito_tx, tm_txn_rx) {
-            panic!("TransactionManager failed! {:?}", e);
+            thread_error!("TransactionManager failed! {:?}", e);
+            panic!("Fatal error in TransactionManager!");
         }
     });
     let tc_jito_rx = jito_rx.clone();
     thread::spawn(move || {
         if let Err(e) = transaction_checker.start(tc_jito_rx, pending_bundles) {
-            panic!("TransactionChecker failed! {:?}", e);
+            thread_error!("TransactionChecker failed! {:?}", e);
+            panic!("Fatal error in TransactionChecker!");
         }
     });
 
     thread::spawn(move || {
         if let Err(e) = rebalancer.start() {
-            panic!("Rebalancer failed! {:?}", e);
+            thread_error!("Rebalancer service failed! {:?}", e);
+            panic!("Fatal error in Rebalancer!");
         }
     });
 
     thread::spawn(move || {
         if let Err(e) = liquidator.start() {
-            panic!("Liquidator failed! {:?}", e);
+            thread_error!("The Liquidator service failed! {:?}", e);
+            panic!("Fatal error in the Liquidator service!");
         }
     });
 
     thread::spawn(move || {
         if let Err(e) = geyser_processor.start() {
-            panic!("Geyser processor failed! {:?}", e);
+            thread_error!("Geyser processor failed! {:?}", e);
+            panic!("Fatal error in the Geyser processor!");
         }
     });
     thread::spawn(move || {
         if let Err(e) = geyser_service.start() {
-            panic!("Geyser service failed! {:?}", e);
+            thread_error!("Geyser service failed! {:?}", e);
+            panic!("Fatal error in the Geyser service!");
         }
     });
 
