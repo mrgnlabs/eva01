@@ -112,7 +112,12 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         swb_price_simulator.clone(),
     )?;
 
-    let geyser_service = GeyserService::new(config.general_config, accounts_to_track, geyser_tx)?;
+    let geyser_service = GeyserService::new(
+        config.general_config,
+        accounts_to_track,
+        geyser_tx,
+        stop_liquidator.clone(),
+    )?;
 
     let geyser_processor = GeyserProcessor::new(
         geyser_rx.clone(),
@@ -144,7 +149,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     thread::spawn(move || {
         if let Err(e) = rebalancer.start() {
-            thread_error!("Rebalancer service failed! {:?}", e);
+            thread_error!("Rebalancer failed! {:?}", e);
             panic!("Fatal error in Rebalancer!");
         }
     });
@@ -158,14 +163,14 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     thread::spawn(move || {
         if let Err(e) = geyser_processor.start() {
-            thread_error!("Geyser processor failed! {:?}", e);
-            panic!("Fatal error in the Geyser processor!");
+            thread_error!("GeyserProcessor failed! {:?}", e);
+            panic!("Fatal error in GeyserProcessor!");
         }
     });
     thread::spawn(move || {
         if let Err(e) = geyser_service.start() {
-            thread_error!("Geyser service failed! {:?}", e);
-            panic!("Fatal error in the Geyser service!");
+            thread_error!("GeyserService failed! {:?}", e);
+            panic!("Fatal error in GeyserProcessor!");
         }
     });
 

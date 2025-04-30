@@ -386,7 +386,7 @@ impl CacheLoader {
     fn load_tokens(&self, cache: &mut Cache) -> anyhow::Result<()> {
         info!("Fetching Token accounts...");
 
-        let token_addresses = cache.mints.get_token();
+        let token_addresses = cache.mints.get_tokens();
         let token_accounts = self.rpc_client.get_multiple_accounts(&token_addresses)?;
 
         let mut new_token_addresses: Vec<Pubkey> = vec![];
@@ -489,7 +489,7 @@ impl CacheLoader {
             accounts.insert(oracle_pk, AccountType::Oracle);
         }
 
-        for token in cache.mints.get_token() {
+        for token in cache.mints.get_tokens() {
             accounts.insert(token, AccountType::Token);
         }
 

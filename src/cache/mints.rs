@@ -41,7 +41,7 @@ impl MintsCache {
         ))
     }
 
-    pub fn get_token(&self) -> Vec<Pubkey> {
+    pub fn get_tokens(&self) -> Vec<Pubkey> {
         self.mints.values().map(|mint| mint.token).collect()
     }
 
@@ -110,7 +110,7 @@ mod tests {
             .try_insert(mint_address, mint_account.clone(), token_address)
             .unwrap();
 
-        let tokens = mints_cache.get_token();
+        let tokens = mints_cache.get_tokens();
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0], token_address);
     }

@@ -8,9 +8,12 @@ use crate::{
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
-use marginfi::state::{
-    marginfi_account::MarginfiAccount,
-    price::{OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed},
+use marginfi::{
+    errors::MarginfiError,
+    state::{
+        marginfi_account::MarginfiAccount,
+        price::{OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed},
+    },
 };
 use solana_sdk::{account_info::IntoAccountInfo, clock::Clock};
 use std::sync::{
@@ -53,12 +56,11 @@ impl GeyserProcessor {
             match self.geyser_rx.recv() {
                 Ok(geyser_update) => {
                     if let Err(error) = self.process_update(geyser_update) {
-                        thread_error!("Failed to process Geyser update! {}", error);
+                        log_error(error);
                     }
                 }
                 Err(error) => {
-                    thread_error!("Geyser procesor error: {}!", error);
-                    break;
+                    thread_error!("Geyser processor error: {}!", error);
                 }
             }
         }
@@ -117,6 +119,7 @@ impl GeyserProcessor {
                         let clock = clock_manager::get_clock(&self.clock)?;
                         let oracle_account_info =
                             (&msg.address, &mut msg_account).into_account_info();
+
                         OraclePriceFeedAdapter::try_from_bank_config(
                             &bank_to_update.bank.config,
                             &[oracle_account_info],
@@ -154,5 +157,19 @@ impl GeyserProcessor {
             }
         }
         Ok(())
+    }
+}
+
+fn log_error(error: anyhow::Error) {
+    match error.downcast_ref::<MarginfiError>() {
+        Some(mfi_error) => match mfi_error {
+            MarginfiError::SwitchboardStalePrice | MarginfiError::PythPushStalePrice => {
+                thread_debug!("Discarding the stale price Geyser update! {}", error);
+            }
+            _ => {
+                thread_error!("Failed to process Geyser update! {}", error);
+            }
+        },
+        None => thread_error!("Failed to process Geyser update! {}", error),
     }
 }

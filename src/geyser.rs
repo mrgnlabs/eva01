@@ -9,7 +9,15 @@ use futures::StreamExt;
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
-use std::{collections::HashMap, mem::size_of, thread};
+use std::{
+    collections::HashMap,
+    mem::size_of,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+};
 use tokio::runtime::{Builder, Runtime};
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
@@ -52,6 +60,7 @@ pub struct GeyserService {
     marginfi_group_pk: Pubkey,
     geyser_tx: Sender<GeyserUpdate>,
     tokio_rt: Runtime,
+    stop: Arc<AtomicBool>,
 }
 
 impl GeyserService {
@@ -59,6 +68,7 @@ impl GeyserService {
         config: GeneralConfig,
         tracked_accounts: HashMap<Pubkey, AccountType>,
         geyser_tx: Sender<GeyserUpdate>,
+        stop: Arc<AtomicBool>,
     ) -> Result<Self> {
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("GeyserService")
@@ -76,6 +86,7 @@ impl GeyserService {
             marginfi_group_pk: config.marginfi_group_address,
             geyser_tx,
             tokio_rt,
+            stop,
         })
     }
 
@@ -84,7 +95,7 @@ impl GeyserService {
 
         let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().cloned().collect();
 
-        loop {
+        while !self.stop.load(Ordering::Relaxed) {
             thread_info!("Connecting to Geyser...");
             let sub_req = Self::build_geyser_subscribe_request(
                 &tracked_accounts_vec,
@@ -142,9 +153,16 @@ impl GeyserService {
                         thread_error!("Received error message from Geyser! {:?}", error);
                     }
                 }
+
+                // Breaking the loop on stop request
+                if self.stop.load(Ordering::Relaxed) {
+                    break;
+                }
             }
-            thread_info!("The GeyserService loop is stopped.");
         }
+        thread_info!("The GeyserService loop is stopped.");
+
+        Ok(())
     }
 
     fn send_update(&self, account_type: AccountType, address: Pubkey, account: &Account) {
