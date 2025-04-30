@@ -1,7 +1,4 @@
-use super::{
-    bank::BankWrapperT,
-    oracle::{OracleWrapper, OracleWrapperTrait},
-};
+use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
 use marginfi::constants::EXP_10_I80F48;
 
@@ -10,8 +7,6 @@ pub struct TokenAccountWrapperT<T: OracleWrapperTrait> {
     pub balance: u64,
     pub bank: BankWrapperT<T>,
 }
-
-pub type TokenAccountWrapper = TokenAccountWrapperT<OracleWrapper>;
 
 impl<T: OracleWrapperTrait> TokenAccountWrapperT<T> {
     pub fn get_value(&self) -> anyhow::Result<I80F48> {

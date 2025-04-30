@@ -16,7 +16,7 @@ pub struct BankWrapperT<T: OracleWrapperTrait> {
 
 pub type BankWrapper = BankWrapperT<OracleWrapper>;
 
-impl<T: OracleWrapperTrait> BankWrapperT<T> {
+impl<T: OracleWrapperTrait + Clone> BankWrapperT<T> {
     pub fn new(address: Pubkey, bank: Bank, oracle_adapter: T) -> Self {
         Self {
             address,

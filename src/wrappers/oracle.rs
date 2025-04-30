@@ -9,6 +9,10 @@ pub trait OracleWrapperTrait {
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48>;
+
+    fn get_address(&self) -> Pubkey;
+    fn set_price_adapter(&mut self, adapter: OraclePriceFeedAdapter);
+    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self;
 }
 
 #[derive(Clone)]
@@ -21,15 +25,6 @@ pub struct OracleWrapper {
 }
 
 impl OracleWrapper {
-    pub fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
-        Self {
-            address,
-            price_adapter,
-            simulated_price: None,
-            swb_feed_hash: None,
-        }
-    }
-
     pub fn is_switchboard_pull(&self) -> bool {
         matches!(
             self.price_adapter,
@@ -39,6 +34,14 @@ impl OracleWrapper {
 }
 
 impl OracleWrapperTrait for OracleWrapper {
+    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
+        Self {
+            address,
+            price_adapter,
+            simulated_price: None,
+            swb_feed_hash: None,
+        }
+    }
     fn get_price_of_type(
         &self,
         oracle_type: OraclePriceType,
@@ -53,6 +56,14 @@ impl OracleWrapperTrait for OracleWrapper {
                 .price_adapter
                 .get_price_of_type(oracle_type, price_bias)?),
         }
+    }
+
+    fn get_address(&self) -> Pubkey {
+        self.address
+    }
+
+    fn set_price_adapter(&mut self, adapter: OraclePriceFeedAdapter) {
+        self.price_adapter = adapter;
     }
 }
 
@@ -110,6 +121,14 @@ pub mod test_utils {
     }
 
     impl OracleWrapperTrait for TestOracleWrapper {
+        fn new(_: Pubkey, _: OraclePriceFeedAdapter) -> Self {
+            TestOracleWrapper {
+                price: 42.0,
+                bias: 5.0,
+                address: Pubkey::new_unique(),
+            }
+        }
+
         fn get_price_of_type(
             &self,
             _: OraclePriceType,
@@ -120,6 +139,14 @@ pub mod test_utils {
                 Some(PriceBias::High) => Ok(I80F48::from_num(self.price + self.bias)),
                 None => Ok(I80F48::from_num(self.price)),
             }
+        }
+
+        fn get_address(&self) -> Pubkey {
+            self.address
+        }
+
+        fn set_price_adapter(&mut self, _: OraclePriceFeedAdapter) {
+            () //Noop
         }
     }
 }

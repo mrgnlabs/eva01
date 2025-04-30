@@ -10,8 +10,9 @@ use crate::{
         BankAccountWithPriceFeedEva,
     },
     wrappers::{
-        liquidator_account::LiquidatorAccount, marginfi_account::MarginfiAccountWrapper,
-        oracle::OracleWrapperTrait,
+        liquidator_account::LiquidatorAccount,
+        marginfi_account::MarginfiAccountWrapper,
+        oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
 use anyhow::{anyhow, Result};
@@ -66,7 +67,7 @@ pub struct Rebalancer {
     run_rebalance: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
     tokio_rt: Runtime,
-    cache: Arc<Cache>,
+    cache: Arc<Cache<OracleWrapper>>,
     swb_price_simulator: Arc<SwbCranker>,
 }
 
@@ -78,7 +79,7 @@ impl Rebalancer {
         pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
         run_rebalance: Arc<AtomicBool>,
         stop_liquidator: Arc<AtomicBool>,
-        cache: Arc<Cache>,
+        cache: Arc<Cache<OracleWrapper>>,
         swb_price_simulator: Arc<SwbCranker>,
     ) -> anyhow::Result<Self> {
         let txn_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));

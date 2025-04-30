@@ -1,6 +1,6 @@
 use crate::{
     cache::Cache,
-    cache_loader::CacheLoader,
+    cache_loader::{get_accounts_to_track, CacheLoader},
     clock_manager::{self, ClockManager},
     config::Eva01Config,
     geyser::{GeyserService, GeyserUpdate},
@@ -68,7 +68,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     )?;
     cache_loader.load_cache(&mut cache)?;
 
-    let accounts_to_track = cache_loader.get_accounts_to_track(&cache);
+    let accounts_to_track = get_accounts_to_track(&cache);
 
     let cache = Arc::new(cache);
 

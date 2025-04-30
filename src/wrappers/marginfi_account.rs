@@ -1,6 +1,7 @@
 use crate::cache::Cache;
 
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
+use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::marginfi_account::{BalanceSide, LendingAccount};
@@ -39,7 +40,11 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_deposits(&self, mints_to_exclude: &[Pubkey], cache: Arc<Cache>) -> Vec<Pubkey> {
+    pub fn get_deposits<T: OracleWrapperTrait + Clone>(
+        &self,
+        mints_to_exclude: &[Pubkey],
+        cache: Arc<Cache<T>>,
+    ) -> Vec<Pubkey> {
         self.lending_account
             .balances
             .iter()
@@ -111,12 +116,12 @@ impl MarginfiAccountWrapper {
     }
 
     // TODO: add more unit tests
-    pub fn get_observation_accounts(
+    pub fn get_observation_accounts<T: OracleWrapperTrait + Clone>(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
-        cache: Arc<Cache>,
-    ) -> Vec<Pubkey> {
+        cache: Arc<Cache<T>>,
+    ) -> Result<Vec<Pubkey>> {
         // This is a temporary fix to ensure the proper order of the remaining accounts.
         // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320
         let active_bank_pks = MarginfiAccountWrapper::get_active_banks(lending_account);
@@ -142,34 +147,33 @@ impl MarginfiAccountWrapper {
         bank_pks.retain(|bank_pk| !exclude_banks.contains(bank_pk));
 
         // Add bank oracles
-        bank_pks
-            .iter()
-            .flat_map(|bank_pk| {
-                let bank = cache.banks.get_account(bank_pk).unwrap();
-                let bank_oracle_wrapper = cache.oracles.get_wrapper_from_bank(bank_pk).unwrap();
-                debug!(
-                    "Observation account Bank: {:?}, asset tag type: {:?}.",
-                    bank_pk, bank.config.asset_tag
-                );
+        let result = bank_pks.iter().flat_map(|bank_pk| {
+            let bank = cache.banks.try_get_account(bank_pk)?;
+            let bank_oracle_wrapper = cache.oracles.try_get_wrapper_from_bank(bank_pk)?;
+            debug!(
+                "Observation account Bank: {:?}, asset tag type: {:?}.",
+                bank_pk, bank.config.asset_tag
+            );
 
-                if bank.config.oracle_keys[1] != Pubkey::default()
-                    && bank.config.oracle_keys[2] != Pubkey::default()
-                {
-                    debug!(
-                        "Observation accounts for the bank {:?} will contain Oracle keys!",
-                        bank_pk
-                    );
-                    vec![
-                        *bank_pk,
-                        bank_oracle_wrapper.address,
-                        bank.config.oracle_keys[1],
-                        bank.config.oracle_keys[2],
-                    ]
-                } else {
-                    vec![*bank_pk, bank_oracle_wrapper.address]
-                }
-            })
-            .collect::<Vec<Pubkey>>()
+            if bank.config.oracle_keys[1] != Pubkey::default()
+                && bank.config.oracle_keys[2] != Pubkey::default()
+            {
+                debug!(
+                    "Observation accounts for the bank {:?} will contain Oracle keys!",
+                    bank_pk
+                );
+                Ok::<Vec<Pubkey>, Error>(vec![
+                    *bank_pk,
+                    bank_oracle_wrapper.get_address(),
+                    bank.config.oracle_keys[1],
+                    bank.config.oracle_keys[2],
+                ])
+            } else {
+                Ok(vec![*bank_pk, bank_oracle_wrapper.get_address()])
+            }
+        });
+
+        Ok(result.into_iter().flatten().collect())
     }
 }
 
@@ -275,6 +279,8 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
 
+    use solana_sdk::account::{create_account_for_test, Account};
+
     use crate::wrappers::bank::test_utils::TestBankWrapper;
 
     use super::*;
@@ -286,7 +292,10 @@ mod tests {
         let sol_bank = TestBankWrapper::test_sol();
         let usdc_bank = TestBankWrapper::test_usdc();
 
-        let cache = create_test_cache();
+        let mut cache = create_test_cache();
+        cache.banks.insert(sol_bank.address, sol_bank.bank);
+        cache.banks.insert(usdc_bank.address, usdc_bank.bank);
+
         let cache = Arc::new(cache);
 
         let healthy = MarginfiAccountWrapper::test_healthy(sol_bank.clone(), usdc_bank.clone());
@@ -361,11 +370,23 @@ mod tests {
     #[test]
     fn test_get_healthy_observation_accounts() {
         let sol_bank = TestBankWrapper::test_sol();
+        let sol_oracle_address = sol_bank.oracle_adapter.get_address();
         let usdc_bank = TestBankWrapper::test_usdc();
         let healthy_wrapper =
             MarginfiAccountWrapper::test_healthy(sol_bank.clone(), usdc_bank.clone());
 
-        let cache = create_test_cache();
+        let mut cache = create_test_cache();
+        cache.banks.insert(sol_bank.address, sol_bank.bank);
+        cache.banks.insert(usdc_bank.address, usdc_bank.bank);
+        cache
+            .oracles
+            .try_insert(
+                Account::new(0, 0, &Pubkey::new_unique()),
+                sol_bank.oracle_adapter,
+                sol_bank.address,
+            )
+            .unwrap();
+
         let cache = Arc::new(cache);
 
         assert_eq!(
@@ -374,10 +395,11 @@ mod tests {
                 &[],
                 &[],
                 cache.clone()
-            ),
+            )
+            .unwrap(),
             vec![
                 sol_bank.address,
-                sol_bank.oracle_adapter.address,
+                sol_oracle_address,
                 usdc_bank.address,
                 usdc_bank.oracle_adapter.address
             ]
@@ -400,7 +422,8 @@ mod tests {
                 &[],
                 &[],
                 cache
-            ),
+            )
+            .unwrap(),
             vec![]
         );
     }
@@ -424,7 +447,8 @@ mod tests {
                 &banks_to_include,
                 &banks_to_exclude,
                 cache
-            ),
+            )
+            .unwrap(),
             vec![
                 sol_bank.address,
                 sol_bank.oracle_adapter.address,
