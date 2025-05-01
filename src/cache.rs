@@ -101,6 +101,22 @@ pub mod test_utils {
         );
 
         for bank_wrapper in bank_wrappers {
+            cache
+                .mints
+                .try_insert(
+                    bank_wrapper.bank.mint,
+                    Account::default(),
+                    Pubkey::new_unique(),
+                )
+                .unwrap();
+            cache
+                .tokens
+                .try_insert(
+                    Pubkey::new_unique(),
+                    Account::default(),
+                    bank_wrapper.bank.mint,
+                )
+                .unwrap();
             cache.banks.insert(bank_wrapper.address, bank_wrapper.bank);
 
             let oracle_account = Account::new(0, 0, &Pubkey::new_unique());

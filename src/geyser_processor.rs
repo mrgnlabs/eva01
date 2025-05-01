@@ -1,10 +1,10 @@
 use crate::{
-    cache::Cache,
+    cache::CacheT,
     clock_manager,
     geyser::{AccountType, GeyserUpdate},
     thread_debug, thread_error, thread_info,
     utils::load_swb_pull_account_from_bytes,
-    wrappers::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper},
+    wrappers::{marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait},
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
@@ -22,23 +22,23 @@ use std::sync::{
 };
 use switchboard_on_demand_client::PullFeedAccountData;
 
-pub struct GeyserProcessor {
+pub struct GeyserProcessor<T: OracleWrapperTrait + Clone> {
     geyser_rx: Receiver<GeyserUpdate>,
     run_liquidation: Arc<AtomicBool>,
     run_rebalance: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     clock: Arc<Mutex<Clock>>,
-    cache: Arc<Cache>,
+    cache: Arc<CacheT<T>>,
 }
 
-impl GeyserProcessor {
+impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
     pub fn new(
         geyser_rx: Receiver<GeyserUpdate>,
         run_liquidation: Arc<AtomicBool>,
         run_rebalance: Arc<AtomicBool>,
         stop: Arc<AtomicBool>,
         clock: Arc<Mutex<Clock>>,
-        cache: Arc<Cache>,
+        cache: Arc<CacheT<T>>,
     ) -> Result<Self> {
         Ok(Self {
             geyser_rx,
@@ -73,8 +73,7 @@ impl GeyserProcessor {
         match msg.account_type {
             AccountType::Oracle => {
                 let bank_address = self.cache.oracles.try_get_bank_from_oracle(&msg.address)?;
-                let mut bank_to_update: BankWrapper =
-                    self.cache.try_get_bank_wrapper(&bank_address)?;
+                let mut bank_to_update = self.cache.try_get_bank_wrapper(&bank_address)?;
 
                 let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup {
                     OracleSetup::SwitchboardPull => {
@@ -85,7 +84,7 @@ impl GeyserProcessor {
                         let swb_feed = load_swb_pull_account_from_bytes(&offsets_data).unwrap();
 
                         let feed_hash = hex::encode(swb_feed.feed_hash);
-                        bank_to_update.oracle_adapter.swb_feed_hash = Some(feed_hash);
+                        bank_to_update.oracle_adapter.set_swb_feed_hash(feed_hash);
 
                         OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
                             feed: Box::new((&swb_feed).into()),
@@ -171,5 +170,102 @@ fn log_error(error: anyhow::Error) {
             }
         },
         None => thread_error!("Failed to process Geyser update! {}", error),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use crate::{
+        cache::test_utils::create_test_cache, wrappers::bank::test_utils::TestBankWrapper,
+    };
+
+    use super::*;
+    use crossbeam::channel::unbounded;
+    use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
+    use std::sync::{atomic::AtomicBool, Arc, Mutex};
+
+    #[test]
+    fn test_geyser_processor_new() {
+        let (_, receiver) = unbounded();
+        let run_liquidation = Arc::new(AtomicBool::new(false));
+        let run_rebalance = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let clock = Arc::new(Mutex::new(Clock::default()));
+        let cache = Arc::new(create_test_cache(&Vec::new()));
+
+        let processor = GeyserProcessor::new(
+            receiver,
+            run_liquidation.clone(),
+            run_rebalance.clone(),
+            stop.clone(),
+            clock.clone(),
+            cache.clone(),
+        );
+
+        assert!(processor.is_ok());
+    }
+
+    #[test]
+    fn test_geyser_processor_start_stop() {
+        let (_, receiver) = unbounded();
+        let run_liquidation = Arc::new(AtomicBool::new(false));
+        let run_rebalance = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let clock = Arc::new(Mutex::new(Clock::default()));
+        let cache = Arc::new(create_test_cache(&Vec::new()));
+
+        let processor = GeyserProcessor::new(
+            receiver,
+            run_liquidation.clone(),
+            run_rebalance.clone(),
+            stop.clone(),
+            clock.clone(),
+            cache.clone(),
+        )
+        .unwrap();
+
+        // Simulate stopping the processor
+        stop.store(true, Ordering::Relaxed);
+        let result = processor.start();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_process_update_token() {
+        let (_, receiver) = unbounded();
+        let run_liquidation = Arc::new(AtomicBool::new(false));
+        let run_rebalance = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let clock = Arc::new(Mutex::new(Clock::default()));
+
+        let sol_bank = TestBankWrapper::test_sol();
+        let usdc_bank = TestBankWrapper::test_usdc();
+        let mut cache = create_test_cache(&vec![sol_bank.clone(), usdc_bank.clone()]);
+
+        let token_address = Pubkey::new_unique();
+        cache
+            .tokens
+            .try_insert(token_address, Account::default(), sol_bank.bank.mint)
+            .unwrap();
+
+        let cache = Arc::new(cache);
+
+        let processor = GeyserProcessor::new(
+            receiver,
+            run_liquidation.clone(),
+            run_rebalance.clone(),
+            stop.clone(),
+            clock.clone(),
+            cache.clone(),
+        )
+        .unwrap();
+
+        let geyser_update = GeyserUpdate {
+            account_type: AccountType::Token,
+            address: token_address,
+            account: Default::default(),
+        };
+
+        let result = processor.process_update(geyser_update);
+        result.unwrap();
     }
 }

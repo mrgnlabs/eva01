@@ -4,15 +4,15 @@ use marginfi::state::price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapt
 use solana_program::pubkey::Pubkey;
 
 pub trait OracleWrapperTrait {
+    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self;
     fn get_price_of_type(
         &self,
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48>;
-
     fn get_address(&self) -> Pubkey;
+    fn set_swb_feed_hash(&mut self, hash: String);
     fn set_price_adapter(&mut self, adapter: OraclePriceFeedAdapter);
-    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self;
 }
 
 #[derive(Clone)]
@@ -60,6 +60,10 @@ impl OracleWrapperTrait for OracleWrapper {
 
     fn get_address(&self) -> Pubkey {
         self.address
+    }
+
+    fn set_swb_feed_hash(&mut self, hash: String) {
+        self.swb_feed_hash = Some(hash);
     }
 
     fn set_price_adapter(&mut self, adapter: OraclePriceFeedAdapter) {
@@ -143,6 +147,10 @@ pub mod test_utils {
 
         fn get_address(&self) -> Pubkey {
             self.address
+        }
+
+        fn set_swb_feed_hash(&mut self, _: String) {
+            () //Noop
         }
 
         fn set_price_adapter(&mut self, _: OraclePriceFeedAdapter) {
