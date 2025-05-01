@@ -85,18 +85,36 @@ impl<T: OracleWrapperTrait + Clone> CacheT<T> {
 
 #[cfg(test)]
 pub mod test_utils {
-    use solana_sdk::pubkey::Pubkey;
+    use solana_sdk::{account::Account, pubkey::Pubkey};
 
-    use crate::wrappers::oracle::test_utils::TestOracleWrapper;
+    use crate::wrappers::{
+        bank::test_utils::TestBankWrapper, oracle::test_utils::TestOracleWrapper,
+    };
 
     use super::CacheT;
 
-    pub fn create_test_cache() -> CacheT<TestOracleWrapper> {
-        CacheT::new(
+    pub fn create_test_cache(bank_wrappers: &Vec<TestBankWrapper>) -> CacheT<TestOracleWrapper> {
+        let mut cache = CacheT::<TestOracleWrapper>::new(
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Pubkey::new_unique(),
-        )
+        );
+
+        for bank_wrapper in bank_wrappers {
+            cache.banks.insert(bank_wrapper.address, bank_wrapper.bank);
+
+            let oracle_account = Account::new(0, 0, &Pubkey::new_unique());
+            cache
+                .oracles
+                .try_insert(
+                    oracle_account,
+                    bank_wrapper.oracle_adapter.clone(),
+                    bank_wrapper.address,
+                )
+                .unwrap();
+        }
+
+        cache
     }
 }
 

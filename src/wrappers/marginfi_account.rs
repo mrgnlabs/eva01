@@ -194,8 +194,8 @@ pub mod test_utils {
 
     impl MarginfiAccountWrapper {
         pub fn test_healthy(
-            asset_bank: BankWrapperT<TestOracleWrapper>,
-            liability_bank: BankWrapperT<TestOracleWrapper>,
+            asset_bank: &BankWrapperT<TestOracleWrapper>,
+            liability_bank: &BankWrapperT<TestOracleWrapper>,
         ) -> Self {
             let balances: [Balance; 16] = array::from_fn(|i| match i {
                 0 => Balance {
@@ -279,8 +279,6 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
 
-    use solana_sdk::account::{create_account_for_test, Account};
-
     use crate::wrappers::bank::test_utils::TestBankWrapper;
 
     use super::*;
@@ -292,13 +290,13 @@ mod tests {
         let sol_bank = TestBankWrapper::test_sol();
         let usdc_bank = TestBankWrapper::test_usdc();
 
-        let mut cache = create_test_cache();
+        let mut cache = create_test_cache(&Vec::new());
         cache.banks.insert(sol_bank.address, sol_bank.bank);
         cache.banks.insert(usdc_bank.address, usdc_bank.bank);
 
         let cache = Arc::new(cache);
 
-        let healthy = MarginfiAccountWrapper::test_healthy(sol_bank.clone(), usdc_bank.clone());
+        let healthy = MarginfiAccountWrapper::test_healthy(&sol_bank, &usdc_bank);
         assert!(healthy.has_liabs());
         assert_eq!(
             healthy.get_liabilities_shares(),
@@ -372,21 +370,9 @@ mod tests {
         let sol_bank = TestBankWrapper::test_sol();
         let sol_oracle_address = sol_bank.oracle_adapter.get_address();
         let usdc_bank = TestBankWrapper::test_usdc();
-        let healthy_wrapper =
-            MarginfiAccountWrapper::test_healthy(sol_bank.clone(), usdc_bank.clone());
+        let healthy_wrapper = MarginfiAccountWrapper::test_healthy(&sol_bank, &usdc_bank);
 
-        let mut cache = create_test_cache();
-        cache.banks.insert(sol_bank.address, sol_bank.bank);
-        cache.banks.insert(usdc_bank.address, usdc_bank.bank);
-        cache
-            .oracles
-            .try_insert(
-                Account::new(0, 0, &Pubkey::new_unique()),
-                sol_bank.oracle_adapter,
-                sol_bank.address,
-            )
-            .unwrap();
-
+        let cache = create_test_cache(&vec![sol_bank.clone(), usdc_bank.clone()]);
         let cache = Arc::new(cache);
 
         assert_eq!(
@@ -407,13 +393,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_get_unhealthy_observation_accounts() {
         let unhealthy_wrapper = MarginfiAccountWrapper::test_unhealthy();
-        //        let sol_bank = TestBankWrapper::test_sol();
-        //        let usdc_bank = TestBankWrapper::test_usdc();
-
-        let cache = create_test_cache();
+        let cache = create_test_cache(&Vec::new());
         let cache = Arc::new(cache);
 
         assert_eq!(
@@ -430,16 +412,20 @@ mod tests {
 
     #[test]
     fn test_get_observation_accounts_with_banks_to_include_banks() {
-        let sol_bank = TestBankWrapper::test_sol();
-        let usdc_bank = TestBankWrapper::test_usdc();
-        let bonk_bank = TestBankWrapper::test_bonk();
-        let healthy_wrapper =
-            MarginfiAccountWrapper::test_healthy(sol_bank.clone(), usdc_bank.clone());
-
-        let cache = create_test_cache();
+        let sol_bank_wrapper = TestBankWrapper::test_sol();
+        let usdc_bank_wrapper = TestBankWrapper::test_usdc();
+        let bonk_bank_wrapper = TestBankWrapper::test_bonk();
+        let cache = create_test_cache(&vec![
+            sol_bank_wrapper.clone(),
+            usdc_bank_wrapper.clone(),
+            bonk_bank_wrapper.clone(),
+        ]);
         let cache = Arc::new(cache);
 
-        let banks_to_include = vec![bonk_bank.address];
+        let healthy_wrapper =
+            MarginfiAccountWrapper::test_healthy(&sol_bank_wrapper, &usdc_bank_wrapper);
+
+        let banks_to_include = vec![bonk_bank_wrapper.address];
         let banks_to_exclude = vec![];
         assert_eq!(
             MarginfiAccountWrapper::get_observation_accounts(
@@ -450,12 +436,12 @@ mod tests {
             )
             .unwrap(),
             vec![
-                sol_bank.address,
-                sol_bank.oracle_adapter.address,
-                usdc_bank.address,
-                usdc_bank.oracle_adapter.address,
-                bonk_bank.address,
-                bonk_bank.oracle_adapter.address
+                sol_bank_wrapper.address,
+                sol_bank_wrapper.oracle_adapter.address,
+                usdc_bank_wrapper.address,
+                usdc_bank_wrapper.oracle_adapter.address,
+                bonk_bank_wrapper.address,
+                bonk_bank_wrapper.oracle_adapter.address
             ]
         );
     }

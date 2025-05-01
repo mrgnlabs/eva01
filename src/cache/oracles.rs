@@ -23,13 +23,18 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
         }
     }
 
-    pub fn try_insert(&mut self, account: Account, wrapper: T, bank_address: Pubkey) -> Result<()> {
-        let oracle_address = wrapper.get_address();
+    pub fn try_insert(
+        &mut self,
+        account: Account,
+        account_wrapper: T,
+        bank_address: Pubkey,
+    ) -> Result<()> {
+        let oracle_address = account_wrapper.get_address();
         self.accounts.insert(oracle_address, account);
         self.account_wrappers
             .write()
             .map_err(|e| anyhow!("Failed to lock the account_wrappers map for insert! {}", e))?
-            .insert(oracle_address, wrapper);
+            .insert(oracle_address, account_wrapper);
         self.oracle_to_bank.insert(oracle_address, bank_address);
         self.bank_to_oracle.insert(bank_address, oracle_address);
 
