@@ -1,4 +1,4 @@
-use crate::cache::Cache;
+use crate::cache::CacheT;
 
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use anyhow::{Error, Result};
@@ -43,7 +43,7 @@ impl MarginfiAccountWrapper {
     pub fn get_deposits<T: OracleWrapperTrait + Clone>(
         &self,
         mints_to_exclude: &[Pubkey],
-        cache: Arc<Cache<T>>,
+        cache: Arc<CacheT<T>>,
     ) -> Vec<Pubkey> {
         self.lending_account
             .balances
@@ -120,7 +120,7 @@ impl MarginfiAccountWrapper {
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
-        cache: Arc<Cache<T>>,
+        cache: Arc<CacheT<T>>,
     ) -> Result<Vec<Pubkey>> {
         // This is a temporary fix to ensure the proper order of the remaining accounts.
         // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320

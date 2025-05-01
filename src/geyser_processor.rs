@@ -4,9 +4,7 @@ use crate::{
     geyser::{AccountType, GeyserUpdate},
     thread_debug, thread_error, thread_info,
     utils::load_swb_pull_account_from_bytes,
-    wrappers::{
-        bank::BankWrapper, marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapper,
-    },
+    wrappers::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper},
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
@@ -30,7 +28,7 @@ pub struct GeyserProcessor {
     run_rebalance: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     clock: Arc<Mutex<Clock>>,
-    cache: Arc<Cache<OracleWrapper>>,
+    cache: Arc<Cache>,
 }
 
 impl GeyserProcessor {
@@ -40,7 +38,7 @@ impl GeyserProcessor {
         run_rebalance: Arc<AtomicBool>,
         stop: Arc<AtomicBool>,
         clock: Arc<Mutex<Clock>>,
-        cache: Arc<Cache<OracleWrapper>>,
+        cache: Arc<Cache>,
     ) -> Result<Self> {
         Ok(Self {
             geyser_rx,

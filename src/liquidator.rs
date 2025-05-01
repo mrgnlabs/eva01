@@ -6,10 +6,8 @@ use crate::{
     transaction_manager::TransactionData,
     utils::{swb_cranker::SwbCranker, BankAccountWithPriceFeedEva},
     wrappers::{
-        bank::BankWrapper,
-        liquidator_account::LiquidatorAccount,
-        marginfi_account::MarginfiAccountWrapper,
-        oracle::{OracleWrapper, OracleWrapperTrait},
+        bank::BankWrapper, liquidator_account::LiquidatorAccount,
+        marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait,
     },
 };
 use anyhow::{anyhow, Result};
@@ -39,7 +37,7 @@ pub struct Liquidator {
     config: LiquidatorCfg,
     run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
-    cache: Arc<Cache<OracleWrapper>>,
+    cache: Arc<Cache>,
     swb_price_simulator: Arc<SwbCranker>,
 }
 
@@ -59,7 +57,7 @@ impl Liquidator {
         transaction_sender: Sender<TransactionData>,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         stop_liquidator: Arc<AtomicBool>,
-        cache: Arc<Cache<OracleWrapper>>,
+        cache: Arc<Cache>,
         swb_price_simulator: Arc<SwbCranker>,
     ) -> Result<Self> {
         let liquidator_account = LiquidatorAccount::new(

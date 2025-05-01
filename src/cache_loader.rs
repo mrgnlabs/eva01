@@ -35,7 +35,7 @@ use switchboard_on_demand_client::PullFeedAccountData;
 use tokio::runtime::{Builder, Runtime};
 
 use crate::{
-    cache::Cache,
+    cache::CacheT,
     clock_manager,
     geyser::AccountType,
     sender::{SenderCfg, TransactionSender},
@@ -83,7 +83,7 @@ impl CacheLoader {
 
     pub fn load_cache<T: OracleWrapperTrait + Clone>(
         &self,
-        cache: &mut Cache<T>,
+        cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
         self.load_marginfi_accounts(cache)?;
         self.load_banks(cache)?;
@@ -95,7 +95,7 @@ impl CacheLoader {
 
     fn load_marginfi_accounts<T: OracleWrapperTrait + Clone>(
         &self,
-        cache: &mut Cache<T>,
+        cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
         info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
@@ -189,7 +189,7 @@ impl CacheLoader {
 
     fn load_banks<T: OracleWrapperTrait + Clone>(
         &self,
-        cache: &mut Cache<T>,
+        cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
         let anchor_client = anchor_client::Client::new(
             anchor_client::Cluster::Custom(self.rpc_url.clone(), String::from("")),
@@ -219,7 +219,7 @@ impl CacheLoader {
 
     fn load_oracles<T: OracleWrapperTrait + Clone>(
         &self,
-        cache: &mut Cache<T>,
+        cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
         info!("Loading oracles...");
 
@@ -374,7 +374,7 @@ impl CacheLoader {
 
     fn load_mints<T: OracleWrapperTrait + Clone>(
         &self,
-        cache: &mut Cache<T>,
+        cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
         info!("Loading Mints");
         let mint_addresses = cache.banks.get_mints();
@@ -400,7 +400,7 @@ impl CacheLoader {
 
     fn load_tokens<T: OracleWrapperTrait + Clone>(
         &self,
-        cache: &mut Cache<T>,
+        cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
         info!("Fetching Token accounts...");
 
@@ -502,7 +502,7 @@ impl CacheLoader {
 }
 
 pub fn get_accounts_to_track<T: OracleWrapperTrait + Clone>(
-    cache: &Cache<T>,
+    cache: &CacheT<T>,
 ) -> HashMap<Pubkey, AccountType> {
     let mut accounts: HashMap<Pubkey, AccountType> = HashMap::new();
 

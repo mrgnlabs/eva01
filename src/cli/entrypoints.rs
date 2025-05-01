@@ -1,5 +1,5 @@
 use crate::{
-    cache::Cache,
+    cache::CacheT,
     cache_loader::{get_accounts_to_track, CacheLoader},
     clock_manager::{self, ClockManager},
     config::Eva01Config,
@@ -55,7 +55,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     )?;
 
     info!("Loading Cache...");
-    let mut cache = Cache::new(
+    let mut cache = CacheT::new(
         config.general_config.signer_pubkey,
         config.general_config.marginfi_program_id,
         config.general_config.marginfi_group_address,

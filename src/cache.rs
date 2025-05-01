@@ -15,11 +15,13 @@ use tokens::TokensCache;
 use crate::{
     utils::accessor,
     wrappers::{
-        bank::BankWrapperT, oracle::OracleWrapperTrait, token_account::TokenAccountWrapperT,
+        bank::BankWrapperT,
+        oracle::{OracleWrapper, OracleWrapperTrait},
+        token_account::TokenAccountWrapperT,
     },
 };
 
-pub struct Cache<T: OracleWrapperTrait + Clone> {
+pub struct CacheT<T: OracleWrapperTrait + Clone> {
     pub signer_pk: Pubkey,
     pub marginfi_program_id: Pubkey,
     pub marginfi_group_address: Pubkey,
@@ -30,7 +32,9 @@ pub struct Cache<T: OracleWrapperTrait + Clone> {
     pub tokens: TokensCache,
 }
 
-impl<T: OracleWrapperTrait + Clone> Cache<T> {
+pub type Cache = CacheT<OracleWrapper>;
+
+impl<T: OracleWrapperTrait + Clone> CacheT<T> {
     pub fn new(
         signer_pk: Pubkey,
         marginfi_program_id: Pubkey,
@@ -85,10 +89,10 @@ pub mod test_utils {
 
     use crate::wrappers::oracle::test_utils::TestOracleWrapper;
 
-    use super::Cache;
+    use super::CacheT;
 
-    pub fn create_test_cache() -> Cache<TestOracleWrapper> {
-        Cache::new(
+    pub fn create_test_cache() -> CacheT<TestOracleWrapper> {
+        CacheT::new(
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Pubkey::new_unique(),
@@ -108,8 +112,8 @@ mod tests {
         let signer_pk = Pubkey::new_unique();
         let marginfi_program_id = Pubkey::new_unique();
         let marginfi_group_address = Pubkey::new_unique();
-        let cache: Cache<TestOracleWrapper> =
-            Cache::new(signer_pk, marginfi_program_id, marginfi_group_address);
+        let cache: CacheT<TestOracleWrapper> =
+            CacheT::new(signer_pk, marginfi_program_id, marginfi_group_address);
         assert_eq!(cache.signer_pk, signer_pk);
         assert_eq!(cache.marginfi_program_id, marginfi_program_id);
         assert_eq!(cache.marginfi_group_address, marginfi_group_address);

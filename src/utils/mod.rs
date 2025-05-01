@@ -36,10 +36,7 @@ use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 use crate::{
     cache::Cache,
-    wrappers::{
-        bank::BankWrapper,
-        oracle::{OracleWrapper, OracleWrapperTrait},
-    },
+    wrappers::{bank::BankWrapper, oracle::OracleWrapperTrait},
 };
 
 pub struct BatchLoadingConfig {
@@ -287,7 +284,7 @@ pub struct BankAccountWithPriceFeedEva<'a> {
 impl<'a> BankAccountWithPriceFeedEva<'a> {
     pub fn load(
         lending_account: &'a LendingAccount,
-        cache: Arc<Cache<OracleWrapper>>,
+        cache: Arc<Cache>,
     ) -> anyhow::Result<Vec<BankAccountWithPriceFeedEva<'a>>> {
         let active_balances = lending_account
             .balances

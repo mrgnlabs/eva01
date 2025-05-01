@@ -1,4 +1,4 @@
-use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapper};
+use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     cache::Cache,
     config::GeneralConfig,
@@ -46,7 +46,7 @@ pub struct LiquidatorAccount {
     pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     compute_unit_limit: u32,
     tokio_rt: Runtime,
-    cache: Arc<Cache<OracleWrapper>>,
+    cache: Arc<Cache>,
 }
 
 impl LiquidatorAccount {
@@ -54,7 +54,7 @@ impl LiquidatorAccount {
         transaction_tx: Sender<TransactionData>,
         config: &GeneralConfig,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
-        cache: Arc<Cache<OracleWrapper>>,
+        cache: Arc<Cache>,
     ) -> Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
         let liquidator_address = config.liquidator_account;

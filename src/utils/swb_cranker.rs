@@ -1,6 +1,4 @@
-use crate::{
-    cache::Cache, crossbar::CrossbarMaintainer, thread_info, wrappers::oracle::OracleWrapper,
-};
+use crate::{cache::Cache, crossbar::CrossbarMaintainer, thread_info};
 use anyhow::Result;
 use std::{
     sync::{
@@ -25,12 +23,12 @@ impl Drop for ResetFlag {
 pub struct SwbCranker {
     tokio_rt: Runtime,
     crossbar_client: CrossbarMaintainer,
-    cache: Arc<Cache<OracleWrapper>>,
+    cache: Arc<Cache>,
     simulation_is_running: Arc<AtomicBool>,
 }
 
 impl SwbCranker {
-    pub fn new(cache: Arc<Cache<OracleWrapper>>) -> Result<Self> {
+    pub fn new(cache: Arc<Cache>) -> Result<Self> {
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("SwbPriceSimulator")
             .worker_threads(2)
