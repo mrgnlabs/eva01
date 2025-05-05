@@ -111,7 +111,7 @@ impl Liquidator {
 
                 thread_debug!("The Liquidation process is complete.");
             } else {
-                thread::sleep(Duration::from_millis(1000))
+                thread::sleep(Duration::from_secs(1))
             }
         }
         info!("The Liquidator loop is stopped.");

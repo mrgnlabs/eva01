@@ -24,7 +24,7 @@ use solana_sdk::{
     system_instruction::transfer,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     str::FromStr,
     sync::{Arc, RwLock},
 };
@@ -37,7 +37,6 @@ pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
     pub signer_keypair: Arc<Keypair>,
     program_id: Pubkey,
-    token_program_per_mint: HashMap<Pubkey, Pubkey>,
     group: Pubkey,
     pub transaction_tx: Sender<TransactionData>,
     pub swb_gateway: Gateway,
@@ -83,7 +82,6 @@ impl LiquidatorAccount {
             program_id: config.marginfi_program_id,
             group: marginfi_account.group,
             transaction_tx,
-            token_program_per_mint: HashMap::new(),
             swb_gateway,
             rpc_client,
             non_blocking_rpc_client,
@@ -196,7 +194,7 @@ impl LiquidatorAccount {
             liab_bank,
             signer_pk,
             liquidatee_account_address,
-            *self.token_program_per_mint.get(&liab_mint).unwrap(),
+            self.cache.mints.try_get_account(&liab_mint)?.account.owner,
             joined_observation_accounts,
             asset_amount,
         );
@@ -320,8 +318,6 @@ impl LiquidatorAccount {
         )?;
 
         let mint = bank.bank.mint;
-        let token_program = *self.token_program_per_mint.get(&mint).unwrap();
-
         let withdraw_ix = make_withdraw_ix(
             self.program_id,
             self.group,
@@ -329,7 +325,7 @@ impl LiquidatorAccount {
             signer_pk,
             bank,
             token_account,
-            token_program,
+            self.cache.mints.try_get_account(&mint)?.account.owner,
             observation_accounts,
             amount,
             withdraw_all,
@@ -378,7 +374,6 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-        let token_program = *self.token_program_per_mint.get(&mint).unwrap();
 
         let repay_ix = make_repay_ix(
             self.program_id,
@@ -387,7 +382,7 @@ impl LiquidatorAccount {
             signer_pk,
             bank,
             *token_account,
-            token_program,
+            self.cache.mints.try_get_account(&mint)?.account.owner,
             amount,
             repay_all,
         );
@@ -430,7 +425,6 @@ impl LiquidatorAccount {
 
         let mint = bank.bank.mint;
 
-        let token_program = *self.token_program_per_mint.get(&mint).unwrap();
         let deposit_ix = make_deposit_ix(
             self.program_id,
             self.group,
@@ -438,7 +432,7 @@ impl LiquidatorAccount {
             signer_pk,
             bank,
             token_account,
-            token_program,
+            self.cache.mints.try_get_account(&mint)?.account.owner,
             amount,
         );
 

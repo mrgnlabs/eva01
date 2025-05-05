@@ -101,21 +101,16 @@ pub mod test_utils {
         );
 
         for bank_wrapper in bank_wrappers {
+            let token_address = Pubkey::new_unique();
+            let mut token_account = Account::default();
+            token_account.data.resize(128, 0);
             cache
                 .mints
-                .try_insert(
-                    bank_wrapper.bank.mint,
-                    Account::default(),
-                    Pubkey::new_unique(),
-                )
+                .try_insert(bank_wrapper.bank.mint, Account::default(), token_address)
                 .unwrap();
             cache
                 .tokens
-                .try_insert(
-                    Pubkey::new_unique(),
-                    Account::default(),
-                    bank_wrapper.bank.mint,
-                )
+                .try_insert(token_address, token_account, bank_wrapper.bank.mint)
                 .unwrap();
             cache.banks.insert(bank_wrapper.address, bank_wrapper.bank);
 
@@ -136,7 +131,12 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use crate::wrappers::oracle::test_utils::TestOracleWrapper;
+    use std::sync::Arc;
+
+    use crate::{
+        cache::test_utils::create_test_cache,
+        wrappers::{bank::test_utils::TestBankWrapper, oracle::test_utils::TestOracleWrapper},
+    };
 
     use super::*;
     use solana_sdk::pubkey::Pubkey;
@@ -151,5 +151,17 @@ mod tests {
         assert_eq!(cache.signer_pk, signer_pk);
         assert_eq!(cache.marginfi_program_id, marginfi_program_id);
         assert_eq!(cache.marginfi_group_address, marginfi_group_address);
+    }
+
+    #[test]
+    fn test_try_get_token_wrapper() {
+        let sol_bank_wrapper = TestBankWrapper::test_sol();
+        let usdc_bank_wrapper = TestBankWrapper::test_usdc();
+        let cache = create_test_cache(&vec![sol_bank_wrapper.clone(), usdc_bank_wrapper.clone()]);
+        let cache = Arc::new(cache);
+
+        let token_address = cache.tokens.get_address_by_index(0).unwrap();
+        let result = cache.try_get_token_wrapper(&token_address);
+        assert!(result.is_ok());
     }
 }

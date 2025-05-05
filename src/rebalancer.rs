@@ -128,8 +128,7 @@ impl Rebalancer {
                     ERROR_COUNT.inc();
                 }
                 thread_debug!("The Rebalancing process is complete.");
-            } else {
-                thread::sleep(Duration::from_millis(1000))
+                thread::sleep(Duration::from_secs(10))
             }
         }
         thread_info!("The Rebalancer loop stopped.");

@@ -67,8 +67,9 @@ impl BanksCache {
         self.banks.len()
     }
 }
+
 #[cfg(test)]
-mod tests {
+pub mod test_utils {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -82,7 +83,7 @@ mod tests {
         },
     };
 
-    fn create_test_bank(mint: Pubkey) -> Bank {
+    pub fn create_test_bank(mint: Pubkey) -> Bank {
         let current_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -115,6 +116,13 @@ mod tests {
             ..Default::default()
         }
     }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use crate::cache::banks::test_utils::create_test_bank;
+
+    use super::*;
 
     #[test]
     fn test_insert_and_get_account() {
