@@ -451,9 +451,11 @@ impl CacheLoader {
             self.create_token_accounts(instructions)?;
 
             info!("Fetching newly created Token accounts...");
-            let new_token_accounts = self
-                .rpc_client
-                .get_multiple_accounts(&new_token_addresses)?;
+            let new_token_accounts = batch_get_multiple_accounts(
+                &self.rpc_client,
+                &new_token_addresses,
+                BatchLoadingConfig::DEFAULT,
+            )?;
             for (new_token_address, new_token_account_opt) in
                 new_token_addresses.iter().zip(new_token_accounts.iter())
             {
