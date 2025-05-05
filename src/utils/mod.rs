@@ -114,7 +114,7 @@ pub fn batch_get_multiple_accounts(
                 fetched_accounts
                     .fetch_add(fetched_chunk_size, std::sync::atomic::Ordering::Relaxed);
 
-                log::debug!(
+                log::trace!(
                     " - Fetched chunk with {} accounts. Progress: {} / {}",
                     fetched_chunk_size,
                     fetched_accounts.load(std::sync::atomic::Ordering::Relaxed),
@@ -133,7 +133,7 @@ pub fn batch_get_multiple_accounts(
     }
 
     log::debug!(
-        "Finished fetching all accounts. Total accounts fetched: {}",
+        "Finished fetching all batches. Total entries fetched: {}",
         fetched_accounts.load(std::sync::atomic::Ordering::Relaxed)
     );
 

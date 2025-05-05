@@ -113,7 +113,7 @@ impl CacheLoader {
             },
         )?;
 
-        info!("Fetched {} marginfi accounts", marginfi_accounts.len());
+        info!("Loaded {} marginfi accounts", marginfi_accounts.len());
 
         for (address, account_opt) in marginfi_accounts_pubkeys
             .iter()
@@ -212,7 +212,7 @@ impl CacheLoader {
             cache.banks.insert(*bank_address, *bank);
         }
 
-        info!("Fetched {} banks", cache.banks.len());
+        info!("Loaded {} banks", cache.banks.len());
 
         Ok(())
     }
@@ -224,7 +224,11 @@ impl CacheLoader {
         info!("Loading oracles...");
 
         let oracle_keys = cache.banks.get_oracles();
-        let oracle_accounts = self.rpc_client.get_multiple_accounts(&oracle_keys)?;
+        let oracle_accounts = batch_get_multiple_accounts(
+            &self.rpc_client,
+            &oracle_keys,
+            BatchLoadingConfig::DEFAULT,
+        )?;
         let oracle_map: HashMap<Pubkey, Account> = oracle_keys
             .iter()
             .zip(oracle_accounts.iter())
@@ -378,7 +382,11 @@ impl CacheLoader {
     ) -> anyhow::Result<()> {
         info!("Loading Mints");
         let mint_addresses = cache.banks.get_mints();
-        let mint_accounts = self.rpc_client.get_multiple_accounts(&mint_addresses)?;
+        let mint_accounts = batch_get_multiple_accounts(
+            &self.rpc_client,
+            &mint_addresses,
+            BatchLoadingConfig::DEFAULT,
+        )?;
 
         for (mint_address, mint_account_opt) in mint_addresses.iter().zip(mint_accounts.iter()) {
             if let Some(mint_account) = mint_account_opt {
@@ -394,7 +402,7 @@ impl CacheLoader {
             }
         }
 
-        info!("Fetched {} mints.", cache.mints.len());
+        info!("Loaded {} mints.", cache.mints.len());
         Ok(())
     }
 
@@ -402,10 +410,14 @@ impl CacheLoader {
         &self,
         cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
-        info!("Fetching Token accounts...");
+        info!("Loading Token accounts...");
 
         let token_addresses = cache.mints.get_tokens();
-        let token_accounts = self.rpc_client.get_multiple_accounts(&token_addresses)?;
+        let token_accounts = batch_get_multiple_accounts(
+            &self.rpc_client,
+            &token_addresses,
+            BatchLoadingConfig::DEFAULT,
+        )?;
 
         let mut new_token_addresses: Vec<Pubkey> = vec![];
         for (token_address, token_account_opt) in token_addresses.iter().zip(token_accounts.iter())
@@ -422,7 +434,7 @@ impl CacheLoader {
                 }
             }
         }
-        info!("Fetched {}  Token accounts.", cache.tokens.len()?);
+        info!("Loaded {}  Token accounts.", cache.tokens.len()?);
 
         if !new_token_addresses.is_empty() {
             info!("Creating {} new Token accounts", new_token_addresses.len());

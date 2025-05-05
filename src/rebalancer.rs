@@ -61,7 +61,6 @@ pub struct Rebalancer {
     non_blocking_rpc_client: NonBlockingRpcClient,
     txn_client: Arc<RpcClient>,
     preferred_mints: HashSet<Pubkey>,
-    //FIXME: consider remove the Option wrapper. Rebalancing will not work w/o the swap mint bank.
     swap_mint_bank_pk: Pubkey,
     run_rebalance: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
