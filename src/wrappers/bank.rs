@@ -16,7 +16,7 @@ pub struct BankWrapperT<T: OracleWrapperTrait> {
 
 pub type BankWrapper = BankWrapperT<OracleWrapper>;
 
-impl<T: OracleWrapperTrait> BankWrapperT<T> {
+impl<T: OracleWrapperTrait + Clone> BankWrapperT<T> {
     pub fn new(address: Pubkey, bank: Bank, oracle_adapter: T) -> Self {
         Self {
             address,
@@ -26,7 +26,6 @@ impl<T: OracleWrapperTrait> BankWrapperT<T> {
     }
 
     fn get_pricing_params(
-        &self,
         side: BalanceSide,
         requirement_type: RequirementType,
     ) -> (Option<PriceBias>, OraclePriceType) {
@@ -53,7 +52,7 @@ impl<T: OracleWrapperTrait> BankWrapperT<T> {
         side: BalanceSide,
         requirement_type: RequirementType,
     ) -> anyhow::Result<I80F48> {
-        let (price_bias, oracle_type) = self.get_pricing_params(side, requirement_type);
+        let (price_bias, oracle_type) = Self::get_pricing_params(side, requirement_type);
 
         let price = self
             .oracle_adapter
@@ -69,7 +68,7 @@ impl<T: OracleWrapperTrait> BankWrapperT<T> {
         side: BalanceSide,
         requirement_type: RequirementType,
     ) -> anyhow::Result<I80F48> {
-        let (price_bias, oracle_type) = self.get_pricing_params(side, requirement_type);
+        let (price_bias, oracle_type) = Self::get_pricing_params(side, requirement_type);
 
         let price = self
             .oracle_adapter

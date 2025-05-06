@@ -1,19 +1,12 @@
-use super::{
-    bank::BankWrapperT,
-    oracle::{OracleWrapper, OracleWrapperTrait},
-};
+use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use fixed::types::I80F48;
 use marginfi::constants::EXP_10_I80F48;
-use solana_program::pubkey::Pubkey;
 
 #[derive(Clone)]
 pub struct TokenAccountWrapperT<T: OracleWrapperTrait> {
-    pub address: Pubkey,
     pub balance: u64,
     pub bank: BankWrapperT<T>,
 }
-
-pub type TokenAccountWrapper = TokenAccountWrapperT<OracleWrapper>;
 
 impl<T: OracleWrapperTrait> TokenAccountWrapperT<T> {
     pub fn get_value(&self) -> anyhow::Result<I80F48> {
@@ -50,7 +43,6 @@ pub mod test_utils {
     impl TokenAccountWrapperT<TestOracleWrapper> {
         pub fn test_sol() -> Self {
             Self {
-                address: Pubkey::new_unique(),
                 balance: 10000000,
                 bank: BankWrapperT::test_sol(),
             }
@@ -58,7 +50,6 @@ pub mod test_utils {
 
         pub fn test_usdc() -> Self {
             Self {
-                address: Pubkey::new_unique(),
                 balance: 100000,
                 bank: BankWrapperT::test_usdc(),
             }

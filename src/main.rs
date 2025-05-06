@@ -6,15 +6,13 @@ mod metrics;
 
 /// Geyser service
 mod geyser;
+mod geyser_processor;
 
 /// IX's for marginfi
 mod marginfi_ixs;
 
 /// Responsible for sending transactions for the blockchain
 mod sender;
-
-/// Manages token accounts under liquidator account
-mod token_account_manager;
 
 /// Liquidator is responsible to liquidate MarginfiAccounts
 mod liquidator;
@@ -43,6 +41,9 @@ mod crossbar;
 
 /// Solana Clock manager
 mod clock_manager;
+
+mod cache;
+mod cache_loader;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Assemble logger, with INFO as default log level

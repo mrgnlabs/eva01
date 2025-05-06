@@ -4,13 +4,15 @@ use marginfi::state::price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapt
 use solana_program::pubkey::Pubkey;
 
 pub trait OracleWrapperTrait {
+    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self;
     fn get_price_of_type(
         &self,
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48>;
-
     fn get_address(&self) -> Pubkey;
+    fn set_swb_feed_hash(&mut self, hash: String);
+    fn set_price_adapter(&mut self, adapter: OraclePriceFeedAdapter);
 }
 
 #[derive(Clone)]
@@ -23,15 +25,6 @@ pub struct OracleWrapper {
 }
 
 impl OracleWrapper {
-    pub fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
-        Self {
-            address,
-            price_adapter,
-            simulated_price: None,
-            swb_feed_hash: None,
-        }
-    }
-
     pub fn is_switchboard_pull(&self) -> bool {
         matches!(
             self.price_adapter,
@@ -41,6 +34,14 @@ impl OracleWrapper {
 }
 
 impl OracleWrapperTrait for OracleWrapper {
+    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
+        Self {
+            address,
+            price_adapter,
+            simulated_price: None,
+            swb_feed_hash: None,
+        }
+    }
     fn get_price_of_type(
         &self,
         oracle_type: OraclePriceType,
@@ -59,6 +60,14 @@ impl OracleWrapperTrait for OracleWrapper {
 
     fn get_address(&self) -> Pubkey {
         self.address
+    }
+
+    fn set_swb_feed_hash(&mut self, hash: String) {
+        self.swb_feed_hash = Some(hash);
+    }
+
+    fn set_price_adapter(&mut self, adapter: OraclePriceFeedAdapter) {
+        self.price_adapter = adapter;
     }
 }
 
@@ -116,6 +125,14 @@ pub mod test_utils {
     }
 
     impl OracleWrapperTrait for TestOracleWrapper {
+        fn new(_: Pubkey, _: OraclePriceFeedAdapter) -> Self {
+            TestOracleWrapper {
+                price: 42.0,
+                bias: 5.0,
+                address: Pubkey::new_unique(),
+            }
+        }
+
         fn get_price_of_type(
             &self,
             _: OraclePriceType,
@@ -130,6 +147,14 @@ pub mod test_utils {
 
         fn get_address(&self) -> Pubkey {
             self.address
+        }
+
+        fn set_swb_feed_hash(&mut self, _: String) {
+            () //Noop
+        }
+
+        fn set_price_adapter(&mut self, _: OraclePriceFeedAdapter) {
+            () //Noop
         }
     }
 }

@@ -1,19 +1,23 @@
 use crate::{
+    cache::CacheT,
+    cache_loader::{get_accounts_to_track, CacheLoader},
     clock_manager::{self, ClockManager},
     config::Eva01Config,
-    geyser::{AccountType, GeyserService, GeyserUpdate},
+    geyser::{GeyserService, GeyserUpdate},
+    geyser_processor::GeyserProcessor,
     liquidator::Liquidator,
     metrics::{FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS},
     rebalancer::Rebalancer,
-    thread_info,
+    thread_error, thread_info,
     transaction_checker::TransactionChecker,
     transaction_manager::{TransactionData, TransactionManager},
+    utils::swb_cranker::SwbCranker,
 };
 use log::info;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
     thread,
 };
@@ -50,11 +54,32 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.general_config.solana_clock_refresh_interval,
     )?;
 
-    // Geyser -> Liquidator
-    // Geyser -> Rebalancer
+    info!("Loading Cache...");
+    let mut cache = CacheT::new(
+        config.general_config.signer_pubkey,
+        config.general_config.marginfi_program_id,
+        config.general_config.marginfi_group_address,
+    );
+
+    let cache_loader = CacheLoader::new(
+        config.general_config.keypair_path.clone(),
+        config.general_config.rpc_url.clone(),
+        clock.clone(),
+    )?;
+    cache_loader.load_cache(&mut cache)?;
+
+    let accounts_to_track = get_accounts_to_track(&cache);
+
+    let cache = Arc::new(cache);
+
+    info!("Initializing services...");
+
+    // GeyserService -> GeyserProcessor
+    // GeyserProcessor -> Liquidator/Rebalancer
     // Liquidator/Rebalancer -> TransactionManager
-    let (liquidator_tx, liquidator_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
-    let (rebalancer_tx, rebalancer_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
+    let (geyser_tx, geyser_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
+    let run_liquidation = Arc::new(AtomicBool::new(false));
+    let run_rebalance = Arc::new(AtomicBool::new(false));
     let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
     let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
 
@@ -62,15 +87,18 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let transaction_checker =
         TransactionChecker::new(config.general_config.block_engine_url.as_str())?;
 
+    let swb_price_simulator = Arc::new(SwbCranker::new(cache.clone())?);
+
     let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         config.liquidator_config.clone(),
-        liquidator_rx.clone(),
+        run_liquidation.clone(),
         transaction_tx.clone(),
         Arc::clone(&pending_bundles),
         stop_liquidator.clone(),
-        clock.clone(),
+        cache.clone(),
+        swb_price_simulator.clone(),
     )?;
 
     let mut rebalancer = Rebalancer::new(
@@ -78,80 +106,82 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         config.rebalancer_config.clone(),
         transaction_tx,
         Arc::clone(&pending_bundles),
-        rebalancer_rx.clone(),
+        run_rebalance.clone(),
         stop_liquidator.clone(),
-        clock.clone(),
+        cache.clone(),
+        swb_price_simulator.clone(),
     )?;
-
-    info!("Loading data.");
-    liquidator.load_data()?;
-    rebalancer.load_data(liquidator.get_banks_and_map())?;
-
-    info!("Fetching accounts to track.");
-    let mut accounts_to_track = HashMap::new();
-    for (key, value) in liquidator.get_accounts_to_track() {
-        accounts_to_track.insert(key, value);
-    }
-    for (key, value) in rebalancer.get_accounts_to_track() {
-        accounts_to_track.insert(key, value);
-    }
-    accounts_to_track.insert(
-        config.general_config.liquidator_account,
-        AccountType::Marginfi,
-    );
 
     let geyser_service = GeyserService::new(
         config.general_config,
         accounts_to_track,
-        liquidator_tx,
-        rebalancer_tx,
+        geyser_tx,
+        stop_liquidator.clone(),
     )?;
 
-    info!("Starting services.");
+    let geyser_processor = GeyserProcessor::new(
+        geyser_rx.clone(),
+        run_liquidation.clone(),
+        run_rebalance.clone(),
+        stop_liquidator.clone(),
+        clock.clone(),
+        cache.clone(),
+    )?;
+
+    info!("Starting services...");
 
     thread::spawn(move || clock_manager.start());
-
-    thread::spawn(move || {
-        if let Err(e) = geyser_service.start() {
-            panic!("Geyser service failed! {:?}", e);
-        }
-    });
 
     let tm_txn_rx = transaction_rx.clone();
     thread::spawn(move || {
         if let Err(e) = transaction_manager.start(jito_tx, tm_txn_rx) {
-            panic!("TransactionManager failed! {:?}", e);
+            thread_error!("TransactionManager failed! {:?}", e);
+            panic!("Fatal error in TransactionManager!");
         }
     });
     let tc_jito_rx = jito_rx.clone();
     thread::spawn(move || {
         if let Err(e) = transaction_checker.start(tc_jito_rx, pending_bundles) {
-            panic!("TransactionChecker failed! {:?}", e);
+            thread_error!("TransactionChecker failed! {:?}", e);
+            panic!("Fatal error in TransactionChecker!");
         }
     });
 
     thread::spawn(move || {
         if let Err(e) = rebalancer.start() {
-            panic!("Rebalancer failed! {:?}", e);
+            thread_error!("Rebalancer failed! {:?}", e);
+            panic!("Fatal error in Rebalancer!");
         }
     });
 
     thread::spawn(move || {
         if let Err(e) = liquidator.start() {
-            panic!("Liquidator failed! {:?}", e);
+            thread_error!("The Liquidator service failed! {:?}", e);
+            panic!("Fatal error in the Liquidator service!");
         }
     });
 
-    thread_info!("Entering main loop.");
-    let monitor_liquidator_rx = liquidator_rx.clone();
-    let monitor_rebalancer_rx = rebalancer_rx.clone();
+    thread::spawn(move || {
+        if let Err(e) = geyser_processor.start() {
+            thread_error!("GeyserProcessor failed! {:?}", e);
+            panic!("Fatal error in GeyserProcessor!");
+        }
+    });
+    thread::spawn(move || {
+        if let Err(e) = geyser_service.start() {
+            thread_error!("GeyserService failed! {:?}", e);
+            panic!("Fatal error in GeyserProcessor!");
+        }
+    });
+
+    thread_info!("Entering the Main loop.");
+    let monitor_geyser_rx = geyser_rx.clone();
     let monitor_jito_rx = jito_rx.clone();
     let monitor_transaction_rx = transaction_rx.clone();
     while !stop_liquidator.load(std::sync::atomic::Ordering::SeqCst) {
         thread_info!(
-            "Stats: Channel depth [Liquidation, Rebalancer, Txn, Jito] -> [{}, {}, {}, {}]",
-            monitor_liquidator_rx.len(),
-            monitor_rebalancer_rx.len(),
+            "Stats: Channel depth [Geyser, Txn, Jito] -> [{}, {}, {}]",
+            monitor_geyser_rx.len(),
             monitor_transaction_rx.len(),
             monitor_jito_rx.len()
         );
@@ -162,7 +192,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         );
         thread::sleep(std::time::Duration::from_secs(5));
     }
-    thread_info!("Main loop stopped.");
+    thread_info!("The Main loop stopped.");
 
     Ok(())
 }

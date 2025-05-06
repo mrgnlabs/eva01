@@ -1,3 +1,5 @@
+pub mod swb_cranker;
+
 use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
 use fixed::types::I80F48;
@@ -22,7 +24,6 @@ use solana_sdk::{
     signature::{read_keypair_file, Keypair},
 };
 use std::{
-    collections::HashMap,
     io::Write,
     mem::MaybeUninit,
     path::PathBuf,
@@ -33,7 +34,10 @@ use switchboard_on_demand::PullFeedAccountData;
 use url::Url;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
-use crate::wrappers::{bank::BankWrapper, oracle::OracleWrapperTrait};
+use crate::{
+    cache::Cache,
+    wrappers::{bank::BankWrapper, oracle::OracleWrapperTrait},
+};
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
@@ -75,7 +79,7 @@ pub fn batch_get_multiple_accounts(
     for (batch_index, batch) in batched_addresses.enumerate() {
         let batch_size = batch.len();
 
-        log::trace!(
+        log::debug!(
             "Fetching batch {} / {} with {} addresses.",
             batch_index + 1,
             total_batches,
@@ -119,7 +123,7 @@ pub fn batch_get_multiple_accounts(
 
                 Ok(chunk_res)
             })
-            .collect::<Result<Vec<_>>>()?
+            .collect::<anyhow::Result<Vec<_>>>()?
             .iter()
             .flatten()
             .cloned()
@@ -129,7 +133,7 @@ pub fn batch_get_multiple_accounts(
     }
 
     log::debug!(
-        "Finished fetching all accounts. Total accounts fetched: {}",
+        "Finished fetching all batches. Total entries fetched: {}",
         fetched_accounts.load(std::sync::atomic::Ordering::Relaxed)
     );
 
@@ -147,6 +151,7 @@ pub mod accessor {
         u64::from_le_bytes(amount_bytes)
     }
 
+    #[allow(dead_code)]
     pub fn mint(bytes: &[u8]) -> Pubkey {
         let mut mint_bytes = [0u8; 32];
         mint_bytes.copy_from_slice(&bytes[..32]);
@@ -279,7 +284,7 @@ pub struct BankAccountWithPriceFeedEva<'a> {
 impl<'a> BankAccountWithPriceFeedEva<'a> {
     pub fn load(
         lending_account: &'a LendingAccount,
-        banks: HashMap<Pubkey, BankWrapper>,
+        cache: Arc<Cache>,
     ) -> anyhow::Result<Vec<BankAccountWithPriceFeedEva<'a>>> {
         let active_balances = lending_account
             .balances
@@ -288,11 +293,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
 
         active_balances
             .map(move |balance| {
-                let bank = banks
-                    .get(&balance.bank_pk)
-                    .ok_or_else(|| anyhow::anyhow!("Bank {:?} not found", balance.bank_pk))?
-                    .clone();
-
+                let bank = cache.try_get_bank_wrapper(&balance.bank_pk)?;
                 Ok(BankAccountWithPriceFeedEva { bank, balance })
             })
             .collect::<Result<Vec<_>>>()
