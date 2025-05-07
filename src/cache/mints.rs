@@ -51,7 +51,7 @@ impl MintsCache {
 
     pub fn try_get_mint_for_token(&self, token_address: &Pubkey) -> Result<Pubkey> {
         self.get_mint_for_token(token_address).ok_or(anyhow!(
-            "Failed ot find Mint for the Token {} in Cache!",
+            "Failed to find Mint for the Token {} in Cache!",
             &token_address
         ))
     }

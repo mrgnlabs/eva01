@@ -257,7 +257,7 @@ impl CacheLoader {
                 continue;
             }
 
-            // TODO: Only one Oracle is used. What about the others?
+            // Use the first supported Oracle.
             let (oracle_address, mut oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
