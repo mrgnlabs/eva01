@@ -23,7 +23,7 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
-use log::{error, info};
+use log::{error, info, warn};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
@@ -89,7 +89,7 @@ impl Rebalancer {
             cache.clone(),
         )?;
 
-        let preferred_mints = config.preferred_mints.iter().cloned().collect();
+        let preferred_mints = config.preferred_mints.iter().copied().collect();
 
         let swap_mint_bank_pk = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
 
@@ -123,8 +123,8 @@ impl Rebalancer {
                 self.run_rebalance.store(false, Ordering::Relaxed);
                 self.rebalance_accounts();
                 thread_debug!("The Rebalancing process is complete.");
-                thread::sleep(Duration::from_secs(10))
             }
+            thread::sleep(Duration::from_secs(10))
         }
         thread_info!("The Rebalancer loop stopped.");
 
@@ -447,29 +447,24 @@ impl Rebalancer {
     }
 
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
-        let mut index: usize = 0;
-        let len = self.cache.tokens.len()?;
-        while index < len {
-            if let Some(token_address) = self.cache.tokens.get_address_by_index(index) {
-                match self.cache.try_get_token_wrapper(&token_address) {
-                    Ok(wrapper) => match wrapper.get_value() {
-                        Ok(value) => {
-                            if value > self.config.token_account_dust_threshold {
-                                return Ok(true);
-                            }
+        for token_address in self.cache.tokens.get_addresses() {
+            match self.cache.try_get_token_wrapper(&token_address) {
+                Ok(wrapper) => match wrapper.get_value() {
+                    Ok(value) => {
+                        if value > self.config.token_account_dust_threshold {
+                            return Ok(true);
                         }
-                        Err(error) => error!(
-                            "Failed compute the Liquidator's Token {} value! {}",
-                            token_address, error
-                        ),
-                    },
+                    }
                     Err(error) => error!(
-                        "Failed evaluate the Liquidator's Token {}! {}",
+                        "Failed compute the Liquidator's Token {} value! {}",
                         token_address, error
                     ),
-                }
+                },
+                Err(error) => warn!(
+                    "Skipping evaluation of the Liquidator's Token {}. Cause: {}",
+                    token_address, error
+                ),
             }
-            index += 1;
         }
 
         Ok(false)
@@ -504,41 +499,35 @@ impl Rebalancer {
     }
 
     fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<()> {
-        let mut index: usize = 0;
-        let len = self.cache.tokens.len()?;
-        while index < len {
-            if let Some(token_address) = self.cache.tokens.get_address_by_index(index) {
-                match self.cache.try_get_token_wrapper(&token_address) {
-                    Ok(wrapper) => {
-                        // Ignore the swap token, usually USDC
-                        if wrapper.bank.bank.mint == self.config.swap_mint {
-                            index += 1;
-                            continue;
-                        }
+        for token_address in self.cache.tokens.get_addresses() {
+            match self.cache.try_get_token_wrapper(&token_address) {
+                Ok(wrapper) => {
+                    // Ignore the swap token, usually USDC
+                    if wrapper.bank.bank.mint == self.config.swap_mint {
+                        continue;
+                    }
 
-                        let value = wrapper.get_value()?;
-                        if value > self.config.token_account_dust_threshold {
-                            self.swap(
-                                wrapper.get_amount().to_num(),
-                                &wrapper.bank.address,
-                                &self.swap_mint_bank_pk,
-                            )?;
-                        } else {
-                            thread_debug!(
+                    let value = wrapper.get_value()?;
+                    if value > self.config.token_account_dust_threshold {
+                        self.swap(
+                            wrapper.get_amount().to_num(),
+                            &wrapper.bank.address,
+                            &self.swap_mint_bank_pk,
+                        )?;
+                    } else {
+                        thread_debug!(
                                 "The {:?} unscaled Liquidator's Token {:?} amount is below the dust threshold {}.",
                                 wrapper.get_amount(),
                                 &token_address,
                                 self.config.token_account_dust_threshold
                             );
-                        }
                     }
-                    Err(error) => error!(
-                        "Failed to drain the Liquidator's Token {}! {}",
-                        token_address, error
-                    ),
                 }
+                Err(error) => error!(
+                    "Failed to drain the Liquidator's Token {}! {}",
+                    token_address, error
+                ),
             }
-            index += 1;
         }
 
         Ok(())

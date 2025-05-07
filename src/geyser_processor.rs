@@ -71,7 +71,7 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
     fn process_update(&self, msg: GeyserUpdate) -> Result<()> {
         let mut msg_account = msg.account.clone();
         thread_debug!(
-            "Processing the {:?} Oracle {:?} update.",
+            "Processing the {:?} {:?} update.",
             msg.account_type,
             msg.address
         );

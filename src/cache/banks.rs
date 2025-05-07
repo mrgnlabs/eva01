@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use log::error;
 use marginfi::state::marginfi_group::Bank;
 use solana_sdk::pubkey::Pubkey;
 
@@ -23,13 +24,17 @@ impl BanksCache {
         self.mint_to_bank.insert(bank.mint, bank_address);
     }
 
-    pub fn get_bank(&self, address: &Pubkey) -> Option<Bank> {
-        self.banks.get(address).copied()
+    pub fn try_get_bank(&self, address: &Pubkey) -> Result<Bank> {
+        self.banks
+            .get(address)
+            .ok_or(anyhow!("Failed ot find the Bank {} in Cache!", &address))
+            .copied()
     }
 
-    pub fn try_get_bank(&self, address: &Pubkey) -> Result<Bank> {
-        self.get_bank(address)
-            .ok_or(anyhow!("Failed ot find the Bank {} in Cache!", &address))
+    pub fn get_bank(&self, address: &Pubkey) -> Option<Bank> {
+        self.try_get_bank(address)
+            .map_err(|err| error!("{}", err))
+            .ok()
     }
 
     pub fn get_banks(&self) -> Vec<(Pubkey, Bank)> {
@@ -46,15 +51,14 @@ impl BanksCache {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_account_for_mint(&self, mint_address: &Pubkey) -> Option<Pubkey> {
-        self.mint_to_bank.get(mint_address).cloned()
-    }
-
     pub fn try_get_account_for_mint(&self, mint_address: &Pubkey) -> Result<Pubkey> {
-        self.get_account_for_mint(mint_address).ok_or(anyhow!(
-            "Failed to find Bank for the Mint {} in Cache!",
-            &mint_address
-        ))
+        self.mint_to_bank
+            .get(mint_address)
+            .ok_or(anyhow!(
+                "Failed to find Bank for the Mint {} in Cache!",
+                &mint_address
+            ))
+            .copied()
     }
 
     pub fn get_mints(&self) -> Vec<Pubkey> {

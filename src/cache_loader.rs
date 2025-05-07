@@ -416,7 +416,7 @@ impl CacheLoader {
 
                 cache
                     .mints
-                    .try_insert(*mint_address, mint_account.clone(), token_address)?;
+                    .insert(*mint_address, mint_account.clone(), token_address);
             }
         }
 

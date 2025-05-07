@@ -93,7 +93,7 @@ impl GeyserService {
     pub fn start(&self) -> Result<()> {
         thread_info!("Staring GeyserService.");
 
-        let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().cloned().collect();
+        let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().copied().collect();
 
         while !self.stop.load(Ordering::Relaxed) {
             thread_info!("Connecting to Geyser...");

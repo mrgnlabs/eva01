@@ -73,33 +73,40 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
         self.accounts.keys().cloned().collect()
     }
 
-    pub fn get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Option<T> {
-        let oracle = self.bank_to_oracle.get(bank_address)?;
+    pub fn try_get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Result<T> {
+        let oracle = self.bank_to_oracle.get(bank_address).ok_or(anyhow!(
+            "Failed ot find Oracle for the Bank {}!",
+            &bank_address
+        ))?;
+
         self.oracle_wrappers
             .read()
-            .inspect_err(|e| {
-                error!(
+            .map_err(|e| {
+                anyhow!(
                     "Failed to lock the account_wrappers map for searching! {}",
                     e
                 )
-            })
-            .ok()?
+            })?
             .get(oracle)
             .cloned()
+            .ok_or(anyhow!(
+                "Failed ot find Oracle wrapper for the Oracle {}!",
+                &oracle
+            ))
     }
-    pub fn try_get_wrapper_from_bank(&self, bank_pk: &Pubkey) -> Result<T> {
-        self.get_wrapper_from_bank(bank_pk).ok_or(anyhow::anyhow!(
-            "Failed to find the Oracle for Bank {} in Cache!",
-            bank_pk
-        ))
+
+    pub fn get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Option<T> {
+        self.try_get_wrapper_from_bank(bank_address)
+            .map_err(|err| error!("{}", err))
+            .ok()
     }
 
     pub fn try_get_bank_from_oracle(&self, oracle_address: &Pubkey) -> Result<Pubkey> {
         self.oracle_to_bank
             .get(oracle_address)
-            .cloned()
+            .copied()
             .ok_or(anyhow::anyhow!(
-                "Failed to find the Bank address for the Oracle {} in Cache!",
+                "Failed to find Bank address for the Oracle {}!",
                 oracle_address
             ))
     }

@@ -106,8 +106,7 @@ pub mod test_utils {
             token_account.data.resize(128, 0);
             cache
                 .mints
-                .try_insert(bank_wrapper.bank.mint, Account::default(), token_address)
-                .unwrap();
+                .insert(bank_wrapper.bank.mint, Account::default(), token_address);
             cache
                 .tokens
                 .try_insert(token_address, token_account, bank_wrapper.bank.mint)
@@ -161,7 +160,7 @@ mod tests {
         let cache = create_test_cache(&vec![sol_bank_wrapper.clone(), usdc_bank_wrapper.clone()]);
         let cache = Arc::new(cache);
 
-        let token_address = cache.tokens.get_address_by_index(0).unwrap();
+        let token_address = cache.tokens.get_addresses().get(0).unwrap().clone();
         let result = cache.try_get_token_wrapper(&token_address);
         assert!(result.is_ok());
     }

@@ -1,7 +1,6 @@
 use std::sync::RwLock;
 
 use indexmap::IndexMap;
-use log::error;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::wrappers::marginfi_account::MarginfiAccountWrapper;
@@ -21,12 +20,7 @@ impl MarginfiAccountsCache {
     pub fn try_insert(&self, account: MarginfiAccountWrapper) -> Result<()> {
         self.accounts
             .write()
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to lock the marginfi accounts  map for insert! {}",
-                    e
-                )
-            })?
+            .map_err(|e| anyhow!("Failed to lock the marginfi accounts map for insert! {}", e))?
             .insert(account.address, account);
         Ok(())
     }
@@ -36,30 +30,30 @@ impl MarginfiAccountsCache {
             .read()
             .map_err(|e| {
                 anyhow!(
-                    "Failed to lock the marginfi accounts  map for for search! {}",
+                    "Failed to lock the Marginfi accounts map for for search! {}",
                     e
                 )
             })?
             .get(address)
-            .ok_or(anyhow!(
-                "Failed ot find the Marginfi account {} in Cache!",
-                &address
-            ))
+            .ok_or(anyhow!("Failed ot find the Marginfi account {}!", &address))
             .cloned()
     }
 
-    pub fn get_account_by_index(&self, index: usize) -> Option<MarginfiAccountWrapper> {
+    pub fn try_get_account_by_index(&self, index: usize) -> Result<MarginfiAccountWrapper> {
         self.accounts
             .read()
-            .inspect_err(|e| {
-                error!(
-                    "Failed to lock the marginfi accounts map for get by index! {}",
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to lock the Marginfi accounts map for for search by index! {}",
                     e
                 )
-            })
-            .ok()?
+            })?
             .get_index(index)
             .map(|(_, account)| account.clone())
+            .ok_or(anyhow!(
+                "Failed ot find the Marginfi account with index {}!",
+                index
+            ))
     }
 
     pub fn len(&self) -> Result<usize> {
@@ -144,13 +138,13 @@ mod tests {
         cache.try_insert(account2.clone()).unwrap();
 
         // Test retrieval by index
-        let retrieved_account1 = cache.get_account_by_index(0).unwrap();
-        let retrieved_account2 = cache.get_account_by_index(1).unwrap();
+        let retrieved_account1 = cache.try_get_account_by_index(0).unwrap();
+        let retrieved_account2 = cache.try_get_account_by_index(1).unwrap();
         assert_eq!(retrieved_account1.address, account1.address);
         assert_eq!(retrieved_account2.address, account2.address);
 
         // Test out-of-bounds index
-        assert!(cache.get_account_by_index(2).is_none());
+        assert!(cache.try_get_account_by_index(2).is_err());
     }
 
     #[test]

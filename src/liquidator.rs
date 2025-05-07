@@ -124,17 +124,23 @@ impl Liquidator {
         self.swb_price_simulator.simulate_swb_prices()?;
 
         let mut index: usize = 0;
-        let mut accounts: Vec<PreparedLiquidatableAccount> = vec![];
+        let mut result: Vec<PreparedLiquidatableAccount> = vec![];
         while index < self.cache.marginfi_accounts.len()? {
-            if let Some(account) = self.cache.marginfi_accounts.get_account_by_index(index) {
-                self.process_account(&account)
-                    .into_iter()
-                    .for_each(|acc| accounts.push(acc));
+            match self.cache.marginfi_accounts.try_get_account_by_index(index) {
+                Ok(account) => {
+                    self.process_account(&account).map(|acc| result.push(acc));
+                }
+                Err(err) => {
+                    error!(
+                        "Failed to get Marginfi account by index {}: {:?}",
+                        index, err
+                    );
+                }
             }
             index += 1;
         }
 
-        Ok(accounts)
+        Ok(result)
     }
 
     fn process_account(

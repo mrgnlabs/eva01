@@ -18,42 +18,31 @@ impl MintsCache {
         }
     }
 
-    pub fn try_insert(
-        &mut self,
-        mint_address: Pubkey,
-        mint: Account,
-        token_address: Pubkey,
-    ) -> anyhow::Result<()> {
+    pub fn insert(&mut self, mint_address: Pubkey, mint: Account, token_address: Pubkey) {
         self.mints
             .insert(mint_address, MintWrapper::new(token_address, mint));
         self.token_to_mint.insert(token_address, mint_address);
-        Ok(())
-    }
-
-    pub fn get_account(&self, address: &Pubkey) -> Option<MintWrapper> {
-        self.mints.get(address).cloned()
     }
 
     pub fn try_get_account(&self, address: &Pubkey) -> Result<MintWrapper> {
-        self.get_account(address).ok_or(anyhow!(
-            "Failed ot find Mint for the Address {} in Cache!",
-            &address
-        ))
+        self.mints
+            .get(address)
+            .ok_or(anyhow!("Failed ot find Mint for the Address {}!", &address))
+            .cloned()
     }
 
     pub fn get_tokens(&self) -> Vec<Pubkey> {
         self.mints.values().map(|mint| mint.token).collect()
     }
 
-    pub fn get_mint_for_token(&self, token_address: &Pubkey) -> Option<Pubkey> {
-        self.token_to_mint.get(token_address).copied()
-    }
-
     pub fn try_get_mint_for_token(&self, token_address: &Pubkey) -> Result<Pubkey> {
-        self.get_mint_for_token(token_address).ok_or(anyhow!(
-            "Failed to find Mint for the Token {} in Cache!",
-            &token_address
-        ))
+        self.token_to_mint
+            .get(token_address)
+            .ok_or(anyhow!(
+                "Failed to find Mint for the Token {}!",
+                &token_address
+            ))
+            .copied()
     }
 
     pub fn len(&self) -> usize {
@@ -73,12 +62,10 @@ mod tests {
         let token_address = Pubkey::new_unique();
         let mint_account = Account::new(0, 0, &Pubkey::new_unique());
 
-        assert!(mints_cache
-            .try_insert(mint_address, mint_account.clone(), token_address)
-            .is_ok());
+        mints_cache.insert(mint_address, mint_account.clone(), token_address);
 
         assert_eq!(mints_cache.len(), 1);
-        assert!(mints_cache.get_account(&mint_address).is_some());
+        assert!(mints_cache.try_get_account(&mint_address).is_ok());
         assert!(mints_cache.try_get_mint_for_token(&token_address).is_ok());
     }
 
@@ -107,9 +94,7 @@ mod tests {
         let token_address = Pubkey::new_unique();
         let mint_account = Account::new(0, 0, &Pubkey::new_unique());
 
-        mints_cache
-            .try_insert(mint_address, mint_account.clone(), token_address)
-            .unwrap();
+        mints_cache.insert(mint_address, mint_account.clone(), token_address);
 
         let tokens = mints_cache.get_tokens();
         assert_eq!(tokens.len(), 1);
@@ -125,9 +110,7 @@ mod tests {
         let token_address = Pubkey::new_unique();
         let mint_account = Account::new(0, 0, &Pubkey::new_unique());
 
-        mints_cache
-            .try_insert(mint_address, mint_account.clone(), token_address)
-            .unwrap();
+        mints_cache.insert(mint_address, mint_account.clone(), token_address);
 
         assert_eq!(mints_cache.len(), 1);
     }
@@ -139,14 +122,8 @@ mod tests {
         let token_address = Pubkey::new_unique();
         let mint_account = Account::new(0, 0, &Pubkey::new_unique());
 
-        assert!(mints_cache
-            .try_insert(mint_address, mint_account.clone(), token_address)
-            .is_ok());
-
-        // Insert the same mint again
-        assert!(mints_cache
-            .try_insert(mint_address, mint_account.clone(), token_address)
-            .is_ok());
+        mints_cache.insert(mint_address, mint_account.clone(), token_address);
+        mints_cache.insert(mint_address, mint_account.clone(), token_address);
 
         // Ensure the length remains 1
         assert_eq!(mints_cache.len(), 1);
