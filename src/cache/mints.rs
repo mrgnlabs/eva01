@@ -45,14 +45,15 @@ impl MintsCache {
         self.mints.values().map(|mint| mint.token).collect()
     }
 
+    pub fn get_mint_for_token(&self, token_address: &Pubkey) -> Option<Pubkey> {
+        self.token_to_mint.get(token_address).copied()
+    }
+
     pub fn try_get_mint_for_token(&self, token_address: &Pubkey) -> Result<Pubkey> {
-        self.token_to_mint
-            .get(token_address)
-            .ok_or(anyhow!(
-                "Failed ot find Mint for the Token {} in Cache!",
-                &token_address
-            ))
-            .copied()
+        self.get_mint_for_token(token_address).ok_or(anyhow!(
+            "Failed ot find Mint for the Token {} in Cache!",
+            &token_address
+        ))
     }
 
     pub fn len(&self) -> usize {

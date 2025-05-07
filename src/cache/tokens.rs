@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::RwLock};
 
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
+use log::error;
 use solana_sdk::{account::Account, pubkey::Pubkey};
 
 //The Liquidator Token accounts
@@ -35,7 +36,7 @@ impl TokensCache {
     pub fn get_account(&self, address: &Pubkey) -> Option<Account> {
         self.tokens
             .read()
-            .inspect_err(|e| eprintln!("Failed to lock the tokens map for search! {}", e))
+            .inspect_err(|e| error!("Failed to lock the tokens map for search! {}", e))
             .ok()?
             .get(address)
             .cloned()
@@ -52,7 +53,7 @@ impl TokensCache {
         self.tokens
             .read()
             .inspect_err(|e| {
-                eprintln!(
+                error!(
                     "Failed to lock the tokens accounts map for search by index! {}",
                     e
                 )

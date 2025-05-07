@@ -70,36 +70,34 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
 
     fn process_update(&self, msg: GeyserUpdate) -> Result<()> {
         let mut msg_account = msg.account.clone();
+        thread_debug!(
+            "Processing the {:?} Oracle {:?} update.",
+            msg.account_type,
+            msg.address
+        );
+
         match msg.account_type {
             AccountType::Oracle => {
                 let bank_address = self.cache.oracles.try_get_bank_from_oracle(&msg.address)?;
-                let mut bank_to_update = self.cache.try_get_bank_wrapper(&bank_address)?;
+                let bank = self.cache.banks.try_get_bank(&bank_address)?;
 
-                let oracle_price_adapter = match bank_to_update.bank.config.oracle_setup {
+                let oracle_price_adapter = match bank.config.oracle_setup {
                     OracleSetup::SwitchboardPull => {
                         let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
                         offsets_data.copy_from_slice(
                             &msg.account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
                         );
-                        let swb_feed = load_swb_pull_account_from_bytes(&offsets_data).unwrap();
-
-                        let feed_hash = hex::encode(swb_feed.feed_hash);
-                        bank_to_update.oracle_adapter.set_swb_feed_hash(feed_hash);
+                        let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
 
                         OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
                             feed: Box::new((&swb_feed).into()),
                         })
                     }
                     OracleSetup::StakedWithPythPush => {
-                        thread_debug!(
-                            "Getting update for STAKED oracle: {:?} for bank: {:?}",
-                            msg.address,
-                            bank_address
-                        );
                         let mut accounts_info =
                             vec![(&msg.address, &mut msg_account).into_account_info()];
 
-                        let keys = &bank_to_update.bank.config.oracle_keys[1..3];
+                        let keys = &bank.config.oracle_keys[1..3];
                         let mut owned_accounts = self.cache.oracles.get_accounts(keys);
                         accounts_info.extend(
                             keys.iter()
@@ -109,7 +107,7 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
 
                         let clock = clock_manager::get_clock(&self.clock)?;
                         OraclePriceFeedAdapter::try_from_bank_config(
-                            &bank_to_update.bank.config,
+                            &bank.config,
                             &accounts_info,
                             &clock,
                         )?
@@ -120,7 +118,7 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
                             (&msg.address, &mut msg_account).into_account_info();
 
                         OraclePriceFeedAdapter::try_from_bank_config(
-                            &bank_to_update.bank.config,
+                            &bank.config,
                             &[oracle_account_info],
                             &clock,
                         )?

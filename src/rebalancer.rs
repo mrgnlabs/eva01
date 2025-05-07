@@ -1,9 +1,8 @@
 use crate::{
     cache::Cache,
     config::{GeneralConfig, RebalancerCfg},
-    metrics::ERROR_COUNT,
     sender::{SenderCfg, TransactionSender},
-    thread_debug, thread_error, thread_info,
+    thread_debug, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
     utils::{
         self, calc_weighted_assets_new, calc_weighted_liabs_new, swb_cranker::SwbCranker,
@@ -122,11 +121,7 @@ impl Rebalancer {
             if self.run_rebalance.load(Ordering::Relaxed) && self.needs_to_be_rebalanced()? {
                 thread_debug!("Running the Rebalancing process...");
                 self.run_rebalance.store(false, Ordering::Relaxed);
-
-                if let Err(e) = self.rebalance_accounts() {
-                    thread_error!("Failed to rebalance account: {:?}", e);
-                    ERROR_COUNT.inc();
-                }
+                self.rebalance_accounts();
                 thread_debug!("The Rebalancing process is complete.");
                 thread::sleep(Duration::from_secs(10))
             }
@@ -191,20 +186,31 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn rebalance_accounts(&mut self) -> anyhow::Result<()> {
-        self.swb_price_simulator.simulate_swb_prices()?;
+    fn rebalance_accounts(&mut self) {
+        if let Err(error) = self.swb_price_simulator.simulate_swb_prices() {
+            error!("Failed to simulate Swb prices! {}", error)
+        }
+
         //TODO: It is called right after simulation. Confirm that it is really needed.
-        self.fetch_swb_prices()?;
+        if let Err(error) = self.fetch_swb_prices() {
+            error!("Failed to fetch Swb prices! {}", error)
+        }
 
-        self.sell_non_preferred_deposits()?;
+        if let Err(error) = self.sell_non_preferred_deposits() {
+            error!("Failed to sell non preferred deposits! {}", error)
+        }
 
-        self.repay_liabilities()?;
+        if let Err(error) = self.repay_liabilities() {
+            error!("Failed to repay liabilities! {}", error)
+        }
 
-        self.drain_tokens_from_token_accounts()?;
+        if let Err(error) = self.drain_tokens_from_token_accounts() {
+            error!("Failed to drain the Liquidator's tokens! {}", error)
+        }
 
-        self.deposit_preferred_tokens()?;
-
-        Ok(())
+        if let Err(error) = self.deposit_preferred_tokens() {
+            error!("Failed to deposit preferred Tokens! {}", error)
+        }
     }
 
     // If our margin is at 50% or lower, we should stop the Liquidator and manually adjust it's balances.
@@ -452,9 +458,15 @@ impl Rebalancer {
                                 return Ok(true);
                             }
                         }
-                        Err(error) => error!("Failed compute token value! {}", error),
+                        Err(error) => error!(
+                            "Failed compute the Liquidator's Token {} value! {}",
+                            token_address, error
+                        ),
                     },
-                    Err(error) => error!("Failed obtain token data! {}", error),
+                    Err(error) => error!(
+                        "Failed evaluate the Liquidator's Token {}! {}",
+                        token_address, error
+                    ),
                 }
             }
             index += 1;
@@ -475,7 +487,7 @@ impl Rebalancer {
             .any(|balance| {
                 self.cache
                     .banks
-                    .get_account(&balance.bank_pk)
+                    .get_bank(&balance.bank_pk)
                     .is_some_and(|bank| {
                         matches!(balance.get_side(), Some(BalanceSide::Assets))
                             && !self.preferred_mints.contains(&bank.mint)
@@ -496,25 +508,34 @@ impl Rebalancer {
         let len = self.cache.tokens.len()?;
         while index < len {
             if let Some(token_address) = self.cache.tokens.get_address_by_index(index) {
-                let account = self.cache.try_get_token_wrapper(&token_address)?;
-                if account.bank.bank.mint == self.config.swap_mint {
-                    continue;
-                }
+                match self.cache.try_get_token_wrapper(&token_address) {
+                    Ok(wrapper) => {
+                        // Ignore the swap token, usually USDC
+                        if wrapper.bank.bank.mint == self.config.swap_mint {
+                            index += 1;
+                            continue;
+                        }
 
-                let value = account.get_value()?;
-                if value > self.config.token_account_dust_threshold {
-                    self.swap(
-                        account.get_amount().to_num(),
-                        &account.bank.address,
-                        &self.swap_mint_bank_pk,
-                    )?;
-                } else {
-                    thread_debug!(
-                        "The {:?} unscaled Drain tokens of Bank {:?} are below the dust threshold {}.",
-                        account.get_amount(),
-                        &account.bank.address,
-                        self.config.token_account_dust_threshold
-                    );
+                        let value = wrapper.get_value()?;
+                        if value > self.config.token_account_dust_threshold {
+                            self.swap(
+                                wrapper.get_amount().to_num(),
+                                &wrapper.bank.address,
+                                &self.swap_mint_bank_pk,
+                            )?;
+                        } else {
+                            thread_debug!(
+                                "The {:?} unscaled Liquidator's Token {:?} amount is below the dust threshold {}.",
+                                wrapper.get_amount(),
+                                &token_address,
+                                self.config.token_account_dust_threshold
+                            );
+                        }
+                    }
+                    Err(error) => error!(
+                        "Failed to drain the Liquidator's Token {}! {}",
+                        token_address, error
+                    ),
                 }
             }
             index += 1;
@@ -566,8 +587,8 @@ impl Rebalancer {
             dst_bank
         );
 
-        let input_mint = self.cache.banks.try_get_account(src_bank)?.mint;
-        let output_mint = self.cache.banks.try_get_account(dst_bank)?.mint;
+        let input_mint = self.cache.banks.try_get_bank(src_bank)?.mint;
+        let output_mint = self.cache.banks.try_get_bank(dst_bank)?.mint;
 
         let jup_swap_client = JupiterSwapApiClient::new(self.config.jup_swap_api_url.clone());
 

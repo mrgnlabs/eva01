@@ -465,7 +465,7 @@ impl Liquidator {
         let bank = self
             .cache
             .banks
-            .get_account(bank_pk)
+            .get_bank(bank_pk)
             .ok_or_else(|| anyhow!("Bank {} not bound", bank_pk))?;
 
         let balance = account

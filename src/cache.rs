@@ -53,19 +53,19 @@ impl<T: OracleWrapperTrait + Clone> CacheT<T> {
     }
 
     pub fn get_bank_wrapper(&self, bank_pk: &Pubkey) -> Option<BankWrapperT<T>> {
-        let bank = self.banks.get_account(bank_pk)?;
+        let bank = self.banks.get_bank(bank_pk)?;
         let oracle = self.oracles.get_wrapper_from_bank(bank_pk)?;
         Some(BankWrapperT::new(*bank_pk, bank, oracle))
     }
 
     pub fn try_get_bank_wrapper(&self, bank_pk: &Pubkey) -> Result<BankWrapperT<T>> {
-        let bank = self.banks.try_get_account(bank_pk)?;
+        let bank = self.banks.try_get_bank(bank_pk)?;
         let oracle = self.oracles.try_get_wrapper_from_bank(bank_pk)?;
         Ok(BankWrapperT::new(*bank_pk, bank, oracle))
     }
 
     pub fn get_token_account_for_bank(&self, bank_pk: &Pubkey) -> Option<Account> {
-        let mint = self.banks.get_account(bank_pk)?.mint;
+        let mint = self.banks.get_bank(bank_pk)?.mint;
         let token = self.tokens.get_token_for_mint(&mint)?;
         self.tokens.get_account(&token)
     }
@@ -118,8 +118,9 @@ pub mod test_utils {
             cache
                 .oracles
                 .try_insert(
+                    bank_wrapper.oracle_adapter.address.clone(),
                     oracle_account,
-                    bank_wrapper.oracle_adapter.clone(),
+                    Some(bank_wrapper.oracle_adapter.clone()),
                     bank_wrapper.address,
                 )
                 .unwrap();

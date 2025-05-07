@@ -1,6 +1,7 @@
 use std::sync::RwLock;
 
 use indexmap::IndexMap;
+use log::error;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::wrappers::marginfi_account::MarginfiAccountWrapper;
@@ -51,7 +52,7 @@ impl MarginfiAccountsCache {
         self.accounts
             .read()
             .inspect_err(|e| {
-                eprintln!(
+                error!(
                     "Failed to lock the marginfi accounts map for get by index! {}",
                     e
                 )
