@@ -117,6 +117,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
         accounts_to_track,
         geyser_tx,
         stop_liquidator.clone(),
+        clock.clone(),
     )?;
 
     let geyser_processor = GeyserProcessor::new(

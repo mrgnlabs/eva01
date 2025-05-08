@@ -1,5 +1,5 @@
 use crate::{
-    config::GeneralConfig, thread_error, thread_info, thread_trace,
+    clock_manager, config::GeneralConfig, thread_error, thread_info, thread_trace,
     utils::account_update_to_account, ward,
 };
 use anchor_lang::AccountDeserialize;
@@ -8,15 +8,14 @@ use crossbeam::channel::Sender;
 use futures::StreamExt;
 use marginfi::state::marginfi_account::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account::Account;
+use solana_sdk::{account::Account, clock::Clock};
 use std::{
     collections::HashMap,
     mem::size_of,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    thread,
 };
 use tokio::runtime::{Builder, Runtime};
 use yellowstone_grpc_client::GeyserGrpcClient;
@@ -61,6 +60,7 @@ pub struct GeyserService {
     geyser_tx: Sender<GeyserUpdate>,
     tokio_rt: Runtime,
     stop: Arc<AtomicBool>,
+    clock: Arc<Mutex<Clock>>,
 }
 
 impl GeyserService {
@@ -69,6 +69,7 @@ impl GeyserService {
         tracked_accounts: HashMap<Pubkey, AccountType>,
         geyser_tx: Sender<GeyserUpdate>,
         stop: Arc<AtomicBool>,
+        clock: Arc<Mutex<Clock>>,
     ) -> Result<Self> {
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("GeyserService")
@@ -87,13 +88,14 @@ impl GeyserService {
             geyser_tx,
             tokio_rt,
             stop,
+            clock,
         })
     }
 
     pub fn start(&self) -> Result<()> {
         thread_info!("Staring GeyserService.");
 
-        let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().cloned().collect();
+        let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().copied().collect();
 
         while !self.stop.load(Ordering::Relaxed) {
             thread_info!("Connecting to Geyser...");
@@ -115,13 +117,17 @@ impl GeyserService {
             while let Some(msg) = self.tokio_rt.block_on(stream.next()) {
                 match msg {
                     Ok(msg) => {
-                        thread_trace!(
-                            "Thread {:?}. Received Geyser msg: {:?}",
-                            thread::current().id(),
-                            msg
-                        );
+                        thread_trace!("Received Geyser msg: {:?}", msg);
                         let update_oneof = ward!(msg.update_oneof, continue);
                         if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
+                            // Make sure that the message is not too old.
+                            let clock = clock_manager::get_clock(&self.clock)?;
+                            if account.slot < clock.slot {
+                                thread_trace!("Discarding stale message {:?}.", account);
+                                continue;
+                            }
+
+                            // TODO: need more elaborate message payload check, it is hiding invalid messages.
                             let account_update = ward!(&account.account, continue);
                             let account =
                                 ward!(account_update_to_account(account_update).ok(), continue);

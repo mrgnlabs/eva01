@@ -2,7 +2,7 @@ use crate::{
     cache::Cache,
     config::{GeneralConfig, LiquidatorCfg},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
-    thread_debug,
+    thread_debug, thread_error, thread_info,
     transaction_manager::TransactionData,
     utils::{swb_cranker::SwbCranker, BankAccountWithPriceFeedEva},
     wrappers::{
@@ -14,7 +14,6 @@ use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, error, info};
 use marginfi::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
     state::{
@@ -50,6 +49,7 @@ pub struct PreparedLiquidatableAccount {
 }
 
 impl Liquidator {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         general_config: GeneralConfig,
         liquidator_config: LiquidatorCfg,
@@ -78,7 +78,7 @@ impl Liquidator {
     }
 
     pub fn start(&mut self) -> Result<()> {
-        info!("Staring the Liquidator loop.");
+        thread_info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             if self.run_liquidation.load(Ordering::Relaxed) {
                 thread_debug!("Running the Liquidation process...");
@@ -97,9 +97,10 @@ impl Liquidator {
                             &account.liab_bank,
                             account.asset_amount,
                         ) {
-                            error!(
+                            thread_error!(
                                 "Failed to liquidate account {:?}, error: {:?}",
-                                account.liquidatee_account.address, e
+                                account.liquidatee_account.address,
+                                e
                             );
                             FAILED_LIQUIDATIONS.inc();
                             ERROR_COUNT.inc();
@@ -114,7 +115,7 @@ impl Liquidator {
                 thread::sleep(Duration::from_secs(1))
             }
         }
-        info!("The Liquidator loop is stopped.");
+        thread_info!("The Liquidator loop is stopped.");
 
         Ok(())
     }
@@ -124,17 +125,26 @@ impl Liquidator {
         self.swb_price_simulator.simulate_swb_prices()?;
 
         let mut index: usize = 0;
-        let mut accounts: Vec<PreparedLiquidatableAccount> = vec![];
+        let mut result: Vec<PreparedLiquidatableAccount> = vec![];
         while index < self.cache.marginfi_accounts.len()? {
-            if let Some(account) = self.cache.marginfi_accounts.get_account_by_index(index) {
-                self.process_account(&account)
-                    .into_iter()
-                    .for_each(|acc| accounts.push(acc));
+            match self.cache.marginfi_accounts.try_get_account_by_index(index) {
+                Ok(account) => {
+                    if let Some(acc) = self.process_account(&account) {
+                        result.push(acc)
+                    };
+                }
+                Err(err) => {
+                    thread_error!(
+                        "Failed to get Marginfi account by index {}: {:?}",
+                        index,
+                        err
+                    );
+                }
             }
             index += 1;
         }
 
-        Ok(accounts)
+        Ok(result)
     }
 
     fn process_account(
@@ -152,6 +162,9 @@ impl Liquidator {
         }
 
         let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
+        if liabs_shares.is_empty() {
+            return None;
+        }
 
         let deposit_values = self
             .get_value_of_shares(
@@ -172,7 +185,7 @@ impl Liquidator {
         let (asset_bank_pk, liab_bank_pk) = self
             .find_liquidation_bank_candidates(deposit_values, liab_values)
             .inspect_err(|e| {
-                error!("Error finding liquidation bank candidates: {:?}", e);
+                thread_error!("Error finding liquidation bank candidates: {:?}", e);
                 ERROR_COUNT.inc();
             })
             .ok()
@@ -196,7 +209,7 @@ impl Liquidator {
             .cache
             .try_get_bank_wrapper(&liab_bank_pk)
             .map_err(|err| {
-                error!("Failed to create the Liability Bank Wrapper! {}", err);
+                thread_error!("Failed to create the Liability Bank Wrapper! {}", err);
             })
             .ok()?;
 
@@ -205,7 +218,7 @@ impl Liquidator {
             .cache
             .try_get_bank_wrapper(&asset_bank_pk)
             .map_err(|err| {
-                error!("Failed to create the Asset Bank Wrapper! {}", err);
+                thread_error!("Failed to create the Asset Bank Wrapper! {}", err);
             })
             .ok()?;
 
@@ -222,12 +235,12 @@ impl Liquidator {
 
         let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.90);
 
-        debug!(
+        thread_debug!(
                 "Liquidation asset amount capacity: {:?}, asset_amount_to_liquidate: {:?}, slippage_adjusted_asset_amount: {:?}",
                 liquidation_asset_amount_capacity, asset_amount_to_liquidate, slippage_adjusted_asset_amount
             );
 
-        debug!(
+        thread_debug!(
             "Account {:?} health = {:?}",
             account.address,
             self.calc_health(account, RequirementType::Maintenance, true)
@@ -255,16 +268,17 @@ impl Liquidator {
                 .try_get_account(&self.liquidator_account.liquidator_address)?,
             bank_pk,
         )?;
-        debug!(
+        thread_debug!(
             "Liquidator Asset amount: {:?}, free collateral: {:?}",
-            asset_amount, free_collateral
+            asset_amount,
+            free_collateral
         );
 
         let untied_collateral_for_bank = min(
             free_collateral,
             bank.calc_value(asset_amount, BalanceSide::Assets, RequirementType::Initial)?,
         );
-        debug!(
+        thread_debug!(
             "Liquidator Untied collateral for bank: {:?}",
             untied_collateral_for_bank
         );
@@ -301,9 +315,11 @@ impl Liquidator {
             RequirementType::Initial,
         )?;
 
-        debug!(
+        thread_debug!(
             "Liquidator asset_weight: {:?}, max borrow amount: {:?}, max borrow value: {:?}",
-            asset_weight, max_borrow_amount, max_borrow_value
+            asset_weight,
+            max_borrow_amount,
+            max_borrow_value
         );
 
         Ok(max_borrow_value)
@@ -386,7 +402,7 @@ impl Liquidator {
         let all = asset_weight_maint - liab_weight_maint * liquidation_discount;
 
         if all >= I80F48::ZERO {
-            error!("Account {:?} has no liquidatable amount: {:?}, asset_weight_maint: {:?}, liab_weight_maint: {:?}", account.address, all, asset_weight_maint, liab_weight_maint);
+            thread_error!("Account {:?} has no liquidatable amount: {:?}, asset_weight_maint: {:?}, liab_weight_maint: {:?}", account.address, all, asset_weight_maint, liab_weight_maint);
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
 
@@ -422,8 +438,12 @@ impl Liquidator {
         )?;
 
         if liquidator_profit > self.config.min_profit {
-            debug!("Account {:?}\nAsset Bank {:?}\nAsset maint weight: {:?}\nAsset Value (USD) {:?}\nLiab Bank {:?}\nLiab maint weight: {:?}\nLiab Value (USD) {:?}\nMax Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", account.address, asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_value, liab_bank.address, liab_bank.bank.config.liability_weight_maint, liab_value, max_liquidatable_value,
-                max_liquidatable_asset_amount, liquidator_profit);
+            thread_debug!("Account {:?}\nAsset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
+            Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
+            Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", 
+            account.address, asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_amount, asset_value,
+            liab_bank.address, liab_bank.bank.config.liability_weight_maint, liab_amount, liab_value,
+            max_liquidatable_value,max_liquidatable_asset_amount, liquidator_profit);
         }
 
         Ok((max_liquidatable_asset_amount, liquidator_profit))
@@ -444,9 +464,12 @@ impl Liquidator {
                     .calc_weighted_assets_and_liabilities_values(requirement_type, print_logs)
                     .unwrap();
                 if print_logs {
-                    debug!(
+                    thread_debug!(
                         "Account {:?}, Bank: {:?}\nAssets: {:?}\nLiabilities: {:?}",
-                        account.address, baw.bank.address, assets, liabs
+                        account.address,
+                        baw.bank.address,
+                        assets,
+                        liabs
                     );
                 }
                 (total_assets + assets, total_liabs + liabs)
@@ -465,7 +488,7 @@ impl Liquidator {
         let bank = self
             .cache
             .banks
-            .get_account(bank_pk)
+            .get_bank(bank_pk)
             .ok_or_else(|| anyhow!("Bank {} not bound", bank_pk))?;
 
         let balance = account

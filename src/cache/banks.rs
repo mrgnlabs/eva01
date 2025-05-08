@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use log::error;
 use marginfi::state::marginfi_group::Bank;
 use solana_sdk::pubkey::Pubkey;
 
@@ -23,16 +24,20 @@ impl BanksCache {
         self.mint_to_bank.insert(bank.mint, bank_address);
     }
 
-    pub fn get_account(&self, address: &Pubkey) -> Option<Bank> {
-        self.banks.get(address).copied()
-    }
-
-    pub fn try_get_account(&self, address: &Pubkey) -> Result<Bank> {
-        self.get_account(address)
+    pub fn try_get_bank(&self, address: &Pubkey) -> Result<Bank> {
+        self.banks
+            .get(address)
             .ok_or(anyhow!("Failed ot find the Bank {} in Cache!", &address))
+            .copied()
     }
 
-    pub fn get_accounts(&self) -> Vec<(Pubkey, Bank)> {
+    pub fn get_bank(&self, address: &Pubkey) -> Option<Bank> {
+        self.try_get_bank(address)
+            .map_err(|err| error!("{}", err))
+            .ok()
+    }
+
+    pub fn get_banks(&self) -> Vec<(Pubkey, Bank)> {
         self.banks
             .iter()
             .map(|(address, bank)| (*address, *bank))
@@ -131,7 +136,7 @@ pub mod tests {
         let bank = create_test_bank(Pubkey::new_unique());
 
         cache.insert(bank_address, bank);
-        let retrieved_bank = cache.get_account(&bank_address);
+        let retrieved_bank = cache.get_bank(&bank_address);
 
         assert!(retrieved_bank.is_some());
         assert_eq!(retrieved_bank.unwrap().mint, bank.mint);
@@ -144,7 +149,7 @@ pub mod tests {
         let bank = create_test_bank(Pubkey::new_unique());
 
         cache.insert(bank_address, bank);
-        let result = cache.try_get_account(&bank_address);
+        let result = cache.try_get_bank(&bank_address);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap().mint, bank.mint);
@@ -161,7 +166,7 @@ pub mod tests {
         cache.insert(bank_address1, bank1);
         cache.insert(bank_address2, bank2);
 
-        let accounts = cache.get_accounts();
+        let accounts = cache.get_banks();
         assert_eq!(accounts.len(), 2);
     }
 

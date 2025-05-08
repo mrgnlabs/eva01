@@ -1,12 +1,17 @@
-use std::{collections::HashMap, sync::RwLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::RwLock,
+};
 
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
+use log::error;
 use solana_sdk::{account::Account, pubkey::Pubkey};
 
 //The Liquidator Token accounts
 pub struct TokensCache {
     tokens: RwLock<IndexMap<Pubkey, Account>>,
+    token_addresses: HashSet<Pubkey>,
     mint_to_token: HashMap<Pubkey, Pubkey>,
 }
 
@@ -14,6 +19,7 @@ impl TokensCache {
     pub fn new() -> Self {
         Self {
             tokens: RwLock::new(IndexMap::new()),
+            token_addresses: HashSet::new(),
             mint_to_token: HashMap::new(),
         }
     }
@@ -28,64 +34,52 @@ impl TokensCache {
             .write()
             .map_err(|e| anyhow!("Failed to lock the token map for insert! {}", e))?
             .insert(token_address, token);
+        self.token_addresses.insert(token_address);
         self.mint_to_token.insert(mint_address, token_address);
         Ok(())
     }
 
-    pub fn get_account(&self, address: &Pubkey) -> Option<Account> {
+    pub fn try_get_account(&self, address: &Pubkey) -> Result<Account> {
         self.tokens
             .read()
-            .inspect_err(|e| eprintln!("Failed to lock the tokens map for search! {}", e))
-            .ok()?
+            .map_err(|err| anyhow!("Failed to lock the tokens map for search! {}", err))?
             .get(address)
             .cloned()
+            .ok_or(anyhow!("Failed ot find Token {}!", &address))
     }
 
-    pub fn try_get_account(&self, address: &Pubkey) -> Result<Account> {
-        self.get_account(address).ok_or(anyhow!(
-            "Failed ot find Token for the Address {} in Cache!",
-            &address
-        ))
+    pub fn get_account(&self, address: &Pubkey) -> Option<Account> {
+        self.try_get_account(address)
+            .map_err(|err| error!("{}", err))
+            .ok()
     }
 
-    pub fn get_address_by_index(&self, index: usize) -> Option<Pubkey> {
-        self.tokens
-            .read()
-            .inspect_err(|e| {
-                eprintln!(
-                    "Failed to lock the tokens accounts map for search by index! {}",
-                    e
-                )
-            })
-            .ok()?
-            .get_index(index)
-            .map(|(address, _)| *address)
+    pub fn get_addresses(&self) -> Vec<Pubkey> {
+        self.token_addresses.iter().copied().collect()
     }
 
     pub fn try_update_account(&self, address: Pubkey, account: Account) -> Result<()> {
         self.tokens
             .write()
             .map_err(|e| anyhow!("Failed to lock the token map for update! {}", e))?
-            .insert(address, account)
-            .ok_or(anyhow!(
-                "Failed ot update Token for the Address {} in Cache!",
-                &address
-            ))?;
+            .insert(address, account);
         Ok(())
-    }
-
-    pub fn get_token_for_mint(&self, mint_address: &Pubkey) -> Option<Pubkey> {
-        self.mint_to_token.get(mint_address).copied()
     }
 
     pub fn try_get_token_for_mint(&self, mint_address: &Pubkey) -> Result<Pubkey> {
         self.mint_to_token
             .get(mint_address)
             .ok_or(anyhow!(
-                "Failed to find Token for the Mint {} in Cache!",
+                "Failed to find Token for the Mint {}!",
                 &mint_address
             ))
             .copied()
+    }
+
+    pub fn get_token_for_mint(&self, mint_address: &Pubkey) -> Option<Pubkey> {
+        self.try_get_token_for_mint(mint_address)
+            .map_err(|err| error!("{}", err))
+            .ok()
     }
 
     pub fn len(&self) -> Result<usize> {
@@ -142,7 +136,7 @@ mod tests {
             .try_insert(token_address, account, mint_address)
             .unwrap();
 
-        let retrieved_address = cache.get_address_by_index(0).unwrap();
+        let retrieved_address = cache.get_addresses().get(0).unwrap().clone();
         assert_eq!(retrieved_address, token_address);
     }
 

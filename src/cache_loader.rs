@@ -43,7 +43,6 @@ use crate::{
         batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
         BatchLoadingConfig,
     },
-    ward,
     wrappers::{marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait},
 };
 use anchor_client::Program;
@@ -221,7 +220,7 @@ impl CacheLoader {
         &self,
         cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
-        info!("Loading oracles...");
+        info!("Loading Oracles...");
 
         let oracle_keys = cache.banks.get_oracles();
         let oracle_accounts = batch_get_multiple_accounts(
@@ -235,10 +234,11 @@ impl CacheLoader {
             .filter_map(|(pk, account)| account.as_ref().map(|acc| (*pk, acc.clone())))
             .collect();
 
-        for (bank_address, bank) in cache.banks.get_accounts().iter() {
-            if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
-                debug!("Loading STAKED bank: {:?}", bank_address);
-            }
+        for (bank_address, bank) in cache.banks.get_banks().iter() {
+            debug!(
+                "Loading the {:?} Oracles for the Bank {:?} ...",
+                bank.config.oracle_setup, bank_address
+            );
 
             let oracle_keys_excluded_default = bank
                 .config
@@ -257,7 +257,7 @@ impl CacheLoader {
                 continue;
             }
 
-            // TODO: what is this for?
+            // Use the first supported Oracle.
             let (oracle_address, mut oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
@@ -282,31 +282,29 @@ impl CacheLoader {
                     );
                     let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
 
-                    OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
-                        feed: Box::new((&swb_feed).into()),
-                    })
+                    Ok(OraclePriceFeedAdapter::SwitchboardPull(
+                        SwitchboardPullPriceFeed {
+                            feed: Box::new((&swb_feed).into()),
+                        },
+                    ))
                 }
                 OracleSetup::SwitchboardV2 => {
                     let oracle_account_info =
                         (&oracle_address, &mut oracle_account).into_account_info();
 
-                    OraclePriceFeedAdapter::SwitchboardV2(
-                        SwitchboardV2PriceFeed::load_checked(&oracle_account_info, i64::MAX, 0)
-                            .unwrap(),
-                    )
+                    Ok(OraclePriceFeedAdapter::SwitchboardV2(
+                        SwitchboardV2PriceFeed::load_checked(&oracle_account_info, i64::MAX, 0)?,
+                    ))
                 }
                 OracleSetup::PythPushOracle => {
                     let oracle_account_info =
                         (&oracle_address, &mut oracle_account).into_account_info();
-                    ward!(
-                        OraclePriceFeedAdapter::try_from_bank_config(
-                            &bank.config,
-                            &[oracle_account_info],
-                            &clock_manager::get_clock(&self.clock)?,
-                        )
-                        .ok(),
-                        continue
+                    OraclePriceFeedAdapter::try_from_bank_config(
+                        &bank.config,
+                        &[oracle_account_info],
+                        &clock_manager::get_clock(&self.clock)?,
                     )
+                    .map_err(Into::into)
                 }
                 OracleSetup::StakedWithPythPush => {
                     let keys = find_oracle_keys(&bank.config);
@@ -345,32 +343,52 @@ impl CacheLoader {
                         keys.iter().position(|key| key == address)
                     });
 
-                    ward!(
-                        OraclePriceFeedAdapter::try_from_bank_config(
-                            &bank.config,
-                            &oracle_account_infos,
-                            &clock_manager::get_clock(&self.clock)?,
-                        )
-                        .ok(),
-                        continue
+                    OraclePriceFeedAdapter::try_from_bank_config(
+                        &bank.config,
+                        &oracle_account_infos,
+                        &clock_manager::get_clock(&self.clock)?,
                     )
+                    .map_err(Into::into)
                 }
-                _ => {
-                    bail!("Unknown oracle setup {:?}", bank.config.oracle_setup);
+
+                _ => bail!(
+                    "Unsupported oracle setup for the Bank {:?}! {:?}",
+                    bank_address,
+                    bank.config.oracle_setup
+                ),
+            };
+
+            match price_adapter {
+                std::result::Result::Ok(adapter) => {
+                    let oracle = T::new(oracle_address, adapter);
+
+                    cache.oracles.try_insert(
+                        oracle_address,
+                        oracle_account.clone(),
+                        Some(oracle),
+                        *bank_address,
+                    )?;
+
+                    debug!(
+                        "Added to Cache the {:?} Oracle {:?} for the Bank {:?}.",
+                        bank.config.oracle_setup, oracle_address, bank_address
+                    );
+                }
+                Err(error) => {
+                    cache.oracles.try_insert(
+                        oracle_address,
+                        oracle_account.clone(),
+                        None,
+                        *bank_address,
+                    )?;
+
+                    error!(
+                        "Failed to load {:?} Oracles for the Bank {:?}! {:?}",
+                        bank.config.oracle_setup, bank_address, error
+                    );
                 }
             };
-            let oracle = T::new(oracle_address, price_adapter);
-
-            if bank.config.oracle_setup == OracleSetup::StakedWithPythPush {
-                debug!(
-                    "Loaded STAKED bank: {:?} with oracle: {:?}",
-                    bank_address, oracle_address
-                );
-            }
-
-            cache
-                .oracles
-                .try_insert(oracle_account, oracle, *bank_address)?;
+            info!("Loaded {} Oracles.", cache.oracles.len());
         }
 
         Ok(())
@@ -398,7 +416,7 @@ impl CacheLoader {
 
                 cache
                     .mints
-                    .try_insert(*mint_address, mint_account.clone(), token_address)?;
+                    .insert(*mint_address, mint_account.clone(), token_address);
             }
         }
 

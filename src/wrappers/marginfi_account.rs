@@ -52,7 +52,7 @@ impl MarginfiAccountWrapper {
                 if b.is_active()
                     && matches!(b.get_side(), Some(BalanceSide::Assets))
                     && !mints_to_exclude
-                        .contains(&cache.banks.get_account(&b.bank_pk).map(|bank| bank.mint)?)
+                        .contains(&cache.banks.get_bank(&b.bank_pk).map(|bank| bank.mint)?)
                 {
                     Some(b.bank_pk)
                 } else {
@@ -148,7 +148,7 @@ impl MarginfiAccountWrapper {
 
         // Add bank oracles
         let result = bank_pks.iter().flat_map(|bank_pk| {
-            let bank = cache.banks.try_get_account(bank_pk)?;
+            let bank = cache.banks.try_get_bank(bank_pk)?;
             let bank_oracle_wrapper = cache.oracles.try_get_wrapper_from_bank(bank_pk)?;
             debug!(
                 "Observation account Bank: {:?}, asset tag type: {:?}.",

@@ -53,19 +53,19 @@ impl<T: OracleWrapperTrait + Clone> CacheT<T> {
     }
 
     pub fn get_bank_wrapper(&self, bank_pk: &Pubkey) -> Option<BankWrapperT<T>> {
-        let bank = self.banks.get_account(bank_pk)?;
+        let bank = self.banks.get_bank(bank_pk)?;
         let oracle = self.oracles.get_wrapper_from_bank(bank_pk)?;
         Some(BankWrapperT::new(*bank_pk, bank, oracle))
     }
 
     pub fn try_get_bank_wrapper(&self, bank_pk: &Pubkey) -> Result<BankWrapperT<T>> {
-        let bank = self.banks.try_get_account(bank_pk)?;
+        let bank = self.banks.try_get_bank(bank_pk)?;
         let oracle = self.oracles.try_get_wrapper_from_bank(bank_pk)?;
         Ok(BankWrapperT::new(*bank_pk, bank, oracle))
     }
 
     pub fn get_token_account_for_bank(&self, bank_pk: &Pubkey) -> Option<Account> {
-        let mint = self.banks.get_account(bank_pk)?.mint;
+        let mint = self.banks.get_bank(bank_pk)?.mint;
         let token = self.tokens.get_token_for_mint(&mint)?;
         self.tokens.get_account(&token)
     }
@@ -106,8 +106,7 @@ pub mod test_utils {
             token_account.data.resize(128, 0);
             cache
                 .mints
-                .try_insert(bank_wrapper.bank.mint, Account::default(), token_address)
-                .unwrap();
+                .insert(bank_wrapper.bank.mint, Account::default(), token_address);
             cache
                 .tokens
                 .try_insert(token_address, token_account, bank_wrapper.bank.mint)
@@ -118,8 +117,9 @@ pub mod test_utils {
             cache
                 .oracles
                 .try_insert(
+                    bank_wrapper.oracle_adapter.address.clone(),
                     oracle_account,
-                    bank_wrapper.oracle_adapter.clone(),
+                    Some(bank_wrapper.oracle_adapter.clone()),
                     bank_wrapper.address,
                 )
                 .unwrap();
@@ -160,7 +160,7 @@ mod tests {
         let cache = create_test_cache(&vec![sol_bank_wrapper.clone(), usdc_bank_wrapper.clone()]);
         let cache = Arc::new(cache);
 
-        let token_address = cache.tokens.get_address_by_index(0).unwrap();
+        let token_address = cache.tokens.get_addresses().get(0).unwrap().clone();
         let result = cache.try_get_token_wrapper(&token_address);
         assert!(result.is_ok());
     }

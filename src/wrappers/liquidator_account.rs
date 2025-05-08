@@ -147,7 +147,7 @@ impl LiquidatorAccount {
         let joined_observation_accounts = liquidator_observation_accounts
             .iter()
             .chain(liquidatee_observation_accounts.iter())
-            .cloned()
+            .copied()
             .collect::<Vec<_>>();
 
         let observation_swb_oracles = joined_observation_accounts
