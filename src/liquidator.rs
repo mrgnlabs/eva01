@@ -441,8 +441,8 @@ impl Liquidator {
             thread_debug!("Account {:?}\nAsset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
             Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
             Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", 
-            account.address, asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_amount, asset_value, 
-            liab_bank.address, liab_bank.bank.config.liability_weight_maint, liab_amount, liab_value, 
+            account.address, asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_amount, asset_value,
+            liab_bank.address, liab_bank.bank.config.liability_weight_maint, liab_amount, liab_value,
             max_liquidatable_value,max_liquidatable_asset_amount, liquidator_profit);
         }
 
