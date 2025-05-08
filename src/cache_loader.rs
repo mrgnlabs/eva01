@@ -251,13 +251,13 @@ impl CacheLoader {
                 && bank.config.oracle_setup != OracleSetup::StakedWithPythPush
             {
                 error!(
-                    "Discarding the Bank {:?} because has more than one oracle key, which is not supported.",
+                    "Discarding the non-staked Bank {:?} because has more than one oracle key, which is not supported.",
                     bank_address
                 );
                 continue;
             }
 
-            // Use the first supported Oracle.
+            // Use the first supported Oracle (for non-staked oracles only).
             let (oracle_address, mut oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
@@ -307,45 +307,44 @@ impl CacheLoader {
                     .map_err(Into::into)
                 }
                 OracleSetup::StakedWithPythPush => {
-                    let keys = find_oracle_keys(&bank.config);
+                    let oracle_keys = find_oracle_keys(&bank.config);
+                    if oracle_keys.len() != 3 {
+                        error!(
+                            "StakedWithPythPush setup requires exactly 3 oracle keys, but found {}",
+                            oracle_keys.len()
+                        )
+                    }
 
-                    let mut oracle_account = oracle_map.get(keys.first().unwrap()).unwrap().clone();
+                    // Note: this is written this strange way to avoid the borrow checker issues
+                    let oracle_to_account = |&key| (key, oracle_map.get(&key).unwrap().clone());
 
-                    let mut oracle_account_infos =
-                        vec![(keys.first().unwrap(), &mut oracle_account).into_account_info()];
+                    let mut oracle_key_to_account = oracle_to_account(oracle_keys.first().unwrap());
+                    let mut lst_mint_key_to_account =
+                        oracle_to_account(oracle_keys.get(1).unwrap());
+                    let mut sol_pool_key_to_account =
+                        oracle_to_account(oracle_keys.get(2).unwrap());
 
-                    // Remove the first key from the list
-                    // TODO: why is that?
-                    let mut keys = keys.clone();
-                    keys.remove(0);
+                    // The oracle itself will be added later, just like for the other oracle setups
+                    for staked_specific_ai in [&lst_mint_key_to_account, &sol_pool_key_to_account] {
+                        cache.oracles.try_insert(
+                            staked_specific_ai.0,
+                            staked_specific_ai.1.clone(),
+                            None,
+                            *bank_address,
+                        )?;
+                    }
 
-                    let accounts_map = oracle_map
-                        .iter()
-                        .filter(|(key, _)| keys.contains(key))
-                        .map(|(key, address)| (*key, address.clone()))
-                        .collect::<Vec<_>>();
-
-                    let mut accounts: Vec<_> = accounts_map
-                        .iter()
-                        .map(|(_, account)| account.clone())
-                        .collect();
-
-                    let remaining_account_infos: Vec<_> = accounts_map
-                        .iter()
-                        .zip(accounts.iter_mut())
-                        .map(|((address, _), account)| (address, account).into_account_info())
-                        .collect();
-
-                    oracle_account_infos.extend(remaining_account_infos);
-
-                    oracle_account_infos.sort_by_key(|info| {
-                        let address = info.key;
-                        keys.iter().position(|key| key == address)
-                    });
+                    let oracle_account_info = oracle_key_to_account.into_account_info();
+                    let lst_mint_account_info = lst_mint_key_to_account.into_account_info();
+                    let sol_pool_account_info = sol_pool_key_to_account.into_account_info();
 
                     OraclePriceFeedAdapter::try_from_bank_config(
                         &bank.config,
-                        &oracle_account_infos,
+                        &[
+                            oracle_account_info,
+                            lst_mint_account_info,
+                            sol_pool_account_info,
+                        ],
                         &clock_manager::get_clock(&self.clock)?,
                     )
                     .map_err(Into::into)
@@ -496,8 +495,6 @@ impl CacheLoader {
     }
 
     fn create_token_accounts(&self, instructions: Vec<Instruction>) -> Result<()> {
-        info!("Registering {} Token accounts...", instructions.len());
-
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
 
         instructions
@@ -522,7 +519,7 @@ impl CacheLoader {
 
                 info!(
                     "{} new Token accounts were successfully registered. Txn sig: {:?}",
-                    instructions.len(),
+                    chunk.len(),
                     sig
                 );
 

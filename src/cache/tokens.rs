@@ -32,7 +32,7 @@ impl TokensCache {
     ) -> anyhow::Result<()> {
         self.tokens
             .write()
-            .map_err(|e| anyhow!("Failed to lock the token map for insert! {}", e))?
+            .map_err(|e| anyhow!("Failed to lock the token map for insert: {}", e))?
             .insert(token_address, token);
         self.token_addresses.insert(token_address);
         self.mint_to_token.insert(mint_address, token_address);
@@ -45,7 +45,7 @@ impl TokensCache {
             .map_err(|err| anyhow!("Failed to lock the tokens map for search! {}", err))?
             .get(address)
             .cloned()
-            .ok_or(anyhow!("Failed ot find Token {}!", &address))
+            .ok_or(anyhow!("Failed to find Token {}!", &address))
     }
 
     pub fn get_account(&self, address: &Pubkey) -> Option<Account> {

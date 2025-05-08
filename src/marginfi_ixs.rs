@@ -2,9 +2,13 @@ use anchor_lang::{InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
 use log::{debug, info, trace};
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
+    commitment_config::CommitmentConfig,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
+    signature::Keypair,
+    signer::Signer,
 };
 
 use crate::{utils::find_bank_liquidity_vault_authority, wrappers::bank::BankWrapper};
@@ -196,4 +200,64 @@ fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_prog
         debug!("!!!Adding mint account to accounts!!!");
         accounts.push(AccountMeta::new_readonly(mint, false));
     }
+}
+
+pub fn make_create_ix(
+    marginfi_program_id: Pubkey,
+    marginfi_group: Pubkey,
+    marginfi_account: Pubkey,
+    signer: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id: marginfi_program_id,
+        accounts: marginfi::accounts::MarginfiAccountInitialize {
+            marginfi_group,
+            marginfi_account,
+            system_program: solana_sdk::system_program::ID,
+            authority: signer,
+            fee_payer: signer,
+        }
+        .to_account_metas(Some(true)),
+        data: marginfi::instruction::MarginfiAccountInitialize.data(),
+    }
+}
+
+pub fn initialize_marginfi_account(
+    rpc_client: &RpcClient,
+    marginfi_program_id: Pubkey,
+    marginfi_group: Pubkey,
+    signer_keypair: &Keypair,
+) -> anyhow::Result<Pubkey> {
+    let marginfi_account_key = Keypair::new();
+
+    let ix = make_create_ix(
+        marginfi_program_id,
+        marginfi_group,
+        marginfi_account_key.pubkey(),
+        signer_keypair.pubkey(),
+    );
+
+    let recent_blockhash = rpc_client.get_latest_blockhash()?;
+    let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&signer_keypair.pubkey()),
+        &[signer_keypair, &marginfi_account_key],
+        recent_blockhash,
+    );
+
+    let res = rpc_client.send_and_confirm_transaction_with_spinner_and_config(
+        &tx,
+        CommitmentConfig::confirmed(),
+        RpcSendTransactionConfig {
+            skip_preflight: true,
+            ..Default::default()
+        },
+    );
+    info!(
+        "Initialized new Marginfi account {:?} (without preflight check): {:?} ",
+        marginfi_account_key.pubkey(),
+        res
+    );
+
+    Ok(marginfi_account_key.pubkey())
 }
