@@ -49,7 +49,7 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
         address: &Pubkey,
         price_adapter: OraclePriceFeedAdapter,
     ) -> Result<()> {
-        let wrapper = T::new(address.clone(), price_adapter);
+        let wrapper = T::new(*address, price_adapter);
         self.oracle_wrappers
             .write()
             .map_err(|e| anyhow!("Failed to lock the account_wrappers map for update! {}", e))?

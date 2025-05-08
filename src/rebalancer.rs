@@ -68,6 +68,7 @@ pub struct Rebalancer {
 }
 
 impl Rebalancer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         general_config: GeneralConfig,
         config: RebalancerCfg,

@@ -11,8 +11,6 @@ pub trait OracleWrapperTrait {
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48>;
     fn get_address(&self) -> Pubkey;
-    fn set_swb_feed_hash(&mut self, hash: String);
-    fn set_price_adapter(&mut self, adapter: OraclePriceFeedAdapter);
 }
 
 #[derive(Clone)]
@@ -60,14 +58,6 @@ impl OracleWrapperTrait for OracleWrapper {
 
     fn get_address(&self) -> Pubkey {
         self.address
-    }
-
-    fn set_swb_feed_hash(&mut self, hash: String) {
-        self.swb_feed_hash = Some(hash);
-    }
-
-    fn set_price_adapter(&mut self, adapter: OraclePriceFeedAdapter) {
-        self.price_adapter = adapter;
     }
 }
 
@@ -147,14 +137,6 @@ pub mod test_utils {
 
         fn get_address(&self) -> Pubkey {
             self.address
-        }
-
-        fn set_swb_feed_hash(&mut self, _: String) {
-            () //Noop
-        }
-
-        fn set_price_adapter(&mut self, _: OraclePriceFeedAdapter) {
-            () //Noop
         }
     }
 }
