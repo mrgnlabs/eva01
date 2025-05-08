@@ -79,7 +79,7 @@ impl Rebalancer {
         cache: Arc<Cache>,
         swb_price_simulator: Arc<SwbCranker>,
     ) -> anyhow::Result<Self> {
-        let txn_client = Arc::new(RpcClient::new(general_config.tx_landing_url.clone()));
+        let txn_client = Arc::new(RpcClient::new(general_config.rpc_url.clone()));
         let non_blocking_rpc_client = NonBlockingRpcClient::new(general_config.rpc_url.clone());
 
         let liquidator_account = LiquidatorAccount::new(

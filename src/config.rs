@@ -14,8 +14,7 @@ use std::{
 };
 use toml::ser::to_string_pretty;
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-/// Eva01 configuration strecture
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Eva01Config {
     pub general_config: GeneralConfig,
     pub liquidator_config: LiquidatorCfg,
@@ -45,7 +44,6 @@ impl Eva01Config {
 /// General config that can be shared by liquidator, rebalancer and geyser
 pub struct GeneralConfig {
     pub rpc_url: String,
-    pub tx_landing_url: String,
     pub yellowstone_endpoint: String,
     pub yellowstone_x_token: Option<String>,
     #[serde(default = "GeneralConfig::default_block_engine_url")]
@@ -56,13 +54,9 @@ pub struct GeneralConfig {
     )]
     pub signer_pubkey: Pubkey,
     pub keypair_path: PathBuf,
-    #[serde(
-        deserialize_with = "from_pubkey_string",
-        serialize_with = "pubkey_to_str"
-    )]
-    pub liquidator_account: Pubkey,
     #[serde(default = "GeneralConfig::default_compute_unit_price_micro_lamports")]
     pub compute_unit_price_micro_lamports: Option<u64>,
+    #[serde(default = "GeneralConfig::default_compute_unit_limit")]
     pub compute_unit_limit: u32,
     #[serde(
         deserialize_with = "from_pubkey_string",
@@ -72,8 +66,7 @@ pub struct GeneralConfig {
     pub marginfi_program_id: Pubkey,
     #[serde(
         deserialize_with = "from_pubkey_string",
-        serialize_with = "pubkey_to_str",
-        default = "GeneralConfig::default_marginfi_group_address"
+        serialize_with = "pubkey_to_str"
     )]
     pub marginfi_group_address: Pubkey,
     #[serde(
@@ -88,6 +81,7 @@ pub struct GeneralConfig {
         serialize_with = "vec_pubkey_to_str"
     )]
     pub address_lookup_tables: Vec<Pubkey>,
+    #[serde(default = "GeneralConfig::default_sol_clock_refresh_interval")]
     pub solana_clock_refresh_interval: u64,
 }
 
@@ -101,7 +95,6 @@ impl std::fmt::Display for GeneralConfig {
                  - Yellowstone X Token: {}\n\
                  - Signer Pubkey: {}\n\
                  - Keypair Path: {:?}\n\
-                 - Liquidator Account: {}\n\
                  - Compute Unit Price Micro Lamports: {}\n\
                  - Compute Unit Limit: {}\n\
                  - Marginfi Program ID: {}\n\
@@ -112,7 +105,6 @@ impl std::fmt::Display for GeneralConfig {
             self.yellowstone_x_token.as_deref().unwrap_or("None"),
             self.signer_pubkey,
             self.keypair_path,
-            self.liquidator_account,
             self.compute_unit_price_micro_lamports.unwrap_or_default(),
             self.compute_unit_limit,
             self.marginfi_program_id,
@@ -141,10 +133,6 @@ impl GeneralConfig {
         marginfi::id()
     }
 
-    pub fn default_marginfi_group_address() -> Pubkey {
-        pubkey!("4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8")
-    }
-
     pub fn default_account_whitelist() -> Option<Vec<Pubkey>> {
         None
     }
@@ -158,7 +146,7 @@ impl GeneralConfig {
     }
 
     pub fn default_block_engine_url() -> String {
-        String::from("https://ny.mainnet.block-engine.jito.wtf")
+        String::from("https://ny.mainnet.block-engine.jito.wtf/api/v1")
     }
 
     pub fn default_address_lookup_tables() -> Vec<Pubkey> {
@@ -173,7 +161,7 @@ impl GeneralConfig {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 pub struct LiquidatorCfg {
     /// Minimun profit on a liquidation to be considered, denominated in USD
     ///
@@ -212,7 +200,7 @@ impl std::fmt::Display for LiquidatorCfg {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RebalancerCfg {
     #[serde(
         default = "RebalancerCfg::default_token_account_dust_threshold",
@@ -246,11 +234,11 @@ impl RebalancerCfg {
     }
 
     pub fn default_swap_mint() -> Pubkey {
-        pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v") // USDC
     }
 
     pub fn default_preferred_mints() -> Vec<Pubkey> {
-        vec![pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")]
+        vec![pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")] // USDC
     }
 
     pub fn default_jup_swap_api_url() -> String {
