@@ -123,10 +123,11 @@ impl GeyserService {
                             // Make sure that the message is not too old.
                             let clock = clock_manager::get_clock(&self.clock)?;
                             if account.slot < clock.slot {
-                                thread_trace!("Discarding old message {:?}.", account);
+                                thread_trace!("Discarding stale message {:?}.", account);
                                 continue;
                             }
 
+                            // TODO: need more elaborate message payload check, it is hiding invalid messages.
                             let account_update = ward!(&account.account, continue);
                             let account =
                                 ward!(account_update_to_account(account_update).ok(), continue);

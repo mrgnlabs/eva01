@@ -75,7 +75,7 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
 
     pub fn try_get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Result<T> {
         let oracle = self.bank_to_oracle.get(bank_address).ok_or(anyhow!(
-            "Failed ot find Oracle for the Bank {}!",
+            "Failed to find Oracle for the Bank {}!",
             &bank_address
         ))?;
 
@@ -90,7 +90,7 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
             .get(oracle)
             .cloned()
             .ok_or(anyhow!(
-                "Failed ot find Oracle wrapper for the Oracle {}!",
+                "Failed to find Oracle wrapper for the Oracle {}!",
                 &oracle
             ))
     }
