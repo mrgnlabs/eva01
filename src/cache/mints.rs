@@ -27,7 +27,7 @@ impl MintsCache {
     pub fn try_get_account(&self, address: &Pubkey) -> Result<MintWrapper> {
         self.mints
             .get(address)
-            .ok_or(anyhow!("Failed ot find Mint for the Address {}!", &address))
+            .ok_or(anyhow!("Failed to find Mint for the Address {}!", &address))
             .cloned()
     }
 

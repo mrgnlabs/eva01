@@ -164,10 +164,10 @@ fn log_error(error: anyhow::Error) {
                 thread_debug!("Discarding the stale price Geyser update! {}", error);
             }
             _ => {
-                thread_error!("Failed to process Geyser update! {}", error);
+                thread_error!("Failed to process Geyser update: {}", error);
             }
         },
-        None => thread_error!("Failed to process Geyser update! {}", error),
+        None => thread_error!("Failed to process Geyser update: {}", error),
     }
 }
 #[cfg(test)]

@@ -52,6 +52,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("Panic occurred: {:#?}", panic_info);
 
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("Payload: {}", s);
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            eprintln!("Payload: {}", s);
+        } else if let Some(err) = panic_info.payload().downcast_ref::<anyhow::Error>() {
+            eprintln!("Payload: {:?}", err);
+        } else {
+            eprintln!("Payload: (unknown type)");
+        }
+
         eprintln!("Backtrace: {}", Backtrace::capture());
 
         std::process::exit(1);

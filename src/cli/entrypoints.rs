@@ -187,7 +187,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
             monitor_jito_rx.len()
         );
         thread_info!(
-            "Stats: Liqudations [attemps, failed] -> [{},{}]",
+            "Stats: Liqudations [attempts, failed] -> [{},{}]",
             LIQUIDATION_ATTEMPTS.get(),
             FAILED_LIQUIDATIONS.get()
         );

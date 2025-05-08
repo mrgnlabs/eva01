@@ -35,7 +35,7 @@ impl MarginfiAccountsCache {
                 )
             })?
             .get(address)
-            .ok_or(anyhow!("Failed ot find the Marginfi account {}!", &address))
+            .ok_or(anyhow!("Failed to find the Marginfi account {}!", &address))
             .cloned()
     }
 
@@ -51,7 +51,7 @@ impl MarginfiAccountsCache {
             .get_index(index)
             .map(|(_, account)| account.clone())
             .ok_or(anyhow!(
-                "Failed ot find the Marginfi account with index {}!",
+                "Failed to find the Marginfi account with index {}!",
                 index
             ))
     }
