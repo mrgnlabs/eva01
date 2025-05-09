@@ -171,7 +171,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     thread::spawn(move || {
         if let Err(e) = geyser_service.start() {
             thread_error!("GeyserService failed! {:?}", e);
-            panic!("Fatal error in GeyserProcessor!");
+            panic!("Fatal error in GeyserService!");
         }
     });
 

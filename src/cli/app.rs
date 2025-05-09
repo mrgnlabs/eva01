@@ -18,21 +18,16 @@ pub enum Commands {
         #[arg(required = true)]
         path: PathBuf,
     },
-    #[command(about = "Setups a new configuration file, by the user preferences")]
-    Setup,
     #[command(
-        hide = true,
-        about = "Setups a new configuration file, by the user preferences"
+        about = "Guides user through the process of creating a new configuration file, step by step"
     )]
-    SetupFromCli(SetupFromCliOpts),
+    Setup,
 }
 
 #[derive(Parser, Debug)]
 pub struct SetupFromCliOpts {
     #[arg(short = 'u', long, help = "RPC endpoint url")]
     pub rpc_url: String,
-    #[arg(short = 't', long, help = "Tx landing url")]
-    pub tx_landing_url: String,
     #[arg(short = 'k', long, help = "Signer keypair path")]
     pub keypair_path: PathBuf,
     #[arg(
@@ -58,8 +53,7 @@ pub struct SetupFromCliOpts {
     pub marginfi_program_id: Pubkey,
     #[arg(
         long,
-        help = "Marginfi group address",
-        default_value = "4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8"
+        help = "Marginfi group address (Main group - 4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8)"
     )]
     pub marginfi_group_address: Pubkey,
     #[arg(

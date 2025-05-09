@@ -1,14 +1,18 @@
 use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     cache::Cache,
+    cli::setup::marginfi_account_by_authority,
     config::GeneralConfig,
-    marginfi_ixs::{make_deposit_ix, make_liquidate_ix, make_repay_ix, make_withdraw_ix},
+    marginfi_ixs::{
+        initialize_marginfi_account, make_deposit_ix, make_liquidate_ix, make_repay_ix,
+        make_withdraw_ix,
+    },
     thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
 };
 use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
-use marginfi::state::marginfi_account::MarginfiAccount;
+use log::info;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
     rpc_config::RpcSendTransactionConfig,
@@ -55,11 +59,32 @@ impl LiquidatorAccount {
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
+        let marginfi_group_id = config.marginfi_group_address;
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
-        let liquidator_address = config.liquidator_account;
         let rpc_client = RpcClient::new(config.rpc_url.clone());
-        let account = rpc_client.get_account(&config.liquidator_account)?;
-        let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
+        let accounts = marginfi_account_by_authority(
+            signer_keypair.pubkey(),
+            &rpc_client,
+            config.marginfi_program_id,
+            marginfi_group_id,
+        )?;
+        let liquidator_address = if accounts.is_empty() {
+            info!("No MarginFi account found for the provided signer. Creating it...");
+
+            let liquidator_marginfi_account = initialize_marginfi_account(
+                &rpc_client,
+                config.marginfi_program_id,
+                marginfi_group_id,
+                &signer_keypair,
+            )?;
+            info!(
+                "Initialized new MarginFi account for this liquidator {:?}!",
+                liquidator_marginfi_account
+            );
+            liquidator_marginfi_account
+        } else {
+            accounts[0]
+        };
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
 
@@ -80,7 +105,7 @@ impl LiquidatorAccount {
             liquidator_address,
             signer_keypair,
             program_id: config.marginfi_program_id,
-            group: marginfi_account.group,
+            group: marginfi_group_id,
             transaction_tx,
             swb_gateway,
             rpc_client,
@@ -227,7 +252,7 @@ impl LiquidatorAccount {
             //     )
             //     .await;
 
-            transactions.push(RawTransaction::new(vec![cu_limit_ix, liquidate_ix]));
+            transactions.push(RawTransaction::new(vec![liquidate_ix]));
 
             thread_debug!(
                 "SENDING DOUBLE liquidate: bundle length: {:?}",
