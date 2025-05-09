@@ -39,6 +39,7 @@ use crate::{
     clock_manager,
     geyser::AccountType,
     sender::{SenderCfg, TransactionSender},
+    thread_debug,
     utils::{
         batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
         BatchLoadingConfig,
@@ -222,13 +223,13 @@ impl CacheLoader {
     ) -> anyhow::Result<()> {
         info!("Loading Oracles...");
 
-        let oracle_keys = cache.banks.get_oracles();
+        let oracle_addresses = cache.banks.get_oracles();
         let oracle_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
-            &oracle_keys,
+            &oracle_addresses,
             BatchLoadingConfig::DEFAULT,
         )?;
-        let oracle_map: HashMap<Pubkey, Account> = oracle_keys
+        let oracle_map: HashMap<Pubkey, Account> = oracle_addresses
             .iter()
             .zip(oracle_accounts.iter())
             .filter_map(|(pk, account)| account.as_ref().map(|acc| (*pk, acc.clone())))
@@ -273,6 +274,18 @@ impl CacheLoader {
 
                 (oracle_address.unwrap(), oracle_account.unwrap())
             };
+
+            if cache.oracles.exists(&oracle_address) {
+                thread_debug!(
+                    "The {} Oracle is already registered. Wiring it with the Bank {}.",
+                    oracle_address,
+                    bank_address
+                );
+                cache
+                    .oracles
+                    .try_wire_with_bank(&oracle_address, &bank_address)?;
+                continue;
+            }
 
             let price_adapter = match bank.config.oracle_setup {
                 OracleSetup::SwitchboardPull => {
