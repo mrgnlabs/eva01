@@ -25,8 +25,9 @@ impl Eva01Config {
     pub fn try_load_from_file(path: PathBuf) -> anyhow::Result<Self> {
         let config_str = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("Failed to read config file ({:?}): {:#?}", &path, e))?;
-        let config = toml::from_str(&config_str)
+        let config: Eva01Config = toml::from_str(&config_str)
             .map_err(|e| anyhow::anyhow!("Failed to parse config file ({:?}): {:#?}", &path, e))?;
+        config.general_config.validate()?;
         Ok(config)
     }
 
@@ -65,10 +66,17 @@ pub struct GeneralConfig {
     )]
     pub marginfi_program_id: Pubkey,
     #[serde(
-        deserialize_with = "from_pubkey_string",
-        serialize_with = "pubkey_to_str"
+        deserialize_with = "from_option_vec_pubkey_string",
+        serialize_with = "vec_pubkey_to_option_vec_str",
+        default
     )]
-    pub marginfi_group_address: Pubkey,
+    pub marginfi_groups_whitelist: Option<Vec<Pubkey>>,
+    #[serde(
+        deserialize_with = "from_option_vec_pubkey_string",
+        serialize_with = "vec_pubkey_to_option_vec_str",
+        default
+    )]
+    pub marginfi_groups_blacklist: Option<Vec<Pubkey>>,
     #[serde(
         deserialize_with = "from_option_vec_pubkey_string",
         serialize_with = "vec_pubkey_to_option_vec_str",
@@ -98,7 +106,8 @@ impl std::fmt::Display for GeneralConfig {
                  - Compute Unit Price Micro Lamports: {}\n\
                  - Compute Unit Limit: {}\n\
                  - Marginfi Program ID: {}\n\
-                 - Marginfi Group Address: {}\n\
+                 - Marginfi Groups Whitelist: {}\n\
+                 - Marginfi Groups Blacklist: {}\n\
                  - Account Whitelist: {}",
             self.rpc_url,
             self.yellowstone_endpoint,
@@ -108,7 +117,22 @@ impl std::fmt::Display for GeneralConfig {
             self.compute_unit_price_micro_lamports.unwrap_or_default(),
             self.compute_unit_limit,
             self.marginfi_program_id,
-            self.marginfi_group_address,
+            self.marginfi_groups_whitelist
+                .as_ref()
+                .map(|v| v
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", "))
+                .unwrap_or("None".to_string()),
+            self.marginfi_groups_blacklist
+                .as_ref()
+                .map(|v| v
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", "))
+                .unwrap_or("None".to_string()),
             self.account_whitelist
                 .as_ref()
                 .map(|v| v
@@ -122,6 +146,18 @@ impl std::fmt::Display for GeneralConfig {
 }
 
 impl GeneralConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let whitelist_set = self.marginfi_groups_whitelist.is_some()
+            && !self.marginfi_groups_whitelist.as_ref().unwrap().is_empty();
+        let blacklist_set = self.marginfi_groups_blacklist.is_some();
+
+        match (whitelist_set, blacklist_set) {
+            (true, false) | (false, true) => Ok(()),
+            (true, true) => Err(anyhow::anyhow!("Only one of marginfi_groups_whitelist or marginfi_groups_blacklist must be set.")),
+            (false, false) => Err(anyhow::anyhow!("One of marginfi_groups_whitelist or marginfi_groups_blacklist must be set. marginfi_groups_whitelist must not be empty.")),
+        }
+    }
+
     pub fn get_geyser_service_config(&self) -> GeyserServiceConfig {
         GeyserServiceConfig {
             endpoint: self.yellowstone_endpoint.clone(),
