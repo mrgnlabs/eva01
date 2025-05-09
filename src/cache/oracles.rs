@@ -37,7 +37,7 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
         if let Some(wrapper) = oracle_wrapper {
             self.oracle_wrappers
                 .write()
-                .map_err(|e| anyhow!("Failed to lock the account_wrappers map for insert! {}", e))?
+                .map_err(|e| anyhow!("Failed to lock the oracle_wrappers map for insert! {}", e))?
                 .insert(address, wrapper);
         }
 
@@ -84,7 +84,7 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
         let wrapper = T::new(*address, price_adapter);
         self.oracle_wrappers
             .write()
-            .map_err(|e| anyhow!("Failed to lock the account_wrappers map for update! {}", e))?
+            .map_err(|e| anyhow!("Failed to lock the oracle_wrappers map for update! {}", e))?
             .insert(*address, wrapper);
 
         Ok(())
@@ -105,26 +105,40 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
         self.accounts.keys().cloned().collect()
     }
 
+    pub fn try_get_wrappers(&self) -> Result<Vec<T>> {
+        Ok(self
+            .oracle_wrappers
+            .read()
+            .map_err(|e| anyhow!("Failed to lock the oracle_wrappers for copying! {}", e))?
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    pub fn try_get_wrapper(&self, address: &Pubkey) -> Result<T> {
+        self.oracle_wrappers
+            .read()
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to lock the oracle_wrappers map for searching! {}",
+                    e
+                )
+            })?
+            .get(address)
+            .cloned()
+            .ok_or(anyhow!(
+                "Failed to find Oracle wrapper for the Oracle {}!",
+                &address
+            ))
+    }
+
     pub fn try_get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Result<T> {
         let oracle = self.bank_to_oracle.get(bank_address).ok_or(anyhow!(
             "Failed to find Oracle for the Bank {}!",
             &bank_address
         ))?;
 
-        self.oracle_wrappers
-            .read()
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to lock the account_wrappers map for searching! {}",
-                    e
-                )
-            })?
-            .get(oracle)
-            .cloned()
-            .ok_or(anyhow!(
-                "Failed to find Oracle wrapper for the Oracle {}!",
-                &oracle
-            ))
+        self.try_get_wrapper(oracle)
     }
 
     pub fn get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Option<T> {
@@ -276,5 +290,24 @@ mod tests {
             cache.bank_to_oracle.get(&bank_address),
             Some(&oracle_address)
         );
+    }
+
+    #[test]
+    fn test_try_get_wrappers() {
+        let mut cache = OraclesCache::<TestOracleWrapper>::new();
+        let account = Account::default();
+        let oracle_wrapper = TestOracleWrapper::test_sol();
+        let oracle_address = oracle_wrapper.get_address();
+
+        cache.accounts.insert(oracle_address, account);
+        cache
+            .oracle_wrappers
+            .write()
+            .unwrap()
+            .insert(oracle_address, oracle_wrapper);
+
+        let wrappers = cache.try_get_wrappers().unwrap();
+        assert_eq!(wrappers.len(), 1);
+        assert_eq!(wrappers[0].get_address(), oracle_address);
     }
 }

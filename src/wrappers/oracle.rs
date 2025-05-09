@@ -19,7 +19,6 @@ pub struct OracleWrapper {
     pub price_adapter: OraclePriceFeedAdapter,
     // Simulated price are only for swb pull oracles
     pub simulated_price: Option<f64>,
-    pub swb_feed_hash: Option<String>,
 }
 
 impl OracleWrapper {
@@ -37,7 +36,6 @@ impl OracleWrapperTrait for OracleWrapper {
             address,
             price_adapter,
             simulated_price: None,
-            swb_feed_hash: None,
         }
     }
     fn get_price_of_type(

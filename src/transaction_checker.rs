@@ -128,7 +128,12 @@ fn get_bundle_status(status_response: &serde_json::Value) -> anyhow::Result<Bund
         .and_then(|result| result.get("value"))
         .and_then(|value| value.as_array())
         .and_then(|statuses| statuses.first())
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse bundle status"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Failed to parse bundle status from the response: {}",
+                status_response
+            )
+        })
         .map(|bundle_status| BundleStatus {
             confirmation_status: bundle_status
                 .get("confirmation_status")
