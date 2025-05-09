@@ -5,7 +5,7 @@ use marginfi::state::price::OraclePriceFeedAdapter;
 use solana_sdk::{account::Account, pubkey::Pubkey};
 
 use crate::wrappers::oracle::OracleWrapperTrait;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 
 pub struct OraclesCache<T: OracleWrapperTrait + Clone> {
     accounts: HashMap<Pubkey, Account>,
@@ -40,6 +40,38 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
                 .map_err(|e| anyhow!("Failed to lock the account_wrappers map for insert! {}", e))?
                 .insert(address, wrapper);
         }
+
+        Ok(())
+    }
+
+    pub fn try_get_account(&self, address: &Pubkey) -> Result<Account> {
+        self.accounts
+            .get(address)
+            .ok_or(anyhow!(
+                "Failed to find Oracle account with the Address {}!",
+                &address
+            ))
+            .cloned()
+    }
+
+    pub fn exists(&self, address: &Pubkey) -> bool {
+        self.try_get_account(address).is_ok()
+    }
+
+    pub fn try_wire_with_bank(
+        &mut self,
+        oracle_address: &Pubkey,
+        bank_address: &Pubkey,
+    ) -> Result<()> {
+        if !self.exists(oracle_address) {
+            bail!(
+                "Unknown Oracle address {}! Cannot wire it with the Bank {}",
+                oracle_address,
+                bank_address
+            );
+        };
+        self.oracle_to_bank.insert(*oracle_address, *bank_address);
+        self.bank_to_oracle.insert(*bank_address, *oracle_address);
 
         Ok(())
     }
@@ -214,5 +246,35 @@ mod tests {
 
         let retrieved_bank = cache.try_get_bank_from_oracle(&oracle_address).unwrap();
         assert_eq!(retrieved_bank, bank_address);
+    }
+    #[test]
+    fn test_exists() {
+        let mut cache = OraclesCache::<TestOracleWrapper>::new();
+        let oracle_address = Pubkey::new_unique();
+        let account = Account::default();
+
+        assert!(!cache.exists(&oracle_address));
+        cache.accounts.insert(oracle_address, account);
+        assert!(cache.exists(&oracle_address));
+    }
+
+    #[test]
+    fn test_try_wire_with_bank() {
+        let mut cache = OraclesCache::<TestOracleWrapper>::new();
+        let oracle_address = Pubkey::new_unique();
+        let bank_address = Pubkey::new_unique();
+        cache.accounts.insert(oracle_address, Account::default());
+
+        assert!(cache
+            .try_wire_with_bank(&oracle_address, &bank_address)
+            .is_ok());
+        assert_eq!(
+            cache.oracle_to_bank.get(&oracle_address),
+            Some(&bank_address)
+        );
+        assert_eq!(
+            cache.bank_to_oracle.get(&bank_address),
+            Some(&oracle_address)
+        );
     }
 }
