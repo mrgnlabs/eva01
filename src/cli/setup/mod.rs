@@ -1,11 +1,9 @@
-use super::app::SetupFromCliOpts;
 use crate::{
     config::{Eva01Config, GeneralConfig, LiquidatorCfg, RebalancerCfg},
     utils::{ask_keypair_until_valid, expand_tilde, is_valid_url, prompt_user},
 };
 
 use anyhow::bail;
-use fixed::types::I80F48;
 use lazy_static::lazy_static;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
@@ -14,7 +12,7 @@ use solana_client::{
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::signature::{read_keypair_file, Signer};
+use solana_sdk::signature::Signer;
 use std::{ops::Not, path::PathBuf, str::FromStr};
 
 lazy_static! {
@@ -45,11 +43,9 @@ pub fn setup() -> anyhow::Result<()> {
 
     // RPC config
     let rpc_url = prompt_user("RPC endpoint url [required]: ")?;
-    let tx_landing_url = prompt_user("RPC endpoint url [required]: ")?;
     if !is_valid_url(&rpc_url) {
         bail!("Invalid RPC endpoint");
     }
-    let rpc_client = RpcClient::new(rpc_url.clone());
 
     // Target program/group
     let input_raw = prompt_user(&format!(
@@ -62,24 +58,14 @@ pub fn setup() -> anyhow::Result<()> {
         Pubkey::from_str(&input_raw).expect("Invalid marginfi program id")
     };
 
-    let input_raw = prompt_user(&format!(
-        "Select marginfi group [default: {:?}]: ",
-        GeneralConfig::default_marginfi_group_address()
-    ))?;
-    let marginfi_group_address = if input_raw.is_empty() {
-        GeneralConfig::default_marginfi_group_address()
-    } else {
-        Pubkey::from_str(&input_raw).expect("Invalid marginfi group address")
-    };
+    let input_raw = prompt_user(
+        "Select marginfi group [main group: 4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8]: ",
+    )?;
+    let marginfi_group_address =
+        Pubkey::from_str(&input_raw).expect("Invalid marginfi group address");
 
     // Marginfi account discovery/selection
     let (keypair_path, signer_keypair) = ask_keypair_until_valid()?;
-    let accounts = marginfi_account_by_authority(signer_keypair.pubkey(), rpc_client)?;
-    if accounts.is_empty() {
-        println!("No marginfi account found for the provided signer. Please create one first.");
-        bail!("No marginfi account found");
-        // TODO: initialize a marginfi account programmatically
-    }
 
     let yellowstone_endpoint = prompt_user("Yellowstone endpoint url [required]: ")?;
     let yellowstone_x_token = {
@@ -92,13 +78,11 @@ pub fn setup() -> anyhow::Result<()> {
 
     let general_config = GeneralConfig {
         rpc_url,
-        tx_landing_url,
         yellowstone_endpoint,
         yellowstone_x_token,
         block_engine_url: GeneralConfig::default_block_engine_url(),
         signer_pubkey: signer_keypair.pubkey(),
         keypair_path,
-        liquidator_account: accounts[0],
         compute_unit_price_micro_lamports: GeneralConfig::default_compute_unit_price_micro_lamports(
         ),
         compute_unit_limit: GeneralConfig::default_compute_unit_limit(),
@@ -147,114 +131,14 @@ pub fn setup() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn setup_from_cfg(
-    SetupFromCliOpts {
-        rpc_url,
-        tx_landing_url,
-        keypair_path,
-        marginfi_account,
-        yellowstone_endpoint,
-        yellowstone_x_token,
-        compute_unit_price_micro_lamports,
-        compute_unit_limit,
-        marginfi_program_id,
-        marginfi_group_address,
-        min_profit,
-        max_liquidation_value,
-        token_account_dust_threshold,
-        preferred_mints,
-        swap_mint,
-        jup_swap_api_url,
-        default_slippage_bps,
-        configuration_path,
-        signer_pubkey,
-        isolated_banks,
-        yes,
-    }: SetupFromCliOpts,
-) -> anyhow::Result<()> {
-    let signer_pubkey = match signer_pubkey {
-        Some(pubkey) => pubkey,
-        None => {
-            let signer_keypair = read_keypair_file(&keypair_path)
-                .unwrap_or_else(|_| panic!("Failed to read keypair from path: {:?}", keypair_path));
-            signer_keypair.pubkey()
-        }
-    };
-
-    let marginfi_account = match marginfi_account {
-        Some(account) => account,
-        None => marginfi_account_by_authority(signer_pubkey, RpcClient::new(rpc_url.clone()))
-            .expect("Failed to get marginfi account by authority")
-            .pop()
-            .expect("No marginfi account found"),
-    };
-
-    let general_config = GeneralConfig {
-        rpc_url,
-        tx_landing_url,
-        yellowstone_endpoint,
-        yellowstone_x_token,
-        block_engine_url: GeneralConfig::default_block_engine_url(),
-        signer_pubkey,
-        keypair_path,
-        liquidator_account: marginfi_account,
-        compute_unit_price_micro_lamports,
-        compute_unit_limit,
-        marginfi_program_id,
-        marginfi_group_address,
-        account_whitelist: None,
-        address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
-        solana_clock_refresh_interval: GeneralConfig::default_sol_clock_refresh_interval(),
-    };
-
-    let liquidator_config = LiquidatorCfg {
-        min_profit,
-        max_liquidation_value,
-        isolated_banks,
-    };
-
-    let rebalancer_config = RebalancerCfg {
-        token_account_dust_threshold: I80F48::from_num(token_account_dust_threshold),
-        preferred_mints,
-        swap_mint,
-        jup_swap_api_url,
-        compute_unit_price_micro_lamports,
-        slippage_bps: default_slippage_bps,
-    };
-
-    let config = Eva01Config {
-        general_config,
-        liquidator_config,
-        rebalancer_config,
-    };
-
-    if configuration_path.exists() && !yes {
-        let overwrite = prompt_user(
-            "Configuration file already exists. Do you want to overwrite it? (Y/n)\n> ",
-        )?;
-        if overwrite.to_lowercase() != "y" {
-            println!("Aborted. Configuration file not overwritten.");
-            return Ok(());
-        }
-    }
-
-    match config.try_save_from_config(&configuration_path) {
-        Ok(_) => println!("Configuration saved into {:?}!", configuration_path),
-        Err(_) => println!(
-            "Couldn't save the configuration into {:?}, please try again!",
-            configuration_path
-        ),
-    }
-
-    Ok(())
-}
-
-fn marginfi_account_by_authority(
+pub fn marginfi_account_by_authority(
     authority: Pubkey,
-    rpc_client: RpcClient,
+    rpc_client: &RpcClient,
+    marginfi_program_id: Pubkey,
+    marginfi_group_id: Pubkey,
 ) -> anyhow::Result<Vec<Pubkey>> {
     let marginfi_account_address = rpc_client.get_program_accounts_with_config(
-        &GeneralConfig::default_marginfi_program_id(),
+        &marginfi_program_id,
         RpcProgramAccountsConfig {
             account_config: RpcAccountInfoConfig {
                 encoding: Some(UiAccountEncoding::Base64),
@@ -269,9 +153,7 @@ fn marginfi_account_by_authority(
                 RpcFilterType::Memcmp(Memcmp {
                     offset: 8,
                     #[allow(deprecated)]
-                    bytes: MemcmpEncodedBytes::Base58(
-                        GeneralConfig::default_marginfi_group_address().to_string(),
-                    ),
+                    bytes: MemcmpEncodedBytes::Base58(marginfi_group_id.to_string()),
                     #[allow(deprecated)]
                     encoding: None,
                 }),

@@ -1,6 +1,5 @@
 use crate::config::Eva01Config;
 use clap::Parser;
-use setup::setup_from_cfg;
 
 /// Main Clap app for the CLI
 pub mod app;
@@ -23,7 +22,6 @@ pub fn main_entry() -> anyhow::Result<()> {
         app::Commands::Setup => {
             entrypoints::wizard_setup()?;
         }
-        app::Commands::SetupFromCli(cfg) => setup_from_cfg(cfg)?,
     }
 
     Ok(())
