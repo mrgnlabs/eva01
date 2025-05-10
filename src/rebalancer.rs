@@ -71,6 +71,7 @@ impl Rebalancer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         general_config: GeneralConfig,
+        marginfi_group_id: Pubkey,
         config: RebalancerCfg,
         transaction_tx: Sender<TransactionData>,
         pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
@@ -85,6 +86,7 @@ impl Rebalancer {
         let liquidator_account = LiquidatorAccount::new(
             transaction_tx.clone(),
             &general_config,
+            marginfi_group_id,
             pending_bundles,
             cache.clone(),
         )?;

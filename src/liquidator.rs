@@ -52,6 +52,7 @@ impl Liquidator {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         general_config: GeneralConfig,
+        marginfi_group_id: Pubkey,
         liquidator_config: LiquidatorCfg,
         run_liquidation: Arc<AtomicBool>,
         transaction_sender: Sender<TransactionData>,
@@ -63,6 +64,7 @@ impl Liquidator {
         let liquidator_account = LiquidatorAccount::new(
             transaction_sender,
             &general_config,
+            marginfi_group_id,
             pending_liquidations,
             cache.clone(),
         )?;

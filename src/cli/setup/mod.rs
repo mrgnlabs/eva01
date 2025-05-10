@@ -3,6 +3,7 @@ use crate::{
     utils::{ask_keypair_until_valid, expand_tilde, is_valid_url, prompt_user},
 };
 
+use anchor_lang::Discriminator;
 use anyhow::bail;
 use lazy_static::lazy_static;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
@@ -12,7 +13,7 @@ use solana_client::{
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
+use solana_sdk::{bs58, signature::Signer};
 use std::{ops::Not, path::PathBuf, str::FromStr};
 
 lazy_static! {
@@ -87,7 +88,8 @@ pub fn setup() -> anyhow::Result<()> {
         ),
         compute_unit_limit: GeneralConfig::default_compute_unit_limit(),
         marginfi_program_id,
-        marginfi_group_address,
+        marginfi_groups_whitelist: Some(vec![marginfi_group_address]),
+        marginfi_groups_blacklist: None,
         account_whitelist: GeneralConfig::default_account_whitelist(),
         address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
         solana_clock_refresh_interval: GeneralConfig::default_sol_clock_refresh_interval(),
@@ -176,4 +178,42 @@ pub fn marginfi_account_by_authority(
         .collect();
 
     Ok(marginfi_account_pubkeys)
+}
+
+pub fn marginfi_groups_by_program(
+    rpc_client: &RpcClient,
+    marginfi_program_id: Pubkey,
+) -> anyhow::Result<Vec<Pubkey>> {
+    let discriminator_bytes = marginfi::state::marginfi_group::MarginfiGroup::discriminator();
+
+    let filters = vec![
+        #[allow(deprecated)]
+        RpcFilterType::Memcmp(Memcmp {
+            offset: 0,
+            #[allow(deprecated)]
+            bytes: MemcmpEncodedBytes::Base58(bs58::encode(discriminator_bytes).into_string()),
+            #[allow(deprecated)]
+            encoding: None,
+        }),
+    ];
+
+    let accounts = rpc_client.get_program_accounts_with_config(
+        &marginfi_program_id,
+        RpcProgramAccountsConfig {
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                data_slice: Some(UiDataSliceConfig {
+                    offset: 0,
+                    length: 0,
+                }),
+                ..Default::default()
+            },
+            filters: Some(filters),
+            with_context: Some(false),
+        },
+    )?;
+
+    let pubkeys: Vec<Pubkey> = accounts.iter().map(|(pubkey, _)| *pubkey).collect();
+
+    Ok(pubkeys)
 }

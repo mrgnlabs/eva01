@@ -22,7 +22,8 @@ use std::{
     thread,
 };
 
-pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
+pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow::Result<()> {
+    info!("Starting liquidator for group: {:?}", marginfi_group_id);
     // register_metrics();
 
     // let metrics_route = warp::path("metrics").map(move || {
@@ -37,8 +38,6 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     // tokio::spawn(async move {
     //     warp::serve(metrics_route).run(([0, 0, 0, 0], 8080)).await;
     // });
-
-    info!("Starting eva01 liquidator! {:#?}", &config);
 
     // This is to stop liquidator when rebalancer asks for it
     let stop_liquidator = Arc::new(AtomicBool::new(false));
@@ -58,7 +57,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let mut cache = CacheT::new(
         config.general_config.signer_pubkey,
         config.general_config.marginfi_program_id,
-        config.general_config.marginfi_group_address,
+        marginfi_group_id,
     );
 
     let cache_loader = CacheLoader::new(
@@ -92,6 +91,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
     let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
+        marginfi_group_id,
         config.liquidator_config.clone(),
         run_liquidation.clone(),
         transaction_tx.clone(),
@@ -103,6 +103,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
+        marginfi_group_id,
         config.rebalancer_config.clone(),
         transaction_tx,
         Arc::clone(&pending_bundles),
@@ -114,6 +115,7 @@ pub fn run_liquidator(config: Eva01Config) -> anyhow::Result<()> {
 
     let geyser_service = GeyserService::new(
         config.general_config,
+        marginfi_group_id,
         accounts_to_track,
         geyser_tx,
         stop_liquidator.clone(),

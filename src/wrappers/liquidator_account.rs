@@ -56,10 +56,10 @@ impl LiquidatorAccount {
     pub fn new(
         transaction_tx: Sender<TransactionData>,
         config: &GeneralConfig,
+        marginfi_group_id: Pubkey,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
-        let marginfi_group_id = config.marginfi_group_address;
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
         let rpc_client = RpcClient::new(config.rpc_url.clone());
         let accounts = marginfi_account_by_authority(
