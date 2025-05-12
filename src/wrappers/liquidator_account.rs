@@ -138,16 +138,18 @@ impl LiquidatorAccount {
         let banks_to_exclude: Vec<Pubkey> = vec![];
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let liquidator_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&self.liquidator_address)?
-                .lending_account,
-            &banks_to_include,
-            &banks_to_exclude,
-            self.cache.clone(),
-        )?;
+        // TODO: verify that we actually need liquidator's swb oracles. Probably liquidatee's are enough.
+        let (liquidator_observation_accounts, _) =
+            MarginfiAccountWrapper::get_observation_accounts(
+                &self
+                    .cache
+                    .marginfi_accounts
+                    .try_get_account(&self.liquidator_address)?
+                    .lending_account,
+                &banks_to_include,
+                &banks_to_exclude,
+                self.cache.clone(),
+            )?;
         thread_debug!(
             "Liquidator observation accounts: {:?}",
             liquidator_observation_accounts
@@ -157,12 +159,13 @@ impl LiquidatorAccount {
         let banks_to_exclude: Vec<Pubkey> = vec![];
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let liquidatee_observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
-            &liquidatee_account.lending_account,
-            &banks_to_include,
-            &banks_to_exclude,
-            self.cache.clone(),
-        )?;
+        let (liquidatee_observation_accounts, swb_oracles) =
+            MarginfiAccountWrapper::get_observation_accounts(
+                &liquidatee_account.lending_account,
+                &banks_to_include,
+                &banks_to_exclude,
+                self.cache.clone(),
+            )?;
         thread_debug!(
             "Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address,
@@ -175,26 +178,13 @@ impl LiquidatorAccount {
             .copied()
             .collect::<Vec<_>>();
 
-        let observation_swb_oracles = joined_observation_accounts
-            .iter()
-            .filter_map(|pk| {
-                self.cache.get_bank_wrapper(pk).and_then(|bank| {
-                    if bank.oracle_adapter.is_switchboard_pull() {
-                        Some(bank.oracle_adapter.address)
-                    } else {
-                        None
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let crank_data = if !observation_swb_oracles.is_empty() {
+        let crank_data = if !swb_oracles.is_empty() {
             thread_debug!("Cranking Swb Oracles for observation accounts.",);
             if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
-                    feeds: observation_swb_oracles,
+                    feeds: swb_oracles,
                     payer: self.signer_keypair.pubkey(),
                     gateway: self.swb_gateway.clone(),
                     num_signatures: Some(1),
@@ -331,7 +321,7 @@ impl LiquidatorAccount {
         };
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let observation_accounts = MarginfiAccountWrapper::get_observation_accounts(
+        let (observation_accounts, _) = MarginfiAccountWrapper::get_observation_accounts(
             &self
                 .cache
                 .marginfi_accounts

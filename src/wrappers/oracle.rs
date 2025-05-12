@@ -21,15 +21,6 @@ pub struct OracleWrapper {
     pub simulated_price: Option<f64>,
 }
 
-impl OracleWrapper {
-    pub fn is_switchboard_pull(&self) -> bool {
-        matches!(
-            self.price_adapter,
-            OraclePriceFeedAdapter::SwitchboardPull(_)
-        )
-    }
-}
-
 impl OracleWrapperTrait for OracleWrapper {
     fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
         Self {

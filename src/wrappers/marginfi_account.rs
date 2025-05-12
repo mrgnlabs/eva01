@@ -4,7 +4,10 @@ use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
-use marginfi::state::marginfi_account::{BalanceSide, LendingAccount};
+use marginfi::state::{
+    marginfi_account::{BalanceSide, LendingAccount},
+    price::OracleSetup,
+};
 use solana_program::pubkey::Pubkey;
 use std::sync::Arc;
 
@@ -121,7 +124,7 @@ impl MarginfiAccountWrapper {
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         cache: Arc<CacheT<T>>,
-    ) -> Result<Vec<Pubkey>> {
+    ) -> Result<(Vec<Pubkey>, Vec<Pubkey>)> {
         // This is a temporary fix to ensure the proper order of the remaining accounts.
         // It will NOT be necessary once this PR is deployed: https://github.com/mrgnlabs/marginfi-v2/pull/320
         let active_bank_pks = MarginfiAccountWrapper::get_active_banks(lending_account);
@@ -146,14 +149,18 @@ impl MarginfiAccountWrapper {
 
         bank_pks.retain(|bank_pk| !exclude_banks.contains(bank_pk));
 
+        let mut swb_oracles = vec![];
         // Add bank oracles
-        let result = bank_pks.iter().flat_map(|bank_pk| {
+        let observation_accounts = bank_pks.iter().flat_map(|bank_pk| {
             let bank = cache.banks.try_get_bank(bank_pk)?;
             let bank_oracle_wrapper = cache.oracles.try_get_wrapper_from_bank(bank_pk)?;
             debug!(
                 "Observation account Bank: {:?}, asset tag type: {:?}.",
                 bank_pk, bank.config.asset_tag
             );
+            if matches!(bank.config.oracle_setup, OracleSetup::SwitchboardPull) {
+                swb_oracles.push(bank_oracle_wrapper.get_address());
+            }
 
             if bank.config.oracle_keys[1] != Pubkey::default()
                 && bank.config.oracle_keys[2] != Pubkey::default()
@@ -173,7 +180,10 @@ impl MarginfiAccountWrapper {
             }
         });
 
-        Ok(result.into_iter().flatten().collect())
+        Ok((
+            observation_accounts.into_iter().flatten().collect(),
+            swb_oracles,
+        ))
     }
 }
 
