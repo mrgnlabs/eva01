@@ -197,10 +197,10 @@ mod tests {
             .oracle_wrappers
             .read()
             .unwrap()
-            .contains_key(&oracle_address));
+            .contains_key(&(oracle_address, bank_address)));
         assert_eq!(
-            cache.oracle_to_bank.get(&oracle_address),
-            Some(&bank_address)
+            cache.oracle_to_banks.get(&oracle_address),
+            Some(&vec![bank_address])
         );
         assert_eq!(
             cache.bank_to_oracle.get(&bank_address),
@@ -252,7 +252,7 @@ mod tests {
             .oracle_wrappers
             .write()
             .unwrap()
-            .insert(oracle_address, wrapper.clone());
+            .insert((oracle_address, bank_address), wrapper.clone());
 
         let retrieved_wrapper = cache.get_wrapper_from_bank(&bank_address);
         assert!(retrieved_wrapper.is_some());
@@ -265,10 +265,13 @@ mod tests {
         let bank_address = Pubkey::new_unique();
         let oracle_address = Pubkey::new_unique();
 
-        cache.oracle_to_bank.insert(oracle_address, bank_address);
+        cache
+            .oracle_to_banks
+            .insert(oracle_address, vec![bank_address]);
 
-        let retrieved_bank = cache.try_get_bank_from_oracle(&oracle_address).unwrap();
-        assert_eq!(retrieved_bank, bank_address);
+        let retrieved_banks = cache.try_get_banks_from_oracle(&oracle_address).unwrap();
+        assert_eq!(retrieved_banks.len(), 1);
+        assert_eq!(retrieved_banks[0], bank_address);
     }
     #[test]
     fn test_exists() {
@@ -292,8 +295,8 @@ mod tests {
             .try_wire_with_bank(&oracle_address, &bank_address)
             .is_ok());
         assert_eq!(
-            cache.oracle_to_bank.get(&oracle_address),
-            Some(&bank_address)
+            cache.oracle_to_banks.get(&oracle_address),
+            Some(&vec![bank_address])
         );
         assert_eq!(
             cache.bank_to_oracle.get(&bank_address),
@@ -307,13 +310,14 @@ mod tests {
         let account = Account::default();
         let oracle_wrapper = TestOracleWrapper::test_sol();
         let oracle_address = oracle_wrapper.get_address();
+        let bank_address = Pubkey::new_unique();
 
         cache.accounts.insert(oracle_address, account);
         cache
             .oracle_wrappers
             .write()
             .unwrap()
-            .insert(oracle_address, oracle_wrapper);
+            .insert((oracle_address, bank_address), oracle_wrapper);
 
         let wrappers = cache.try_get_wrappers().unwrap();
         assert_eq!(wrappers.len(), 1);

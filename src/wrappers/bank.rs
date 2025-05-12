@@ -88,7 +88,7 @@ pub mod test_utils {
 
     use super::*;
 
-    use marginfi::state::marginfi_group::BankConfig;
+    use marginfi::state::{marginfi_group::BankConfig, price::OracleSetup};
 
     pub type TestBankWrapper = BankWrapperT<TestOracleWrapper>;
 
@@ -140,7 +140,7 @@ pub mod test_utils {
         }
 
         pub fn test_bonk() -> Self {
-            let bank = Bank::new(
+            let mut bank = Bank::new(
                 Pubkey::new_unique(),
                 BankConfig::default(),
                 Pubkey::new_unique(),
@@ -156,6 +156,7 @@ pub mod test_utils {
                 0u8,
                 0u8,
             );
+            bank.config.oracle_setup = OracleSetup::SwitchboardPull;
             let oracle = TestOracleWrapper::test_bonk();
             BankWrapperT::new(Pubkey::from_str(BONK_BANK_ADDRESS).unwrap(), bank, oracle)
         }
