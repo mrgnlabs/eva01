@@ -71,11 +71,23 @@ impl SwbCranker {
                 .block_on(self.crossbar_client.simulate(swb_feed_hashes));
 
             for (oracle_address, price) in simulated_prices {
-                let mut wrapper = self.cache.oracles.try_get_wrapper(&oracle_address)?;
-                wrapper.simulated_price = Some(price);
-                self.cache
+                // In this (Switchboard) case there will always be exactly one bank for each oracle
+                let banks = self
+                    .cache
                     .oracles
-                    .try_update_account_wrapper(&wrapper.address, wrapper.price_adapter)?;
+                    .try_get_banks_from_oracle(&oracle_address)?;
+                for bank_address in banks {
+                    let mut wrapper = self
+                        .cache
+                        .oracles
+                        .try_get_wrapper(&oracle_address, &bank_address)?;
+                    wrapper.simulated_price = Some(price);
+                    self.cache.oracles.try_update_account_wrapper(
+                        &wrapper.address,
+                        &bank_address,
+                        wrapper.price_adapter,
+                    )?;
+                }
             }
         } else {
             thread_info!("Swb price simulation is already running. Waiting for it to complete...");

@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use core::panic;
+use std::{collections::HashMap, str::FromStr};
 
 use log::error;
 use marginfi::state::marginfi_group::Bank;
@@ -27,7 +28,7 @@ impl BanksCache {
     pub fn try_get_bank(&self, address: &Pubkey) -> Result<Bank> {
         self.banks
             .get(address)
-            .ok_or(anyhow!("Failed to find the Bank {} in Cache!", &address))
+            .ok_or(anyhow!("Failed to find the Bank {} in Cache!", address))
             .copied()
     }
 

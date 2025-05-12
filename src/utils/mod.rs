@@ -7,6 +7,7 @@ use log::debug;
 use marginfi::{
     bank_authority_seed,
     constants::{PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID, PYTH_PUSH_PYTH_SPONSORED_SHARD_ID},
+    errors::MarginfiError,
     prelude::MarginfiResult,
     state::{
         marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
@@ -677,4 +678,29 @@ macro_rules! thread_error {
             format_args!($($arg)*)
         )
     };
+}
+
+pub fn log_genuine_error(prefix: &str, error: anyhow::Error) {
+    match error.downcast::<anchor_lang::error::Error>() {
+        Ok(error) => match error {
+            anchor_lang::error::Error::AnchorError(anchor_error) => {
+                match MarginfiError::from(anchor_error.error_code_number) {
+                    MarginfiError::SwitchboardStalePrice | MarginfiError::PythPushStalePrice => {
+                        thread_debug!("Discarding the oracle stale price error");
+                    }
+                    MarginfiError::MathError => {
+                        thread_debug!("Discarding the empty staked bank error");
+                    }
+                    _ => {
+                        thread_error!("{}: MarginfiError - {}", prefix, anchor_error.error_msg);
+                    }
+                }
+            }
+
+            anchor_lang::error::Error::ProgramError(program_error) => {
+                thread_error!("{}: ProgramError - {}", prefix, program_error);
+            }
+        },
+        Err(err) => thread_error!("{}: {}", prefix, err),
+    }
 }

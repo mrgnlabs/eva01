@@ -42,7 +42,7 @@ use crate::{
     thread_debug,
     utils::{
         batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
-        BatchLoadingConfig,
+        log_genuine_error, BatchLoadingConfig,
     },
     wrappers::{marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait},
 };
@@ -209,6 +209,7 @@ impl CacheLoader {
             )]))?
             .iter()
         {
+            // Sometimes requested as oracle: 7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE (324 without filter)
             cache.banks.insert(*bank_address, *bank);
         }
 
@@ -284,7 +285,10 @@ impl CacheLoader {
                 cache
                     .oracles
                     .try_wire_with_bank(&oracle_address, bank_address)?;
-                continue;
+                if let OracleSetup::StakedWithPythPush = bank.config.oracle_setup {
+                } else {
+                    continue;
+                }
             }
 
             let price_adapter = match bank.config.oracle_setup {
@@ -332,11 +336,23 @@ impl CacheLoader {
                     let oracle_to_account = |&key| (key, oracle_map.get(&key).unwrap().clone());
 
                     let mut oracle_key_to_account = oracle_to_account(oracle_keys.first().unwrap());
+                    info!(
+                        "Loading the StakedWithPythPush Oracle {:?} ...",
+                        oracle_key_to_account.0
+                    );
                     let mut lst_mint_key_to_account =
                         oracle_to_account(oracle_keys.get(1).unwrap());
+                    info!(
+                        "Loading the StakedWithPythPush LST Mint {:?} ...",
+                        lst_mint_key_to_account.0
+                    );
                     let mut sol_pool_key_to_account =
                         oracle_to_account(oracle_keys.get(2).unwrap());
 
+                    info!(
+                        "Loading the StakedWithPythPush SOL Pool {:?} ...",
+                        sol_pool_key_to_account.0
+                    );
                     // The oracle itself will be added later, just like for the other oracle setups
                     for staked_specific_ai in [&lst_mint_key_to_account, &sol_pool_key_to_account] {
                         cache.oracles.try_insert(
@@ -394,9 +410,13 @@ impl CacheLoader {
                         *bank_address,
                     )?;
 
-                    error!(
-                        "Failed to load {:?} Oracles for the Bank {:?}! {:?}",
-                        bank.config.oracle_setup, bank_address, error
+                    log_genuine_error(
+                        format!(
+                            "Failed to load Oracle {:?} for Bank {:?}",
+                            oracle_address, bank_address
+                        )
+                        .as_str(),
+                        error,
                     );
                 }
             };
