@@ -283,7 +283,7 @@ impl CacheLoader {
                 );
                 cache
                     .oracles
-                    .try_wire_with_bank(&oracle_address, &bank_address)?;
+                    .try_wire_with_bank(&oracle_address, bank_address)?;
                 continue;
             }
 

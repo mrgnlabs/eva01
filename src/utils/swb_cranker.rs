@@ -1,5 +1,6 @@
 use crate::{cache::Cache, crossbar::CrossbarMaintainer, thread_info};
 use anyhow::Result;
+use marginfi::state::price::OraclePriceFeedAdapter;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -53,16 +54,15 @@ impl SwbCranker {
 
             let swb_feed_hashes = self
                 .cache
-                .banks
-                .get_banks()
+                .oracles
+                .try_get_wrappers()?
                 .iter()
-                .filter_map(|(bank_address, _)| self.cache.get_bank_wrapper(bank_address))
-                .filter_map(|bank_wrapper| {
-                    bank_wrapper
-                        .oracle_adapter
-                        .swb_feed_hash
-                        .as_ref()
-                        .map(|hash| (bank_wrapper.address, hash.clone()))
+                .filter_map(|oracle_wrapper| match &oracle_wrapper.price_adapter {
+                    OraclePriceFeedAdapter::SwitchboardPull(price_feed) => Some((
+                        oracle_wrapper.address,
+                        hex::encode(price_feed.feed.feed_hash),
+                    )),
+                    _ => None,
                 })
                 .collect::<Vec<_>>();
 
@@ -70,13 +70,12 @@ impl SwbCranker {
                 .tokio_rt
                 .block_on(self.crossbar_client.simulate(swb_feed_hashes));
 
-            for (bank_address, price) in simulated_prices {
-                if let Some(mut wrapper) = self.cache.oracles.get_wrapper_from_bank(&bank_address) {
-                    wrapper.simulated_price = Some(price);
-                    self.cache
-                        .oracles
-                        .try_update_account_wrapper(&wrapper.address, wrapper.price_adapter)?;
-                }
+            for (oracle_address, price) in simulated_prices {
+                let mut wrapper = self.cache.oracles.try_get_wrapper(&oracle_address)?;
+                wrapper.simulated_price = Some(price);
+                self.cache
+                    .oracles
+                    .try_update_account_wrapper(&wrapper.address, wrapper.price_adapter)?;
             }
         } else {
             thread_info!("Swb price simulation is already running. Waiting for it to complete...");
