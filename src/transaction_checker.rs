@@ -95,7 +95,7 @@ impl TransactionChecker {
                     }
                 }
 
-                if attempt < max_retries {
+                if attempt <= max_retries {
                     debug!(
                         "Sleeping for {} ms before retrying...",
                         retry_delay.as_millis()
@@ -107,7 +107,6 @@ impl TransactionChecker {
                         "Failed to confirm bundle status: uuid = {}, bundle_id = {}",
                         uuid, bundle_id
                     );
-                    break;
                 }
             }
 
@@ -123,32 +122,39 @@ impl TransactionChecker {
 }
 
 fn get_bundle_status(status_response: &serde_json::Value) -> anyhow::Result<BundleStatus> {
-    status_response
+    let statuses = status_response
         .get("result")
-        .and_then(|result| result.get("value"))
-        .and_then(|value| value.as_array())
-        .and_then(|statuses| statuses.first())
+        .and_then(|r| r.get("value"))
+        .and_then(|v| v.as_array())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Failed to parse bundle status from the response: {}",
+            anyhow::anyhow!(format!(
+                "Missing or invalid 'result.value' in response: {}",
                 status_response
-            )
-        })
-        .map(|bundle_status| BundleStatus {
-            confirmation_status: bundle_status
-                .get("confirmation_status")
-                .and_then(|s| s.as_str())
-                .map(String::from),
-            err: bundle_status.get("err").cloned(),
-            transactions: bundle_status
-                .get("transactions")
-                .and_then(|t| t.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                }),
-        })
+            ))
+        })?;
+
+    let bundle_status = statuses.first().ok_or_else(|| {
+        anyhow::anyhow!(format!(
+            "Empty statuses array in response: {:?}",
+            status_response
+        ))
+    })?;
+
+    Ok(BundleStatus {
+        confirmation_status: bundle_status
+            .get("confirmation_status")
+            .and_then(|s| s.as_str())
+            .map(String::from),
+        err: bundle_status.get("err").cloned(),
+        transactions: bundle_status
+            .get("transactions")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            }),
+    })
 }
 
 fn check_transaction_error(bundle_status: &BundleStatus) -> anyhow::Result<()> {
@@ -174,5 +180,137 @@ fn print_transaction_url(bundle_status: &BundleStatus) {
         }
     } else {
         debug!("No transactions found in the bundle status.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_valid_bundle_status_response() {
+        let input = json!({
+            "result": {
+                "value": [{
+                    "confirmation_status": "confirmed",
+                    "err": null,
+                    "transactions": ["tx1", "tx2"]
+                }]
+            }
+        });
+
+        let status = get_bundle_status(&input).expect("should parse correctly");
+        assert_eq!(status.confirmation_status, Some("confirmed".to_string()));
+        assert_eq!(status.err, Some(json!(null)));
+        assert_eq!(
+            status.transactions,
+            Some(vec!["tx1".to_string(), "tx2".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_missing_bundle_status_result() {
+        let input = json!({});
+        let err = get_bundle_status(&input).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Missing or invalid 'result.value'"),
+            "Unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_bundle_status_value_not_array() {
+        let input = json!({
+            "result": {
+                "value": "not-an-array"
+            }
+        });
+
+        let err = get_bundle_status(&input).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Missing or invalid 'result.value'"),
+            "Unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_empty_bundle_statuses_array() {
+        let input = json!({
+            "result": {
+                "value": []
+            }
+        });
+
+        let err = get_bundle_status(&input).unwrap_err();
+        assert!(
+            err.to_string().contains("Empty statuses array"),
+            "Unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_missing_bundle_status_optional_fields() {
+        let input = json!({
+            "result": {
+                "value": [{
+                    // No confirmation_status, err, or transactions
+                }]
+            }
+        });
+
+        let status = get_bundle_status(&input).expect("should still parse");
+        assert_eq!(status.confirmation_status, None);
+        assert_eq!(status.err, None);
+        assert_eq!(status.transactions, None);
+    }
+
+    #[test]
+    fn test_bundle_status_transactions_with_invalid_types() {
+        let input = json!({
+            "result": {
+                "value": [{
+                    "confirmation_status": "processed",
+                    "err": null,
+                    "transactions": ["tx1", 123, true, null]
+                }]
+            }
+        });
+
+        let status = get_bundle_status(&input).expect("should parse with filtered transactions");
+        assert_eq!(
+            status.transactions,
+            Some(vec!["tx1".to_string()]), // Only valid string is kept
+            "Only valid string transactions should be included"
+        );
+    }
+
+    #[test]
+    fn test_valid_bundle_status() {
+        let input = json!({
+            "context": {
+                "slot": 123456
+            },
+            "result": {
+                "value": [{
+                    "confirmation_status": "finalized",
+                    "err": null,
+                    "transactions": ["abc123", "def456"]
+                }]
+            }
+        });
+
+        let status = get_bundle_status(&input).expect("should parse correctly");
+        assert_eq!(status.confirmation_status, Some("finalized".to_string()));
+        assert_eq!(status.err, Some(json!(null)));
+        assert_eq!(
+            status.transactions,
+            Some(vec!["abc123".to_string(), "def456".to_string()])
+        );
     }
 }
