@@ -6,7 +6,10 @@ use fixed::types::I80F48;
 use log::debug;
 use marginfi::{
     bank_authority_seed,
-    constants::{PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID, PYTH_PUSH_PYTH_SPONSORED_SHARD_ID},
+    constants::{
+        ASSET_TAG_DEFAULT, ASSET_TAG_SOL, ASSET_TAG_STAKED, PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID,
+        PYTH_PUSH_PYTH_SPONSORED_SHARD_ID,
+    },
     errors::MarginfiError,
     prelude::MarginfiResult,
     state::{
@@ -703,4 +706,28 @@ pub fn log_genuine_error(prefix: &str, error: anyhow::Error) {
         },
         Err(err) => thread_error!("{}: {}", prefix, err),
     }
+}
+
+pub fn check_asset_tags_matching(bank: &Bank, lending_account: &LendingAccount) -> bool {
+    let mut has_default_asset = false;
+    let mut has_staked_asset = false;
+
+    for balance in lending_account.balances.iter() {
+        if balance.is_active() {
+            match balance.bank_asset_tag {
+                ASSET_TAG_DEFAULT => has_default_asset = true,
+                ASSET_TAG_SOL => { /* Do nothing, SOL can mix with any asset type */ }
+                ASSET_TAG_STAKED => has_staked_asset = true,
+                _ => panic!("unsupported asset tag"),
+            }
+        }
+    }
+
+    if bank.config.asset_tag == ASSET_TAG_DEFAULT {
+        has_default_asset = true;
+    } else if bank.config.asset_tag == ASSET_TAG_STAKED {
+        has_staked_asset = true;
+    }
+
+    !(has_default_asset && has_staked_asset)
 }

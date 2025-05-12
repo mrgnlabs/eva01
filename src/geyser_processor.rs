@@ -8,7 +8,6 @@ use crate::{
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
-use log::info;
 use marginfi::state::{
     marginfi_account::MarginfiAccount,
     price::{OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed},
@@ -100,16 +99,12 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
                                     vec![(&msg.address, &mut msg_account).into_account_info()];
 
                                 let keys = &bank.config.oracle_keys[1..3];
-                                info!("Bank mint: {:?}", bank.mint);
-                                info!("keys: {:?}", keys);
                                 let mut owned_accounts = self.cache.oracles.get_accounts(keys);
-                                info!("Owned accounts length: {:?}", owned_accounts.len());
                                 accounts_info.extend(
                                     keys.iter().zip(owned_accounts.iter_mut()).map(
                                         |(key, account)| (key, &mut account.1).into_account_info(),
                                     ),
                                 );
-                                info!("Accounts info length: {:?}", accounts_info.len());
 
                                 let clock = clock_manager::get_clock(&self.clock)?;
                                 OraclePriceFeedAdapter::try_from_bank_config(

@@ -9,10 +9,11 @@ use crate::{
     },
     thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
+    utils::check_asset_tags_matching,
 };
 use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
-use log::info;
+use log::{debug, info};
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
     rpc_config::RpcSendTransactionConfig,
@@ -134,18 +135,30 @@ impl LiquidatorAccount {
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank.bank.mint;
 
+        let lending_account = &self
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_address)?
+            .lending_account;
+
         let banks_to_include: Vec<Pubkey> = vec![liab_bank.address, asset_bank.address];
+
+        for bank_pk in banks_to_include.iter() {
+            let bank_to_validate_against = self.cache.banks.try_get_bank(bank_pk)?;
+            if !check_asset_tags_matching(&bank_to_validate_against, lending_account) {
+                // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
+                // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
+                debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
+                return Ok(());
+            }
+        }
+
         let banks_to_exclude: Vec<Pubkey> = vec![];
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        // TODO: verify that we actually need liquidator's swb oracles. Probably liquidatee's are enough.
-        let (liquidator_observation_accounts, _) =
+        let (liquidator_observation_accounts, liquidator_swb_oracles) =
             MarginfiAccountWrapper::get_observation_accounts(
-                &self
-                    .cache
-                    .marginfi_accounts
-                    .try_get_account(&self.liquidator_address)?
-                    .lending_account,
+                lending_account,
                 &banks_to_include,
                 &banks_to_exclude,
                 self.cache.clone(),
@@ -159,7 +172,7 @@ impl LiquidatorAccount {
         let banks_to_exclude: Vec<Pubkey> = vec![];
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let (liquidatee_observation_accounts, swb_oracles) =
+        let (liquidatee_observation_accounts, liquidatee_swb_oracles) =
             MarginfiAccountWrapper::get_observation_accounts(
                 &liquidatee_account.lending_account,
                 &banks_to_include,
@@ -178,6 +191,12 @@ impl LiquidatorAccount {
             .copied()
             .collect::<Vec<_>>();
 
+        let mut swb_oracles = liquidator_swb_oracles;
+        for swb_oracle in liquidatee_swb_oracles.into_iter() {
+            if !swb_oracles.contains(&swb_oracle) {
+                swb_oracles.push(swb_oracle);
+            }
+        }
         let crank_data = if !swb_oracles.is_empty() {
             thread_debug!("Cranking Swb Oracles for observation accounts.",);
             if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
@@ -220,34 +239,8 @@ impl LiquidatorAccount {
             let mut transactions =
                 vec![RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut)];
 
-            // let transaction = VersionedTransaction::try_new(
-            //     VersionedMessage::V0(v0::Message::try_compile(
-            //         &signer_pk,
-            //         &[crank_ix, liquidate_ix.clone()],
-            //         &crank_lut,
-            //         recent_blockhash,
-            //     )?),
-            //     &[&self.signer_keypair],
-            // )?;
-
-            // let res = self
-            //     .non_blocking_rpc_client
-            //     .send_and_confirm_transaction_with_spinner_and_config(
-            //         &transaction,
-            //         CommitmentConfig::confirmed(),
-            //         RpcSendTransactionConfig {
-            //             skip_preflight: true,
-            //             ..Default::default()
-            //         },
-            //     )
-            //     .await;
-
             transactions.push(RawTransaction::new(vec![liquidate_ix]));
 
-            thread_debug!(
-                "SENDING DOUBLE liquidate: bundle length: {:?}",
-                transactions.len()
-            );
             self.pending_liquidations
                 .write()
                 .unwrap()
@@ -265,12 +258,6 @@ impl LiquidatorAccount {
                     recent_blockhash,
                 );
 
-            thread_debug!(
-                "cu_limit_ix: ({:?}), liquidate_ix: ({:?})",
-                cu_limit_ix,
-                liquidate_ix
-            );
-
             let res = self
                 .rpc_client
                 .send_and_confirm_transaction_with_spinner_and_config(
@@ -284,14 +271,14 @@ impl LiquidatorAccount {
             match res {
                 Ok(res) => {
                     thread_info!(
-                        "Single Transaction sent for address {:?} landed successfully: {:?} ",
+                        "Liquidation Transaction sent for address {:?} landed successfully: {:?} ",
                         liquidatee_account.address,
                         res
                     );
                 }
                 Err(err) => {
                     thread_error!(
-                        "Single Transaction sent for address {:?} failed: {:?} ",
+                        "Liquidation Transaction sent for address {:?} failed: {:?} ",
                         liquidatee_account.address,
                         err
                     );

@@ -209,7 +209,6 @@ impl CacheLoader {
             )]))?
             .iter()
         {
-            // Sometimes requested as oracle: 7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE (324 without filter)
             cache.banks.insert(*bank_address, *bank);
         }
 
@@ -336,23 +335,11 @@ impl CacheLoader {
                     let oracle_to_account = |&key| (key, oracle_map.get(&key).unwrap().clone());
 
                     let mut oracle_key_to_account = oracle_to_account(oracle_keys.first().unwrap());
-                    info!(
-                        "Loading the StakedWithPythPush Oracle {:?} ...",
-                        oracle_key_to_account.0
-                    );
                     let mut lst_mint_key_to_account =
                         oracle_to_account(oracle_keys.get(1).unwrap());
-                    info!(
-                        "Loading the StakedWithPythPush LST Mint {:?} ...",
-                        lst_mint_key_to_account.0
-                    );
                     let mut sol_pool_key_to_account =
                         oracle_to_account(oracle_keys.get(2).unwrap());
 
-                    info!(
-                        "Loading the StakedWithPythPush SOL Pool {:?} ...",
-                        sol_pool_key_to_account.0
-                    );
                     // The oracle itself will be added later, just like for the other oracle setups
                     for staked_specific_ai in [&lst_mint_key_to_account, &sol_pool_key_to_account] {
                         cache.oracles.try_insert(
