@@ -124,7 +124,7 @@ impl Liquidator {
 
     /// Checks if liquidation is needed, for each account one by one
     fn process_all_accounts(&mut self) -> Result<Vec<PreparedLiquidatableAccount>> {
-        self.swb_price_simulator.simulate_swb_prices()?;
+        //        self.swb_price_simulator.simulate_swb_prices()?;
 
         let mut index: usize = 0;
         let mut result: Vec<PreparedLiquidatableAccount> = vec![];

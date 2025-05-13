@@ -165,7 +165,7 @@ impl Rebalancer {
             .collect();
 
         if !active_swb_oracles.is_empty() {
-            thread_debug!("Fetching SWB prices.");
+            thread_debug!("Fetching SWB prices...");
             let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
@@ -183,16 +183,18 @@ impl Rebalancer {
                     transactions: vec![RawTransaction::new(vec![ix]).with_lookup_tables(lut)],
                     bundle_id: self.liquidator_account.liquidator_address,
                 })?;
+            thread_debug!("SWB prices fetching is completed.");
         }
 
         Ok(())
     }
 
     fn rebalance_accounts(&mut self) {
-        if let Err(error) = self.swb_price_simulator.simulate_swb_prices() {
-            thread_error!("Failed to simulate Swb prices! {}", error)
-        }
-
+        /*
+                if let Err(error) = self.swb_price_simulator.simulate_swb_prices() {
+                    thread_error!("Failed to simulate Swb prices! {}", error)
+                }
+        */
         //TODO: It is called right after simulation. Confirm that it is really needed.
         if let Err(error) = self.fetch_swb_prices() {
             thread_error!("Failed to fetch Swb prices! {}", error)
