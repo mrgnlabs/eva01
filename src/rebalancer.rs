@@ -27,7 +27,7 @@ use marginfi::{
     constants::EXP_10_I80F48,
     state::{
         marginfi_account::{BalanceSide, RequirementType},
-        price::PriceBias,
+        price::{OracleSetup, PriceBias},
     },
 };
 use solana_client::{
@@ -155,7 +155,7 @@ impl Rebalancer {
             .iter()
             .filter_map(|&bank_pk| {
                 self.cache.get_bank_wrapper(&bank_pk).and_then(|bank| {
-                    if bank.oracle_adapter.is_switchboard_pull() {
+                    if matches!(bank.bank.config.oracle_setup, OracleSetup::SwitchboardPull) {
                         Some(bank.oracle_adapter.address)
                     } else {
                         None

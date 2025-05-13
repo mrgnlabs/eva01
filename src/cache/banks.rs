@@ -27,7 +27,7 @@ impl BanksCache {
     pub fn try_get_bank(&self, address: &Pubkey) -> Result<Bank> {
         self.banks
             .get(address)
-            .ok_or(anyhow!("Failed to find the Bank {} in Cache!", &address))
+            .ok_or(anyhow!("Failed to find the Bank {} in Cache!", address))
             .copied()
     }
 

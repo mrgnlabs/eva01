@@ -3,17 +3,14 @@ use crate::{
     clock_manager,
     geyser::{AccountType, GeyserUpdate},
     thread_debug, thread_error, thread_info,
-    utils::load_swb_pull_account_from_bytes,
+    utils::{load_swb_pull_account_from_bytes, log_genuine_error},
     wrappers::{marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait},
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
-use marginfi::{
-    errors::MarginfiError,
-    state::{
-        marginfi_account::MarginfiAccount,
-        price::{OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed},
-    },
+use marginfi::state::{
+    marginfi_account::MarginfiAccount,
+    price::{OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed},
 };
 use solana_sdk::{account_info::IntoAccountInfo, clock::Clock};
 use std::sync::{
@@ -56,7 +53,7 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
             match self.geyser_rx.recv() {
                 Ok(geyser_update) => {
                     if let Err(error) = self.process_update(geyser_update) {
-                        log_error(error);
+                        log_genuine_error("Failed to process Geyser update", error);
                     }
                 }
                 Err(error) => {
@@ -78,56 +75,63 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
 
         match msg.account_type {
             AccountType::Oracle => {
-                let bank_address = self.cache.oracles.try_get_bank_from_oracle(&msg.address)?;
-                let bank = self.cache.banks.try_get_bank(&bank_address)?;
+                let bank_addresses = self.cache.oracles.try_get_banks_from_oracle(&msg.address)?;
+                for bank_address in bank_addresses {
+                    let bank = self.cache.banks.try_get_bank(&bank_address)?;
 
-                let oracle_price_adapter = match bank.config.oracle_setup {
-                    OracleSetup::SwitchboardPull => {
-                        let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
-                        offsets_data.copy_from_slice(
-                            &msg.account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
-                        );
-                        let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
+                    let oracle_price_adapter =
+                        match bank.config.oracle_setup {
+                            OracleSetup::SwitchboardPull => {
+                                let mut offsets_data =
+                                    [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                                offsets_data.copy_from_slice(
+                                    &msg.account.data
+                                        [8..std::mem::size_of::<PullFeedAccountData>() + 8],
+                                );
+                                let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
 
-                        OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
-                            feed: Box::new((&swb_feed).into()),
-                        })
-                    }
-                    OracleSetup::StakedWithPythPush => {
-                        let mut accounts_info =
-                            vec![(&msg.address, &mut msg_account).into_account_info()];
+                                OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
+                                    feed: Box::new((&swb_feed).into()),
+                                })
+                            }
+                            OracleSetup::StakedWithPythPush => {
+                                let mut accounts_info =
+                                    vec![(&msg.address, &mut msg_account).into_account_info()];
 
-                        let keys = &bank.config.oracle_keys[1..3];
-                        let mut owned_accounts = self.cache.oracles.get_accounts(keys);
-                        accounts_info.extend(
-                            keys.iter()
-                                .zip(owned_accounts.iter_mut())
-                                .map(|(key, account)| (key, &mut account.1).into_account_info()),
-                        );
+                                let keys = &bank.config.oracle_keys[1..3];
+                                let mut owned_accounts = self.cache.oracles.get_accounts(keys);
+                                accounts_info.extend(
+                                    keys.iter().zip(owned_accounts.iter_mut()).map(
+                                        |(key, account)| (key, &mut account.1).into_account_info(),
+                                    ),
+                                );
 
-                        let clock = clock_manager::get_clock(&self.clock)?;
-                        OraclePriceFeedAdapter::try_from_bank_config(
-                            &bank.config,
-                            &accounts_info,
-                            &clock,
-                        )?
-                    }
-                    _ => {
-                        let clock = clock_manager::get_clock(&self.clock)?;
-                        let oracle_account_info =
-                            (&msg.address, &mut msg_account).into_account_info();
+                                let clock = clock_manager::get_clock(&self.clock)?;
+                                OraclePriceFeedAdapter::try_from_bank_config(
+                                    &bank.config,
+                                    &accounts_info,
+                                    &clock,
+                                )?
+                            }
+                            _ => {
+                                let clock = clock_manager::get_clock(&self.clock)?;
+                                let oracle_account_info =
+                                    (&msg.address, &mut msg_account).into_account_info();
 
-                        OraclePriceFeedAdapter::try_from_bank_config(
-                            &bank.config,
-                            &[oracle_account_info],
-                            &clock,
-                        )?
-                    }
-                };
+                                OraclePriceFeedAdapter::try_from_bank_config(
+                                    &bank.config,
+                                    &[oracle_account_info],
+                                    &clock,
+                                )?
+                            }
+                        };
 
-                self.cache
-                    .oracles
-                    .try_update_account_wrapper(&msg.address, oracle_price_adapter)?;
+                    self.cache.oracles.try_update_account_wrapper(
+                        &msg.address,
+                        &bank_address,
+                        oracle_price_adapter,
+                    )?;
+                }
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
                 self.run_rebalance.store(true, Ordering::Relaxed);
@@ -157,19 +161,6 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
     }
 }
 
-fn log_error(error: anyhow::Error) {
-    match error.downcast_ref::<MarginfiError>() {
-        Some(mfi_error) => match mfi_error {
-            MarginfiError::SwitchboardStalePrice | MarginfiError::PythPushStalePrice => {
-                thread_debug!("Discarding the stale price Geyser update! {}", error);
-            }
-            _ => {
-                thread_error!("Failed to process Geyser update: {}", error);
-            }
-        },
-        None => thread_error!("Failed to process Geyser update: {}", error),
-    }
-}
 #[cfg(test)]
 mod tests {
     use crate::{

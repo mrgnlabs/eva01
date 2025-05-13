@@ -42,7 +42,7 @@ use crate::{
     thread_debug,
     utils::{
         batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
-        BatchLoadingConfig,
+        log_genuine_error, BatchLoadingConfig,
     },
     wrappers::{marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait},
 };
@@ -284,7 +284,10 @@ impl CacheLoader {
                 cache
                     .oracles
                     .try_wire_with_bank(&oracle_address, bank_address)?;
-                continue;
+                if let OracleSetup::StakedWithPythPush = bank.config.oracle_setup {
+                } else {
+                    continue;
+                }
             }
 
             let price_adapter = match bank.config.oracle_setup {
@@ -394,9 +397,13 @@ impl CacheLoader {
                         *bank_address,
                     )?;
 
-                    error!(
-                        "Failed to load {:?} Oracles for the Bank {:?}! {:?}",
-                        bank.config.oracle_setup, bank_address, error
+                    log_genuine_error(
+                        format!(
+                            "Failed to load Oracle {:?} for Bank {:?}",
+                            oracle_address, bank_address
+                        )
+                        .as_str(),
+                        error,
                     );
                 }
             };

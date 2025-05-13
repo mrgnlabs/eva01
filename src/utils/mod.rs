@@ -6,7 +6,11 @@ use fixed::types::I80F48;
 use log::debug;
 use marginfi::{
     bank_authority_seed,
-    constants::{PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID, PYTH_PUSH_PYTH_SPONSORED_SHARD_ID},
+    constants::{
+        ASSET_TAG_DEFAULT, ASSET_TAG_SOL, ASSET_TAG_STAKED, PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID,
+        PYTH_PUSH_PYTH_SPONSORED_SHARD_ID,
+    },
+    errors::MarginfiError,
     prelude::MarginfiResult,
     state::{
         marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
@@ -677,4 +681,53 @@ macro_rules! thread_error {
             format_args!($($arg)*)
         )
     };
+}
+
+pub fn log_genuine_error(prefix: &str, error: anyhow::Error) {
+    match error.downcast::<anchor_lang::error::Error>() {
+        Ok(error) => match error {
+            anchor_lang::error::Error::AnchorError(anchor_error) => {
+                match MarginfiError::from(anchor_error.error_code_number) {
+                    MarginfiError::SwitchboardStalePrice | MarginfiError::PythPushStalePrice => {
+                        thread_debug!("Discarding the oracle stale price error");
+                    }
+                    MarginfiError::MathError => {
+                        thread_debug!("Discarding the empty staked bank error");
+                    }
+                    _ => {
+                        thread_error!("{}: MarginfiError - {}", prefix, anchor_error.error_msg);
+                    }
+                }
+            }
+
+            anchor_lang::error::Error::ProgramError(program_error) => {
+                thread_error!("{}: ProgramError - {}", prefix, program_error);
+            }
+        },
+        Err(err) => thread_error!("{}: {}", prefix, err),
+    }
+}
+
+pub fn check_asset_tags_matching(bank: &Bank, lending_account: &LendingAccount) -> bool {
+    let mut has_default_asset = false;
+    let mut has_staked_asset = false;
+
+    for balance in lending_account.balances.iter() {
+        if balance.is_active() {
+            match balance.bank_asset_tag {
+                ASSET_TAG_DEFAULT => has_default_asset = true,
+                ASSET_TAG_SOL => { /* Do nothing, SOL can mix with any asset type */ }
+                ASSET_TAG_STAKED => has_staked_asset = true,
+                _ => panic!("unsupported asset tag"),
+            }
+        }
+    }
+
+    if bank.config.asset_tag == ASSET_TAG_DEFAULT {
+        has_default_asset = true;
+    } else if bank.config.asset_tag == ASSET_TAG_STAKED {
+        has_staked_asset = true;
+    }
+
+    !(has_default_asset && has_staked_asset)
 }

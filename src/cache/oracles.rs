@@ -9,16 +9,16 @@ use anyhow::{anyhow, bail, Result};
 
 pub struct OraclesCache<T: OracleWrapperTrait + Clone> {
     accounts: HashMap<Pubkey, Account>,
-    oracle_to_bank: HashMap<Pubkey, Pubkey>,
+    oracle_to_banks: HashMap<Pubkey, Vec<Pubkey>>,
     bank_to_oracle: HashMap<Pubkey, Pubkey>,
-    oracle_wrappers: RwLock<HashMap<Pubkey, T>>,
+    oracle_wrappers: RwLock<HashMap<(Pubkey, Pubkey), T>>,
 }
 
 impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
     pub fn new() -> Self {
         Self {
             accounts: HashMap::new(),
-            oracle_to_bank: HashMap::new(),
+            oracle_to_banks: HashMap::new(),
             bank_to_oracle: HashMap::new(),
             oracle_wrappers: RwLock::new(HashMap::new()),
         }
@@ -32,13 +32,16 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
         bank_address: Pubkey,
     ) -> Result<()> {
         self.accounts.insert(address, account);
-        self.oracle_to_bank.insert(address, bank_address);
+        self.oracle_to_banks
+            .entry(address)
+            .and_modify(|banks| banks.push(bank_address))
+            .or_insert_with(|| vec![bank_address]);
         self.bank_to_oracle.insert(bank_address, address);
         if let Some(wrapper) = oracle_wrapper {
             self.oracle_wrappers
                 .write()
                 .map_err(|e| anyhow!("Failed to lock the oracle_wrappers map for insert! {}", e))?
-                .insert(address, wrapper);
+                .insert((address, bank_address), wrapper);
         }
 
         Ok(())
@@ -70,7 +73,11 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
                 bank_address
             );
         };
-        self.oracle_to_bank.insert(*oracle_address, *bank_address);
+        self.oracle_to_banks
+            .entry(*oracle_address)
+            .and_modify(|banks| banks.push(*bank_address))
+            .or_insert_with(|| vec![*bank_address]);
+
         self.bank_to_oracle.insert(*bank_address, *oracle_address);
 
         Ok(())
@@ -79,13 +86,14 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
     pub fn try_update_account_wrapper(
         &self,
         address: &Pubkey,
+        bank_address: &Pubkey,
         price_adapter: OraclePriceFeedAdapter,
     ) -> Result<()> {
         let wrapper = T::new(*address, price_adapter);
         self.oracle_wrappers
             .write()
             .map_err(|e| anyhow!("Failed to lock the oracle_wrappers map for update! {}", e))?
-            .insert(*address, wrapper);
+            .insert((*address, *bank_address), wrapper);
 
         Ok(())
     }
@@ -115,7 +123,7 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
             .collect())
     }
 
-    pub fn try_get_wrapper(&self, address: &Pubkey) -> Result<T> {
+    pub fn try_get_wrapper(&self, address: &Pubkey, bank_address: &Pubkey) -> Result<T> {
         self.oracle_wrappers
             .read()
             .map_err(|e| {
@@ -124,21 +132,22 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
                     e
                 )
             })?
-            .get(address)
+            .get(&(*address, *bank_address))
             .cloned()
             .ok_or(anyhow!(
-                "Failed to find Oracle wrapper for the Oracle {}!",
-                &address
+                "Failed to find Oracle wrapper for Oracle: {}, Bank: {}!",
+                address,
+                bank_address
             ))
     }
 
     pub fn try_get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Result<T> {
         let oracle = self.bank_to_oracle.get(bank_address).ok_or(anyhow!(
             "Failed to find Oracle for the Bank {}!",
-            &bank_address
+            bank_address
         ))?;
 
-        self.try_get_wrapper(oracle)
+        self.try_get_wrapper(oracle, bank_address)
     }
 
     pub fn get_wrapper_from_bank(&self, bank_address: &Pubkey) -> Option<T> {
@@ -147,12 +156,12 @@ impl<T: OracleWrapperTrait + Clone> OraclesCache<T> {
             .ok()
     }
 
-    pub fn try_get_bank_from_oracle(&self, oracle_address: &Pubkey) -> Result<Pubkey> {
-        self.oracle_to_bank
+    pub fn try_get_banks_from_oracle(&self, oracle_address: &Pubkey) -> Result<Vec<Pubkey>> {
+        self.oracle_to_banks
             .get(oracle_address)
-            .copied()
+            .cloned()
             .ok_or(anyhow::anyhow!(
-                "Failed to find Bank address for the Oracle {}!",
+                "Failed to find any Bank address for the Oracle {}!",
                 oracle_address
             ))
     }
