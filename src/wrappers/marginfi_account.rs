@@ -109,7 +109,6 @@ impl MarginfiAccountWrapper {
         (deposits, liabilities)
     }
 
-    // TODO: Create Unit test
     pub fn get_active_banks(lending_account: &LendingAccount) -> Vec<Pubkey> {
         lending_account
             .balances
@@ -118,7 +117,6 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    // TODO: add more unit tests
     pub fn get_observation_accounts<T: OracleWrapperTrait + Clone>(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
@@ -340,7 +338,7 @@ mod tests {
             vec![sol_bank.address, usdc_bank.address]
         );
 
-        let unhealthy = MarginfiAccountWrapper::test_unhealthy();
+        let mut unhealthy = MarginfiAccountWrapper::test_unhealthy();
         assert!(unhealthy.has_liabs());
         assert_eq!(
             unhealthy.get_liabilities_shares(),
@@ -373,6 +371,29 @@ mod tests {
             MarginfiAccountWrapper::get_active_banks(&unhealthy.lending_account),
             vec![usdc_bank.address, sol_bank.address]
         );
+
+        unhealthy.lending_account.balances.swap(1, 2); // swap the elements to create a "gap" at index 1
+        unhealthy.lending_account.balances.swap(2, 3); // swap the elements to create a "gap" at index 2 as well
+
+        // Check that the gaps are handled correctly -> get_active_banks returns the same result as before
+        assert_eq!(
+            MarginfiAccountWrapper::get_active_banks(&unhealthy.lending_account),
+            vec![usdc_bank.address, sol_bank.address]
+        );
+
+        // Now swap two active banks' positions and verify that the new order is respected
+        unhealthy.lending_account.balances.swap(0, 3);
+        assert_eq!(
+            MarginfiAccountWrapper::get_active_banks(&unhealthy.lending_account),
+            vec![sol_bank.address, usdc_bank.address]
+        );
+
+        // Finally "turn off" the first active bank and check that only the second one is returned
+        unhealthy.lending_account.balances[0].active = 0;
+        assert_eq!(
+            MarginfiAccountWrapper::get_active_banks(&unhealthy.lending_account),
+            vec![usdc_bank.address]
+        );
     }
 
     #[test]
@@ -393,12 +414,15 @@ mod tests {
                 cache.clone()
             )
             .unwrap(),
-            vec![
-                sol_bank.address,
-                sol_oracle_address,
-                usdc_bank.address,
-                usdc_bank.oracle_adapter.address
-            ]
+            (
+                vec![
+                    sol_bank.address,
+                    sol_oracle_address,
+                    usdc_bank.address,
+                    usdc_bank.oracle_adapter.address
+                ],
+                vec![]
+            )
         );
     }
 
@@ -416,12 +440,12 @@ mod tests {
                 cache
             )
             .unwrap(),
-            vec![]
+            (vec![], vec![])
         );
     }
 
     #[test]
-    fn test_get_observation_accounts_with_banks_to_include_banks() {
+    fn test_get_observation_accounts_with_banks_to_include() {
         let sol_bank_wrapper = TestBankWrapper::test_sol();
         let usdc_bank_wrapper = TestBankWrapper::test_usdc();
         let bonk_bank_wrapper = TestBankWrapper::test_bonk();
@@ -435,7 +459,7 @@ mod tests {
         let healthy_wrapper =
             MarginfiAccountWrapper::test_healthy(&sol_bank_wrapper, &usdc_bank_wrapper);
 
-        let banks_to_include = vec![bonk_bank_wrapper.address];
+        let banks_to_include = vec![bonk_bank_wrapper.address, sol_bank_wrapper.address];
         let banks_to_exclude = vec![];
         assert_eq!(
             MarginfiAccountWrapper::get_observation_accounts(
@@ -445,14 +469,58 @@ mod tests {
                 cache
             )
             .unwrap(),
-            vec![
-                sol_bank_wrapper.address,
-                sol_bank_wrapper.oracle_adapter.address,
-                usdc_bank_wrapper.address,
-                usdc_bank_wrapper.oracle_adapter.address,
-                bonk_bank_wrapper.address,
-                bonk_bank_wrapper.oracle_adapter.address
-            ]
+            (
+                vec![
+                    sol_bank_wrapper.address,
+                    sol_bank_wrapper.oracle_adapter.address,
+                    usdc_bank_wrapper.address,
+                    usdc_bank_wrapper.oracle_adapter.address,
+                    bonk_bank_wrapper.address,
+                    bonk_bank_wrapper.oracle_adapter.address
+                ],
+                vec![bonk_bank_wrapper.oracle_adapter.address] // Bonk oracle is the only switchboard oracle
+            )
+        );
+    }
+
+    #[test]
+    fn test_get_observation_accounts_with_banks_to_exclude_and_gaps() {
+        let sol_bank_wrapper = TestBankWrapper::test_sol();
+        let usdc_bank_wrapper = TestBankWrapper::test_usdc();
+        let bonk_bank_wrapper = TestBankWrapper::test_bonk();
+        let cache = create_test_cache(&vec![
+            sol_bank_wrapper.clone(),
+            usdc_bank_wrapper.clone(),
+            bonk_bank_wrapper.clone(),
+        ]);
+        let cache = Arc::new(cache);
+
+        let mut healthy_wrapper =
+            MarginfiAccountWrapper::test_healthy(&sol_bank_wrapper, &usdc_bank_wrapper);
+        healthy_wrapper.lending_account.balances.swap(1, 2); // swap the elements to create a "gap" at index 1
+
+        let banks_to_include = vec![bonk_bank_wrapper.address];
+        let banks_to_exclude = vec![sol_bank_wrapper.address];
+        assert_eq!(
+            MarginfiAccountWrapper::get_observation_accounts(
+                &healthy_wrapper.lending_account,
+                &banks_to_include,
+                &banks_to_exclude,
+                cache
+            )
+            .unwrap(),
+            (
+                vec![
+                    // SOL bank was excluded
+                    // sol_bank_wrapper.address,
+                    // sol_bank_wrapper.oracle_adapter.address,
+                    bonk_bank_wrapper.address, // bonk bank took the place of a "gap"
+                    bonk_bank_wrapper.oracle_adapter.address,
+                    usdc_bank_wrapper.address,
+                    usdc_bank_wrapper.oracle_adapter.address,
+                ],
+                vec![bonk_bank_wrapper.oracle_adapter.address] // Bonk oracle is the only switchboard oracle
+            )
         );
     }
 }
