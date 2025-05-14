@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::{cache::Cache, crossbar::CrossbarMaintainer, thread_info};
 use anyhow::Result;
 use marginfi::state::price::OraclePriceFeedAdapter;
@@ -43,6 +45,8 @@ impl SwbCranker {
         })
     }
 
+    // FIXME: simulation is halting the thread that is why it is currently disabled.
+    // Will be addressed in https://linear.app/marginfi/issue/LIQ-16/overhaul-the-way-eva-is-obtaining-recent-oracle-prices
     pub fn simulate_swb_prices(&self) -> Result<()> {
         if !self.simulation_is_running.load(Ordering::SeqCst) {
             thread_info!("Simulating Swb prices...");

@@ -52,6 +52,7 @@ use tokio::runtime::{Builder, Runtime};
 
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
+#[allow(dead_code)]
 pub struct Rebalancer {
     config: RebalancerCfg,
     general_config: GeneralConfig,

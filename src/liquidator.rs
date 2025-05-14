@@ -31,6 +31,7 @@ use std::{
 };
 use std::{sync::atomic::Ordering, thread};
 
+#[allow(dead_code)]
 pub struct Liquidator {
     liquidator_account: LiquidatorAccount,
     config: LiquidatorCfg,
