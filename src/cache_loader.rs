@@ -11,9 +11,7 @@ use log::{debug, error, info};
 use marginfi::state::{
     marginfi_account::MarginfiAccount,
     marginfi_group::Bank,
-    price::{
-        OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed, SwitchboardV2PriceFeed,
-    },
+    price::{OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed},
 };
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
@@ -32,7 +30,6 @@ use solana_sdk::{
     signer::Signer,
 };
 use switchboard_on_demand_client::PullFeedAccountData;
-use tokio::runtime::{Builder, Runtime};
 
 use crate::{
     cache::CacheT,
@@ -57,7 +54,6 @@ pub struct CacheLoader {
     signer: Keypair,
     rpc_url: String,
     rpc_client: RpcClient,
-    tokio_rt: Runtime,
     clock: Arc<Mutex<Clock>>,
 }
 
@@ -66,17 +62,11 @@ impl CacheLoader {
         let signer =
             read_keypair_file(&keypair_path).map_err(|e| anyhow!("Keypair read failed: {}", e))?;
         let rpc_client = RpcClient::new(&rpc_url);
-        let tokio_rt = Builder::new_multi_thread()
-            .thread_name("CacheLoader")
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
 
         Ok(Self {
             signer,
             rpc_url,
             rpc_client,
-            tokio_rt,
             clock,
         })
     }
@@ -152,26 +142,19 @@ impl CacheLoader {
                     ..Default::default()
                 },
                 filters: Some(vec![
-                    #[allow(deprecated)]
-                    RpcFilterType::Memcmp(Memcmp {
-                        offset: 8,
-                        #[allow(deprecated)]
-                        bytes: MemcmpEncodedBytes::Base58(marginfi_group_address.to_string()),
-                        #[allow(deprecated)]
-                        encoding: None,
-                    }),
-                    #[allow(deprecated)]
-                    RpcFilterType::Memcmp(Memcmp {
-                        offset: 0,
-                        #[allow(deprecated)]
-                        bytes: MemcmpEncodedBytes::Base58(
+                    RpcFilterType::Memcmp(Memcmp::new(
+                        8,
+                        MemcmpEncodedBytes::Base58(marginfi_group_address.to_string()),
+                    )),
+                    RpcFilterType::Memcmp(Memcmp::new(
+                        0,
+                        MemcmpEncodedBytes::Base58(
                             bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
                         ),
-                        #[allow(deprecated)]
-                        encoding: None,
-                    }),
+                    )),
                 ]),
                 with_context: Some(false),
+                sort_results: None,
             },
         )?;
 
@@ -199,14 +182,11 @@ impl CacheLoader {
         let program: Program<Arc<Keypair>> = anchor_client.program(cache.marginfi_program_id)?;
 
         info!("Loading banks...");
-        for (bank_address, bank) in self
-            .tokio_rt
-            .block_on(program.accounts::<Bank>(vec![RpcFilterType::Memcmp(
-                Memcmp::new_base58_encoded(
-                    BANK_GROUP_PK_OFFSET,
-                    cache.marginfi_group_address.as_ref(),
-                ),
-            )]))?
+        for (bank_address, bank) in program
+            .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
+                BANK_GROUP_PK_OFFSET,
+                cache.marginfi_group_address.as_ref(),
+            ))])?
             .iter()
         {
             cache.banks.insert(*bank_address, *bank);
@@ -302,14 +282,6 @@ impl CacheLoader {
                         SwitchboardPullPriceFeed {
                             feed: Box::new((&swb_feed).into()),
                         },
-                    ))
-                }
-                OracleSetup::SwitchboardV2 => {
-                    let oracle_account_info =
-                        (&oracle_address, &mut oracle_account).into_account_info();
-
-                    Ok(OraclePriceFeedAdapter::SwitchboardV2(
-                        SwitchboardV2PriceFeed::load_checked(&oracle_account_info, i64::MAX, 0)?,
                     ))
                 }
                 OracleSetup::PythPushOracle => {

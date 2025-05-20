@@ -199,7 +199,7 @@ impl LiquidatorAccount {
         }
         let crank_data = if !swb_oracles.is_empty() {
             thread_debug!("Cranking Swb Oracles for observation accounts.",);
-            if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
+            if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
@@ -237,7 +237,7 @@ impl LiquidatorAccount {
 
         if let Some((crank_ix, crank_lut)) = crank_data {
             let mut transactions =
-                vec![RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut)];
+                vec![RawTransaction::new(crank_ix).with_lookup_tables(crank_lut)];
 
             transactions.push(RawTransaction::new(vec![liquidate_ix]));
 

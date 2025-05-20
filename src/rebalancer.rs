@@ -167,7 +167,7 @@ impl Rebalancer {
 
         if !active_swb_oracles.is_empty() {
             thread_debug!("Fetching SWB prices...");
-            let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
+            let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
@@ -181,7 +181,7 @@ impl Rebalancer {
             self.liquidator_account
                 .transaction_tx
                 .send(TransactionData {
-                    transactions: vec![RawTransaction::new(vec![ix]).with_lookup_tables(lut)],
+                    transactions: vec![RawTransaction::new(ix).with_lookup_tables(lut)],
                     bundle_id: self.liquidator_account.liquidator_address,
                 })?;
             thread_debug!("SWB prices fetching is completed.");
@@ -606,18 +606,21 @@ impl Rebalancer {
             }))?;
 
         let swap = self.tokio_rt.block_on(
-            jup_swap_client.swap(&SwapRequest {
-                user_public_key: self.general_config.signer_pubkey,
-                quote_response,
-                config: TransactionConfig {
-                    wrap_and_unwrap_sol: false,
-                    compute_unit_price_micro_lamports: self
-                        .config
-                        .compute_unit_price_micro_lamports
-                        .map(ComputeUnitPriceMicroLamports::MicroLamports),
-                    ..Default::default()
+            jup_swap_client.swap(
+                &SwapRequest {
+                    user_public_key: self.general_config.signer_pubkey,
+                    quote_response,
+                    config: TransactionConfig {
+                        wrap_and_unwrap_sol: false,
+                        compute_unit_price_micro_lamports: self
+                            .config
+                            .compute_unit_price_micro_lamports
+                            .map(ComputeUnitPriceMicroLamports::MicroLamports),
+                        ..Default::default()
+                    },
                 },
-            }),
+                None,
+            ),
         )?;
 
         let mut tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
