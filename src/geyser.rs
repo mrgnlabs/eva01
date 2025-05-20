@@ -18,7 +18,7 @@ use std::{
     },
 };
 use tokio::runtime::{Builder, Runtime};
-use yellowstone_grpc_client::GeyserGrpcClient;
+use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::prelude::*;
 
 const MARGIN_ACCOUNT_SIZE: usize = size_of::<MarginfiAccount>() + 8;
@@ -107,6 +107,7 @@ impl GeyserService {
             let mut client = self.tokio_rt.block_on(
                 GeyserGrpcClient::build_from_shared(self.endpoint.clone())?
                     .x_token(self.x_token.clone())?
+                    .tls_config(ClientTlsConfig::new().with_native_roots())?
                     .connect(),
             )?;
 

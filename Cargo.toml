@@ -47,7 +47,7 @@ tokio = { version = "1.35.1", features = ["rt", "macros"] }
 toml = "0.8.12"
 tonic = "0.10.2"
 tonic-health = "0.10.2"
-yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" }
+yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" } 
 yellowstone-grpc-proto = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" }
 jito-sdk-rust = "0.1.0"
 switchboard-on-demand = "0.3.5"
