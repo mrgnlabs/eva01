@@ -161,6 +161,10 @@ impl Liquidator {
             .unwrap()
             .contains(&account.address)
         {
+            thread_debug!(
+                "Account {:?} is already in the pending liquidations list.",
+                account.address
+            );
             return None;
         }
 

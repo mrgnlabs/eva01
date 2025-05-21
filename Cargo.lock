@@ -7234,9 +7234,9 @@ dependencies = [
 
 [[package]]
 name = "switchboard-on-demand-client"
-version = "0.4.0-alpha-0.0.4"
+version = "0.4.0-alpha-0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21a7d494cc64e2b1dfbc6feb169e9c02243d1a90cb327c665db0e4468ae0c646"
+checksum = "7b98187095a219a5258174ab220193f4f6f7397acc7f9393cf5f60740350d3c0"
 dependencies = [
  "anyhow_ext",
  "arrayref",

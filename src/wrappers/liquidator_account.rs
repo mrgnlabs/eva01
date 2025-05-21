@@ -95,6 +95,7 @@ impl LiquidatorAccount {
             .enable_all()
             .build()?;
 
+        //TODO: parametrize the Swb feed key.
         let queue = tokio_rt.block_on(QueueAccountData::load(
             &non_blocking_rpc_client,
             &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
@@ -197,8 +198,13 @@ impl LiquidatorAccount {
                 swb_oracles.push(swb_oracle);
             }
         }
+
+        // TODO: move to utils/swb_cranker.rs
         let crank_data = if !swb_oracles.is_empty() {
-            thread_debug!("Cranking Swb Oracles for observation accounts.",);
+            thread_debug!(
+                "Cranking Swb Oracles for observation accounts {:#?}",
+                swb_oracles
+            );
             if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
@@ -207,6 +213,7 @@ impl LiquidatorAccount {
                     payer: self.signer_keypair.pubkey(),
                     gateway: self.swb_gateway.clone(),
                     num_signatures: Some(1),
+                    //                    debug: Some(true),
                     ..Default::default()
                 },
             )) {

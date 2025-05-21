@@ -165,6 +165,7 @@ impl Rebalancer {
             })
             .collect();
 
+        // TODO: moved to utils/swb_cranker.rs
         if !active_swb_oracles.is_empty() {
             thread_debug!("Fetching SWB prices...");
             let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
