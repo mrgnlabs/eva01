@@ -20,7 +20,6 @@ use marginfi::{
     constants::EXP_10_I80F48,
     state::{
         marginfi_account::{BalanceSide, RequirementType},
-        marginfi_group::Bank,
         price::{OracleSetup, PriceBias},
     },
 };
@@ -263,11 +262,11 @@ impl Rebalancer {
 
         thread_debug!("Selling non-preferred deposits.");
 
-        for (bank, balance) in non_preferred_deposits {
-            if let Err(error) = self.withdraw_and_sell_deposit(&balance.bank_pk, bank) {
+        for bank_pk in non_preferred_deposits {
+            if let Err(error) = self.withdraw_and_sell_deposit(&bank_pk) {
                 thread_error!(
                     "Failed to withdraw and sell deposit for the Bank ({}): {:?}",
-                    balance.bank_pk,
+                    bank_pk,
                     error
                 );
             }
@@ -361,8 +360,7 @@ impl Rebalancer {
             let withdraw_amount = min(max_withdraw_amount, required_swap_token);
 
             self.liquidator_account.withdraw(
-                bank_pk,
-                bank.bank,
+                &bank,
                 withdraw_amount.to_num(),
                 Some(withdraw_all),
             )?;
@@ -413,14 +411,9 @@ impl Rebalancer {
                 );
 
                 let bank_wrapper = self.cache.try_get_bank_wrapper(&self.swap_mint_bank_pk)?;
-                let token_address = self
-                    .cache
-                    .tokens
-                    .try_get_token_for_mint(&bank_wrapper.bank.mint)?;
-
-                if let Err(error) =
-                    self.liquidator_account
-                        .deposit(&bank_wrapper, token_address, balance.to_num())
+                if let Err(error) = self
+                    .liquidator_account
+                    .deposit(&bank_wrapper, balance.to_num())
                 {
                     thread_error!(
                         "Failed to deposit to the Bank ({:?}): {:?}",
@@ -528,22 +521,23 @@ impl Rebalancer {
     }
 
     /// Withdraw and sells a given asset
-    fn withdraw_and_sell_deposit(&mut self, bank_pk: &Pubkey, bank: Bank) -> anyhow::Result<()> {
+    fn withdraw_and_sell_deposit(&mut self, bank_pk: &Pubkey) -> anyhow::Result<()> {
         let (withdraw_amount, withdrawl_all) = self.get_max_withdraw_for_bank(bank_pk)?;
+        let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
 
         let amount = withdraw_amount.to_num::<u64>();
 
         thread_debug!(
             "Withdrawing {:?} of {:?} from bank {:?}",
             amount,
-            bank.mint,
+            bank.bank.mint,
             bank_pk
         );
 
         self.liquidator_account
-            .withdraw(bank_pk, bank, amount, Some(withdrawl_all))?;
+            .withdraw(&bank, amount, Some(withdrawl_all))?;
 
-        self.swap(amount, bank.mint, self.general_config.swap_mint)?;
+        self.swap(amount, bank.bank.mint, self.general_config.swap_mint)?;
 
         Ok(())
     }

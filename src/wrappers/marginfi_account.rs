@@ -5,8 +5,7 @@ use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::{
-    marginfi_account::{Balance, BalanceSide, LendingAccount},
-    marginfi_group::Bank,
+    marginfi_account::{BalanceSide, LendingAccount},
     price::OracleSetup,
 };
 use solana_program::pubkey::Pubkey;
@@ -48,7 +47,7 @@ impl MarginfiAccountWrapper {
         &self,
         mints_to_exclude: &[Pubkey],
         cache: Arc<CacheT<T>>,
-    ) -> Vec<(Bank, &Balance)> {
+    ) -> Vec<Pubkey> {
         self.lending_account
             .balances
             .iter()
@@ -58,7 +57,7 @@ impl MarginfiAccountWrapper {
                     && matches!(b.get_side(), Some(BalanceSide::Assets))
                     && !mints_to_exclude.contains(&bank.mint)
                 {
-                    Some((bank, b))
+                    Some(b.bank_pk)
                 } else {
                     None
                 }
@@ -313,7 +312,7 @@ mod tests {
         );
         assert_eq!(
             healthy.get_deposits(&[], cache.clone()),
-            vec![(sol_bank.address)]
+            vec![sol_bank.address]
         );
         let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
@@ -345,10 +344,7 @@ mod tests {
             unhealthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), sol_bank.address)]
         );
-        assert_eq!(
-            unhealthy.get_deposits(&[], cache),
-            vec![(usdc_bank.address)]
-        );
+        assert_eq!(unhealthy.get_deposits(&[], cache), vec![usdc_bank.address]);
         let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {

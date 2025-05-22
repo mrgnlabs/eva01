@@ -14,7 +14,6 @@ use crate::{
 use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
 use log::{debug, info};
-use marginfi::state::marginfi_group::Bank;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
     rpc_config::RpcSendTransactionConfig,
@@ -338,8 +337,7 @@ impl LiquidatorAccount {
 
     pub fn withdraw(
         &self,
-        bank_pk: &Pubkey,
-        bank: Bank,
+        bank: &BankWrapper,
         amount: u64,
         withdraw_all: Option<bool>,
     ) -> Result<()> {
@@ -349,7 +347,7 @@ impl LiquidatorAccount {
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude = if withdraw_all.unwrap_or(false) {
-            vec![*bank_pk]
+            vec![bank.address]
         } else {
             vec![]
         };
@@ -366,14 +364,13 @@ impl LiquidatorAccount {
             self.cache.clone(),
         )?;
 
-        let mint = bank.mint;
+        let mint = bank.bank.mint;
         let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let withdraw_ix = make_withdraw_ix(
             self.program_id,
             self.group,
             marginfi_account,
             signer_pk,
-            bank_pk,
             bank,
             token_account,
             self.cache.mints.try_get_account(&mint)?.account.owner,
@@ -463,13 +460,13 @@ impl LiquidatorAccount {
         Ok(())
     }
 
-    pub fn deposit(&self, bank: &BankWrapper, token_account: Pubkey, amount: u64) -> Result<()> {
+    pub fn deposit(&self, bank: &BankWrapper, amount: u64) -> Result<()> {
         let marginfi_account = self.liquidator_address;
 
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-
+        let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let deposit_ix = make_deposit_ix(
             self.program_id,
             self.group,

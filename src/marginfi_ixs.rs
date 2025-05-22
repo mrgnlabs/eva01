@@ -2,7 +2,6 @@ use anchor_lang::{InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
 use log::{debug, info, trace};
-use marginfi::state::marginfi_group::Bank;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -87,8 +86,7 @@ pub fn make_withdraw_ix(
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     signer: Pubkey,
-    bank_pk: &Pubkey,
-    bank: Bank,
+    bank: &BankWrapper,
     destination_token_account: Pubkey,
     token_program: Pubkey,
     observation_accounts: Vec<Pubkey>,
@@ -98,19 +96,19 @@ pub fn make_withdraw_ix(
     let mut accounts = marginfi::accounts::LendingAccountWithdraw {
         marginfi_account,
         destination_token_account,
-        liquidity_vault: bank.liquidity_vault,
+        liquidity_vault: bank.bank.liquidity_vault,
         token_program,
         authority: signer,
         bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
-            bank_pk,
+            &bank.address,
             &marginfi_program_id,
         ),
-        bank: *bank_pk,
+        bank: bank.address,
         group: marginfi_group,
     }
     .to_account_metas(Some(true));
 
-    maybe_add_bank_mint(&mut accounts, bank.mint, &token_program);
+    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
 
     trace!(
         "make_withdraw_ix: observation_accounts: {:?}",
