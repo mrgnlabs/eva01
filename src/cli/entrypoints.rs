@@ -22,7 +22,7 @@ use std::{
     thread,
 };
 
-pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow::Result<()> {
+pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow::Result<()> {
     info!("Starting liquidator for group: {:?}", marginfi_group_id);
     // register_metrics();
 
@@ -66,6 +66,23 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
         clock.clone(),
     )?;
     cache_loader.load_cache(&mut cache)?;
+
+    // Check if the preferred asset is in the cache. If not, make the first one the preferred asset.
+    let mints = cache.mints.get_mints();
+    info!("Token mints: {:?}", mints);
+    let addresses = cache.mints.get_tokens();
+    info!("Token addresses: {:?}", addresses);
+    info!(
+        "Configured preferred asset: {:?}",
+        config.general_config.swap_mint
+    );
+    if !mints
+        .iter()
+        .any(|&mint| mint == &config.general_config.swap_mint)
+    {
+        config.general_config.swap_mint = *mints[0]; // TODO: come up with a smarter logic for choosing the preferred asset
+        info!("Configured preferred asset not found in cache, using the first one from cache as preferred: {}", *mints[0]);
+    }
 
     let accounts_to_track = get_accounts_to_track(&cache);
 

@@ -58,7 +58,7 @@ pub fn main_entry() -> anyhow::Result<()> {
                 )?;
 
                 for group in marginfi_groups {
-                    if active_groups.contains(&group) {
+                    if active_groups.contains(&group) || active_groups.len() == 2 {
                         continue;
                     }
 

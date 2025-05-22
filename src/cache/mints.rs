@@ -31,6 +31,10 @@ impl MintsCache {
             .cloned()
     }
 
+    pub fn get_mints(&self) -> Vec<&Pubkey> {
+        self.mints.keys().collect()
+    }
+
     pub fn get_tokens(&self) -> Vec<Pubkey> {
         self.mints.values().map(|mint| mint.token).collect()
     }

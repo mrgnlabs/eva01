@@ -461,6 +461,7 @@ impl CacheLoader {
 
         for (mint_address, mint_account_opt) in mint_addresses.iter().zip(mint_accounts.iter()) {
             if let Some(mint_account) = mint_account_opt {
+                info!("Loading Mint {:?}", mint_address,);
                 let token_address = associated_token::get_associated_token_address_with_program_id(
                     &cache.signer_pk,
                     mint_address,

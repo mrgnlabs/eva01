@@ -9,11 +9,12 @@ use crate::{
     },
     thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
-    utils::check_asset_tags_matching,
+    utils::{check_asset_tags_matching, jupiter_swap},
 };
 use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
 use log::{debug, info};
+use marginfi::state::marginfi_group::Bank;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
     rpc_config::RpcSendTransactionConfig,
@@ -38,6 +39,8 @@ use switchboard_on_demand_client::{
 };
 use tokio::runtime::{Builder, Runtime};
 
+//const MIN_LIQUIDATIONS_COUNT: u64 = 10;
+
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
     pub signer_keypair: Arc<Keypair>,
@@ -60,15 +63,29 @@ impl LiquidatorAccount {
         marginfi_group_id: Pubkey,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
+        fund: bool,
     ) -> Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
         let rpc_client = RpcClient::new(config.rpc_url.clone());
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("liquidator-account")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+
         let accounts = marginfi_account_by_authority(
             signer_keypair.pubkey(),
             &rpc_client,
             config.marginfi_program_id,
             marginfi_group_id,
         )?;
+        info!(
+            "Found {} MarginFi accounts for the provided signer",
+            accounts.len()
+        );
+        for account in accounts.iter() {
+            info!("MarginFi account: {:?}", account);
+        }
         let liquidator_address = if accounts.is_empty() {
             info!("No MarginFi account found for the provided signer. Creating it...");
 
@@ -78,24 +95,47 @@ impl LiquidatorAccount {
                 marginfi_group_id,
                 &signer_keypair,
             )?;
+
+            // Multiply by 40 because the profit is 0.025 of the amount that is being liquidated. And then multiply by 100 to get enough funds for 100 liquidations.
+            //let amount = ((config.min_profit * 40.0) as u64) * MIN_LIQUIDATIONS_COUNT;
+            let amount: f64 = config.min_profit * 2.0; // 40 * 10 / 200 (SOL/USDC)
             info!(
-                "Initialized new MarginFi account for this liquidator {:?}!",
-                liquidator_marginfi_account
+                "Funding newly created MarginFi account with {} of SOL...",
+                amount
             );
+            jupiter_swap(
+                &tokio_rt,
+                &rpc_client,
+                solana_sdk::native_token::sol_to_lamports(amount),
+                spl_token::native_mint::ID,
+                config.swap_mint,
+                config,
+            )?;
+
             liquidator_marginfi_account
         } else {
+            if fund {
+                // // Multiply by 40 because the profit is 0.025 of the amount that is being liquidated. And then multiply by 100 to get enough funds for 100 liquidations.
+                // // let amount = ((config.min_profit * 40.0) as u64) * MIN_LIQUIDATIONS_COUNT;
+                // let amount: f64 = config.min_profit * 1.0; // 40 * 10 / 200 (SOL/USDC)
+                // info!(
+                //     "Funding newly created MarginFi account with {} of SOL...",
+                //     amount
+                // );
+                // jupiter_swap(
+                //     &tokio_rt,
+                //     &rpc_client,
+                //     solana_sdk::native_token::sol_to_lamports(amount),
+                //     spl_token::native_mint::ID,
+                //     config.swap_mint,
+                //     config,
+                // )?;
+            }
             accounts[0]
         };
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
 
-        let tokio_rt = Builder::new_multi_thread()
-            .thread_name("liquidator-account")
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
-
-        //TODO: parametrize the Swb feed key.
         let queue = tokio_rt.block_on(QueueAccountData::load(
             &non_blocking_rpc_client,
             &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
@@ -298,8 +338,8 @@ impl LiquidatorAccount {
 
     pub fn withdraw(
         &self,
-        bank: &BankWrapper,
-        token_account: Pubkey,
+        bank_pk: &Pubkey,
+        bank: Bank,
         amount: u64,
         withdraw_all: Option<bool>,
     ) -> Result<()> {
@@ -309,7 +349,7 @@ impl LiquidatorAccount {
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude = if withdraw_all.unwrap_or(false) {
-            vec![bank.address]
+            vec![*bank_pk]
         } else {
             vec![]
         };
@@ -326,12 +366,14 @@ impl LiquidatorAccount {
             self.cache.clone(),
         )?;
 
-        let mint = bank.bank.mint;
+        let mint = bank.mint;
+        let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let withdraw_ix = make_withdraw_ix(
             self.program_id,
             self.group,
             marginfi_account,
             signer_pk,
+            bank_pk,
             bank,
             token_account,
             self.cache.mints.try_get_account(&mint)?.account.owner,
@@ -371,26 +413,20 @@ impl LiquidatorAccount {
         Ok(())
     }
 
-    pub fn repay(
-        &self,
-        bank: &BankWrapper,
-        token_account: &Pubkey,
-        amount: u64,
-        repay_all: Option<bool>,
-    ) -> Result<()> {
+    pub fn repay(&self, bank: &BankWrapper, amount: u64, repay_all: Option<bool>) -> Result<()> {
         let marginfi_account = self.liquidator_address;
 
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-
+        let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let repay_ix = make_repay_ix(
             self.program_id,
             self.group,
             marginfi_account,
             signer_pk,
             bank,
-            *token_account,
+            token_account,
             self.cache.mints.try_get_account(&mint)?.account.owner,
             amount,
             repay_all,

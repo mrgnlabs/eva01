@@ -3,7 +3,13 @@ pub mod swb_cranker;
 use anyhow::{anyhow, Result};
 use backoff::ExponentialBackoff;
 use fixed::types::I80F48;
-use log::debug;
+use jupiter_swap_api_client::{
+    quote::QuoteRequest,
+    swap::SwapRequest,
+    transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
+    JupiterSwapApiClient,
+};
+use log::{debug, info};
 use marginfi::{
     bank_authority_seed,
     constants::{
@@ -21,11 +27,12 @@ use marginfi::{
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serializer};
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::rpc_config::RpcAccountInfoConfig;
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::Account,
     signature::{read_keypair_file, Keypair},
+    transaction::VersionedTransaction,
 };
 use std::{
     io::Write,
@@ -35,11 +42,14 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
+use tokio::runtime::Runtime;
 use url::Url;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 use crate::{
     cache::Cache,
+    config::GeneralConfig,
+    sender::{SenderCfg, TransactionSender},
     wrappers::{bank::BankWrapper, oracle::OracleWrapperTrait},
 };
 
@@ -730,4 +740,51 @@ pub fn check_asset_tags_matching(bank: &Bank, lending_account: &LendingAccount) 
     }
 
     !(has_default_asset && has_staked_asset)
+}
+
+pub fn jupiter_swap(
+    tokio_rt: &Runtime,
+    rpc_client: &RpcClient,
+    amount: u64,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    config: &GeneralConfig,
+) -> anyhow::Result<()> {
+    info!("Jupiter swap: {} -> {}", input_mint, output_mint);
+    let jup_swap_client = JupiterSwapApiClient::new(config.jup_swap_api_url.clone());
+
+    let quote_response = tokio_rt.block_on(jup_swap_client.quote(&QuoteRequest {
+        input_mint,
+        output_mint,
+        amount,
+        slippage_bps: config.slippage_bps,
+        ..Default::default()
+    }))?;
+
+    let swap = tokio_rt.block_on(
+        jup_swap_client.swap(&SwapRequest {
+            user_public_key: config.signer_pubkey,
+            quote_response,
+            config: TransactionConfig {
+                wrap_and_unwrap_sol: input_mint == spl_token::native_mint::ID,
+                compute_unit_price_micro_lamports: config
+                    .compute_unit_price_micro_lamports
+                    .map(ComputeUnitPriceMicroLamports::MicroLamports),
+                ..Default::default()
+            },
+        }),
+    )?;
+
+    let mut tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
+        .map_err(|_| anyhow!("Failed to deserialize"))?;
+
+    tx = VersionedTransaction::try_new(
+        tx.message,
+        &[&read_keypair_file(&config.keypair_path).unwrap()],
+    )?;
+
+    TransactionSender::aggressive_send_tx(rpc_client, &tx, SenderCfg::DEFAULT)
+        .map_err(|e| anyhow!("Failed to send swap transaction: {}", e))?;
+
+    Ok(())
 }

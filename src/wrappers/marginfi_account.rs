@@ -5,7 +5,8 @@ use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::{
-    marginfi_account::{BalanceSide, LendingAccount},
+    marginfi_account::{Balance, BalanceSide, LendingAccount},
+    marginfi_group::Bank,
     price::OracleSetup,
 };
 use solana_program::pubkey::Pubkey;
@@ -47,17 +48,17 @@ impl MarginfiAccountWrapper {
         &self,
         mints_to_exclude: &[Pubkey],
         cache: Arc<CacheT<T>>,
-    ) -> Vec<Pubkey> {
+    ) -> Vec<(Bank, &Balance)> {
         self.lending_account
             .balances
             .iter()
             .filter_map(|b| {
+                let bank = cache.banks.get_bank(&b.bank_pk)?;
                 if b.is_active()
                     && matches!(b.get_side(), Some(BalanceSide::Assets))
-                    && !mints_to_exclude
-                        .contains(&cache.banks.get_bank(&b.bank_pk).map(|bank| bank.mint)?)
+                    && !mints_to_exclude.contains(&bank.mint)
                 {
-                    Some(b.bank_pk)
+                    Some((bank, b))
                 } else {
                     None
                 }

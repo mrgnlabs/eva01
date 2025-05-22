@@ -35,6 +35,7 @@ use std::{sync::atomic::Ordering, thread};
 pub struct Liquidator {
     liquidator_account: LiquidatorAccount,
     config: LiquidatorCfg,
+    min_profit: f64,
     run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
@@ -68,10 +69,12 @@ impl Liquidator {
             marginfi_group_id,
             pending_liquidations,
             cache.clone(),
+            true,
         )?;
 
         Ok(Liquidator {
             config: liquidator_config,
+            min_profit: general_config.min_profit,
             run_liquidation,
             liquidator_account,
             stop_liquidator,
@@ -434,7 +437,7 @@ impl Liquidator {
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
-        if liquidator_profit <= self.config.min_profit {
+        if liquidator_profit <= self.min_profit {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
 
@@ -444,7 +447,7 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        if liquidator_profit > self.config.min_profit {
+        if liquidator_profit > self.min_profit {
             thread_debug!("Account {:?}\nAsset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
             Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
             Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", 

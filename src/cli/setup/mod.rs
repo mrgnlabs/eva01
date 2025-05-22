@@ -93,22 +93,21 @@ pub fn setup() -> anyhow::Result<()> {
         account_whitelist: GeneralConfig::default_account_whitelist(),
         address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
         solana_clock_refresh_interval: GeneralConfig::default_sol_clock_refresh_interval(),
+        swap_mint: GeneralConfig::default_swap_mint(),
+        jup_swap_api_url: GeneralConfig::default_jup_swap_api_url().to_string(),
+        slippage_bps: GeneralConfig::default_slippage_bps(),
+        min_profit: GeneralConfig::default_min_profit(),
     };
 
     let liquidator_config = LiquidatorCfg {
-        min_profit: LiquidatorCfg::default_min_profit(),
         max_liquidation_value: None,
         isolated_banks,
     };
 
     let rebalancer_config = RebalancerCfg {
         token_account_dust_threshold: RebalancerCfg::default_token_account_dust_threshold(),
-        preferred_mints: RebalancerCfg::default_preferred_mints(),
-        swap_mint: RebalancerCfg::default_swap_mint(),
-        jup_swap_api_url: RebalancerCfg::default_jup_swap_api_url().to_string(),
         compute_unit_price_micro_lamports: RebalancerCfg::default_compute_unit_price_micro_lamports(
         ),
-        slippage_bps: RebalancerCfg::default_slippage_bps(),
     };
 
     println!(
