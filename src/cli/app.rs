@@ -68,12 +68,6 @@ pub struct SetupFromCliOpts {
     pub token_account_dust_threshold: f64,
     #[arg(
         long,
-        help = "Preferred mints",
-        default_value = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-    )]
-    pub preferred_mints: Vec<Pubkey>,
-    #[arg(
-        long,
         help = "Swap mint",
         default_value = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     )]

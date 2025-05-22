@@ -9,7 +9,7 @@ use anyhow::Result;
 use banks::BanksCache;
 use mints::MintsCache;
 use oracles::OraclesCache;
-use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_sdk::pubkey::Pubkey;
 use tokens::TokensCache;
 
 use crate::{
@@ -62,12 +62,6 @@ impl<T: OracleWrapperTrait + Clone> CacheT<T> {
         let bank = self.banks.try_get_bank(bank_pk)?;
         let oracle = self.oracles.try_get_wrapper_from_bank(bank_pk)?;
         Ok(BankWrapperT::new(*bank_pk, bank, oracle))
-    }
-
-    pub fn get_token_account_for_bank(&self, bank_pk: &Pubkey) -> Option<Account> {
-        let mint = self.banks.get_bank(bank_pk)?.mint;
-        let token = self.tokens.get_token_for_mint(&mint)?;
-        self.tokens.get_account(&token)
     }
 
     pub fn try_get_token_wrapper(&self, token_address: &Pubkey) -> Result<TokenAccountWrapperT<T>> {
@@ -160,7 +154,12 @@ mod tests {
         let cache = create_test_cache(&vec![sol_bank_wrapper.clone(), usdc_bank_wrapper.clone()]);
         let cache = Arc::new(cache);
 
-        let token_address = cache.tokens.get_addresses().get(0).unwrap().clone();
+        let token_address = cache
+            .tokens
+            .get_non_preferred_addresses(vec![])
+            .get(0)
+            .unwrap()
+            .clone();
         let result = cache.try_get_token_wrapper(&token_address);
         assert!(result.is_ok());
     }

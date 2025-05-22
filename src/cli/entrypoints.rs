@@ -12,6 +12,7 @@ use crate::{
     transaction_checker::TransactionChecker,
     transaction_manager::{TransactionData, TransactionManager},
     utils::swb_cranker::SwbCranker,
+    wrappers::liquidator_account::LiquidatorAccount,
 };
 use log::info;
 use solana_client::rpc_client::RpcClient;
@@ -22,7 +23,7 @@ use std::{
     thread,
 };
 
-pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow::Result<()> {
+pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow::Result<()> {
     info!("Starting liquidator for group: {:?}", marginfi_group_id);
     // register_metrics();
 
@@ -67,6 +68,22 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
     )?;
     cache_loader.load_cache(&mut cache)?;
 
+    // Check if the preferred asset is in the cache. If not, make the first one the preferred asset.
+    let mints = cache.mints.get_mints();
+    let addresses = cache.mints.get_tokens();
+    info!("Token addresses: {:?}", addresses);
+    if !mints
+        .iter()
+        .any(|&mint| mint == &config.rebalancer_config.swap_mint)
+    {
+        config.rebalancer_config.swap_mint = *mints[0]; // TODO: come up with a smarter logic for choosing the preferred asset
+        info!("Configured preferred asset not found in cache, using the first one from cache as preferred: {}", *mints[0]);
+    }
+
+    cache
+        .mints
+        .insert_preferred(config.rebalancer_config.swap_mint);
+
     let accounts_to_track = get_accounts_to_track(&cache);
 
     let cache = Arc::new(cache);
@@ -87,31 +104,51 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
         TransactionChecker::new(config.general_config.block_engine_url.as_str())?;
 
     let swb_price_simulator = Arc::new(SwbCranker::new(cache.clone())?);
-
     let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
+
+    let mut should_fund = false;
+    let liquidator_account = LiquidatorAccount::new(
+        transaction_tx.clone(),
+        &config.general_config,
+        marginfi_group_id,
+        Arc::clone(&pending_bundles),
+        cache.clone(),
+        &mut should_fund,
+    )?;
+
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
-        marginfi_group_id,
         config.liquidator_config.clone(),
+        liquidator_account,
         run_liquidation.clone(),
-        transaction_tx.clone(),
-        Arc::clone(&pending_bundles),
         stop_liquidator.clone(),
         cache.clone(),
         swb_price_simulator.clone(),
     )?;
 
+    // TODO: make it clonable
+    let liquidator_account_copy = LiquidatorAccount::new(
+        transaction_tx.clone(),
+        &config.general_config,
+        marginfi_group_id,
+        Arc::clone(&pending_bundles),
+        cache.clone(),
+        &mut should_fund,
+    )?;
+
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
-        marginfi_group_id,
         config.rebalancer_config.clone(),
-        transaction_tx,
-        Arc::clone(&pending_bundles),
+        liquidator_account_copy,
         run_rebalance.clone(),
         stop_liquidator.clone(),
         cache.clone(),
         swb_price_simulator.clone(),
     )?;
+
+    if should_fund {
+        rebalancer.fund_liquidator_account()?;
+    }
 
     let geyser_service = GeyserService::new(
         config.general_config,

@@ -11,7 +11,6 @@ use crate::{
     },
 };
 use anyhow::{anyhow, Result};
-use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use marginfi::{
@@ -25,8 +24,7 @@ use marginfi::{
 use solana_program::pubkey::Pubkey;
 use std::{
     cmp::min,
-    collections::HashSet,
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 use std::{sync::atomic::Ordering, thread};
@@ -35,6 +33,7 @@ use std::{sync::atomic::Ordering, thread};
 pub struct Liquidator {
     liquidator_account: LiquidatorAccount,
     config: LiquidatorCfg,
+    min_profit: f64,
     run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
@@ -50,28 +49,18 @@ pub struct PreparedLiquidatableAccount {
 }
 
 impl Liquidator {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         general_config: GeneralConfig,
-        marginfi_group_id: Pubkey,
         liquidator_config: LiquidatorCfg,
+        liquidator_account: LiquidatorAccount,
         run_liquidation: Arc<AtomicBool>,
-        transaction_sender: Sender<TransactionData>,
-        pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
         swb_price_simulator: Arc<SwbCranker>,
     ) -> Result<Self> {
-        let liquidator_account = LiquidatorAccount::new(
-            transaction_sender,
-            &general_config,
-            marginfi_group_id,
-            pending_liquidations,
-            cache.clone(),
-        )?;
-
         Ok(Liquidator {
             config: liquidator_config,
+            min_profit: general_config.min_profit,
             run_liquidation,
             liquidator_account,
             stop_liquidator,
@@ -412,7 +401,7 @@ impl Liquidator {
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
-        if liquidator_profit <= self.config.min_profit {
+        if liquidator_profit <= self.min_profit {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
 

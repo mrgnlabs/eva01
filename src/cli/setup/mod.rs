@@ -93,22 +93,21 @@ pub fn setup() -> anyhow::Result<()> {
         account_whitelist: GeneralConfig::default_account_whitelist(),
         address_lookup_tables: GeneralConfig::default_address_lookup_tables(),
         solana_clock_refresh_interval: GeneralConfig::default_sol_clock_refresh_interval(),
+        min_profit: GeneralConfig::default_min_profit(),
     };
 
     let liquidator_config = LiquidatorCfg {
-        min_profit: LiquidatorCfg::default_min_profit(),
         max_liquidation_value: None,
         isolated_banks,
     };
 
     let rebalancer_config = RebalancerCfg {
         token_account_dust_threshold: RebalancerCfg::default_token_account_dust_threshold(),
-        preferred_mints: RebalancerCfg::default_preferred_mints(),
         swap_mint: RebalancerCfg::default_swap_mint(),
         jup_swap_api_url: RebalancerCfg::default_jup_swap_api_url().to_string(),
+        slippage_bps: RebalancerCfg::default_slippage_bps(),
         compute_unit_price_micro_lamports: RebalancerCfg::default_compute_unit_price_micro_lamports(
         ),
-        slippage_bps: RebalancerCfg::default_slippage_bps(),
     };
 
     println!(
@@ -176,13 +175,21 @@ pub fn marginfi_account_by_authority(
 pub fn marginfi_groups_by_program(
     rpc_client: &RpcClient,
     marginfi_program_id: Pubkey,
+    arena_only: bool,
 ) -> anyhow::Result<Vec<Pubkey>> {
     let discriminator_bytes = marginfi::state::marginfi_group::MarginfiGroup::DISCRIMINATOR;
 
-    let filters = vec![RpcFilterType::Memcmp(Memcmp::new(
+    let mut filters = vec![RpcFilterType::Memcmp(Memcmp::new(
         0,
         MemcmpEncodedBytes::Base58(bs58::encode(discriminator_bytes).into_string()),
     ))];
+
+    if arena_only {
+        filters.push(RpcFilterType::Memcmp(Memcmp::new(
+            8 + 32,
+            MemcmpEncodedBytes::Base58(bs58::encode(2u64.to_le_bytes()).into_string()), // 2 - is the mask for ARENA_GROUP flag
+        )));
+    }
 
     let accounts = rpc_client.get_program_accounts_with_config(
         &marginfi_program_id,

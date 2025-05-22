@@ -60,15 +60,29 @@ impl LiquidatorAccount {
         marginfi_group_id: Pubkey,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
+        should_fund: &mut bool,
     ) -> Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
         let rpc_client = RpcClient::new(config.rpc_url.clone());
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("liquidator-account")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+
         let accounts = marginfi_account_by_authority(
             signer_keypair.pubkey(),
             &rpc_client,
             config.marginfi_program_id,
             marginfi_group_id,
         )?;
+        info!(
+            "Found {} MarginFi accounts for the provided signer",
+            accounts.len()
+        );
+        for account in accounts.iter() {
+            info!("MarginFi account: {:?}", account);
+        }
         let liquidator_address = if accounts.is_empty() {
             info!("No MarginFi account found for the provided signer. Creating it...");
 
@@ -78,10 +92,9 @@ impl LiquidatorAccount {
                 marginfi_group_id,
                 &signer_keypair,
             )?;
-            info!(
-                "Initialized new MarginFi account for this liquidator {:?}!",
-                liquidator_marginfi_account
-            );
+
+            *should_fund = true;
+
             liquidator_marginfi_account
         } else {
             accounts[0]
@@ -89,13 +102,6 @@ impl LiquidatorAccount {
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
 
-        let tokio_rt = Builder::new_multi_thread()
-            .thread_name("liquidator-account")
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
-
-        //TODO: parametrize the Swb feed key.
         let queue = tokio_rt.block_on(QueueAccountData::load(
             &non_blocking_rpc_client,
             &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
@@ -281,7 +287,6 @@ impl LiquidatorAccount {
     pub fn withdraw(
         &self,
         bank: &BankWrapper,
-        token_account: Pubkey,
         amount: u64,
         withdraw_all: Option<bool>,
     ) -> Result<()> {
@@ -309,6 +314,7 @@ impl LiquidatorAccount {
         )?;
 
         let mint = bank.bank.mint;
+        let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let withdraw_ix = make_withdraw_ix(
             self.program_id,
             self.group,
@@ -353,26 +359,20 @@ impl LiquidatorAccount {
         Ok(())
     }
 
-    pub fn repay(
-        &self,
-        bank: &BankWrapper,
-        token_account: &Pubkey,
-        amount: u64,
-        repay_all: Option<bool>,
-    ) -> Result<()> {
+    pub fn repay(&self, bank: &BankWrapper, amount: u64, repay_all: Option<bool>) -> Result<()> {
         let marginfi_account = self.liquidator_address;
 
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-
+        let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let repay_ix = make_repay_ix(
             self.program_id,
             self.group,
             marginfi_account,
             signer_pk,
             bank,
-            *token_account,
+            token_account,
             self.cache.mints.try_get_account(&mint)?.account.owner,
             amount,
             repay_all,
@@ -409,13 +409,13 @@ impl LiquidatorAccount {
         Ok(())
     }
 
-    pub fn deposit(&self, bank: &BankWrapper, token_account: Pubkey, amount: u64) -> Result<()> {
+    pub fn deposit(&self, bank: &BankWrapper, amount: u64) -> Result<()> {
         let marginfi_account = self.liquidator_address;
 
         let signer_pk = self.signer_keypair.pubkey();
 
         let mint = bank.bank.mint;
-
+        let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let deposit_ix = make_deposit_ix(
             self.program_id,
             self.group,

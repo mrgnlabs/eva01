@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use solana_sdk::{account::Account, pubkey::Pubkey};
@@ -8,6 +8,7 @@ use crate::wrappers::mint::MintWrapper;
 pub struct MintsCache {
     mints: HashMap<Pubkey, MintWrapper>,
     token_to_mint: HashMap<Pubkey, Pubkey>,
+    preferred_mints: HashSet<Pubkey>,
 }
 
 impl MintsCache {
@@ -15,6 +16,7 @@ impl MintsCache {
         Self {
             mints: HashMap::new(),
             token_to_mint: HashMap::new(),
+            preferred_mints: HashSet::new(),
         }
     }
 
@@ -24,11 +26,23 @@ impl MintsCache {
         self.token_to_mint.insert(token_address, mint_address);
     }
 
+    pub fn insert_preferred(&mut self, mint_address: Pubkey) {
+        self.preferred_mints.insert(mint_address);
+    }
+
     pub fn try_get_account(&self, address: &Pubkey) -> Result<MintWrapper> {
         self.mints
             .get(address)
             .ok_or(anyhow!("Failed to find Mint for the Address {}!", &address))
             .cloned()
+    }
+
+    pub fn get_mints(&self) -> Vec<&Pubkey> {
+        self.mints.keys().collect()
+    }
+
+    pub fn get_preferred_mints(&self) -> Vec<Pubkey> {
+        self.preferred_mints.iter().cloned().collect()
     }
 
     pub fn get_tokens(&self) -> Vec<Pubkey> {

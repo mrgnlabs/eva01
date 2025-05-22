@@ -91,6 +91,14 @@ pub struct GeneralConfig {
     pub address_lookup_tables: Vec<Pubkey>,
     #[serde(default = "GeneralConfig::default_sol_clock_refresh_interval")]
     pub solana_clock_refresh_interval: u64,
+    /// Minimun profit on a liquidation to be considered, denominated in USD
+    ///
+    /// Example:
+    /// 0.01 is $0.01
+    ///
+    /// Default: 0.1
+    #[serde(default = "GeneralConfig::default_min_profit")]
+    pub min_profit: f64,
 }
 
 impl std::fmt::Display for GeneralConfig {
@@ -105,6 +113,7 @@ impl std::fmt::Display for GeneralConfig {
                  - Keypair Path: {:?}\n\
                  - Compute Unit Price Micro Lamports: {}\n\
                  - Compute Unit Limit: {}\n\
+                 - Minimun profit: {}$\n\
                  - Marginfi Program ID: {}\n\
                  - Marginfi Groups Whitelist: {}\n\
                  - Marginfi Groups Blacklist: {}\n\
@@ -116,6 +125,7 @@ impl std::fmt::Display for GeneralConfig {
             self.keypair_path,
             self.compute_unit_price_micro_lamports.unwrap_or_default(),
             self.compute_unit_limit,
+            self.min_profit,
             self.marginfi_program_id,
             self.marginfi_groups_whitelist
                 .as_ref()
@@ -195,18 +205,14 @@ impl GeneralConfig {
     pub fn default_sol_clock_refresh_interval() -> u64 {
         10 // 10 seconds
     }
+
+    pub fn default_min_profit() -> f64 {
+        0.1
+    }
 }
 
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 pub struct LiquidatorCfg {
-    /// Minimun profit on a liquidation to be considered, denominated in USD
-    ///
-    /// Example:
-    /// 0.01 is $0.01
-    ///
-    /// Default: 0.1
-    #[serde(default = "LiquidatorCfg::default_min_profit")]
-    pub min_profit: f64,
     /// Maximun liquidation value in USD
     pub max_liquidation_value: Option<f64>,
     #[serde(default = "LiquidatorCfg::default_isolated_banks")]
@@ -214,10 +220,6 @@ pub struct LiquidatorCfg {
 }
 
 impl LiquidatorCfg {
-    pub fn default_min_profit() -> f64 {
-        0.1
-    }
-
     pub fn default_isolated_banks() -> bool {
         false
     }
@@ -228,9 +230,7 @@ impl std::fmt::Display for LiquidatorCfg {
         write!(
             f,
             "Liquidator Config: \n\
-                - Minimun profit: {}$\n\
                 - Max Liquidation Value: {}$\n",
-            self.min_profit,
             self.max_liquidation_value.unwrap_or_default()
         )
     }
@@ -245,12 +245,6 @@ pub struct RebalancerCfg {
     )]
     pub token_account_dust_threshold: I80F48,
     #[serde(
-        default = "RebalancerCfg::default_preferred_mints",
-        deserialize_with = "from_vec_str_to_pubkey",
-        serialize_with = "vec_pubkey_to_str"
-    )]
-    pub preferred_mints: Vec<Pubkey>,
-    #[serde(
         default = "RebalancerCfg::default_swap_mint",
         deserialize_with = "from_pubkey_string",
         serialize_with = "pubkey_to_str"
@@ -258,10 +252,10 @@ pub struct RebalancerCfg {
     pub swap_mint: Pubkey,
     #[serde(default = "RebalancerCfg::default_jup_swap_api_url")]
     pub jup_swap_api_url: String,
-    #[serde(default = "RebalancerCfg::default_compute_unit_price_micro_lamports")]
-    pub compute_unit_price_micro_lamports: Option<u64>,
     #[serde(default = "RebalancerCfg::default_slippage_bps")]
     pub slippage_bps: u16,
+    #[serde(default = "RebalancerCfg::default_compute_unit_price_micro_lamports")]
+    pub compute_unit_price_micro_lamports: Option<u64>,
 }
 
 impl RebalancerCfg {
@@ -269,12 +263,12 @@ impl RebalancerCfg {
         I80F48!(0.01)
     }
 
-    pub fn default_swap_mint() -> Pubkey {
-        pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v") // USDC
+    pub fn default_compute_unit_price_micro_lamports() -> Option<u64> {
+        Some(10_000)
     }
 
-    pub fn default_preferred_mints() -> Vec<Pubkey> {
-        vec![pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")] // USDC
+    pub fn default_swap_mint() -> Pubkey {
+        pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v") // USDC
     }
 
     pub fn default_jup_swap_api_url() -> String {
@@ -283,10 +277,6 @@ impl RebalancerCfg {
 
     pub fn default_slippage_bps() -> u16 {
         250
-    }
-
-    pub fn default_compute_unit_price_micro_lamports() -> Option<u64> {
-        Some(10_000)
     }
 }
 
@@ -297,23 +287,17 @@ impl std::fmt::Display for RebalancerCfg {
             "Rebalancer Config: \n\
                 - Token account dust threshold: {}\n\
                 - Swap mint: {}\n\
-                - Preferred mints: {}\n\
                 - Jup Swap Api URL: {}\n\
                 - Slippabe bps: {}\n\
                 - Compute unit price micro lamports: {}\n",
             self.token_account_dust_threshold,
-            self.swap_mint,
-            self.preferred_mints
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
             self.jup_swap_api_url,
             self.slippage_bps,
+            self.swap_mint,
             self.compute_unit_price_micro_lamports
                 .as_ref()
                 .map(|u| u.to_string())
-                .unwrap_or("None".to_string())
+                .unwrap_or("None".to_string()),
         )
     }
 }
