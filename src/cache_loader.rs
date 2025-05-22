@@ -40,7 +40,10 @@ use crate::{
         batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
         log_genuine_error, BatchLoadingConfig,
     },
-    wrappers::{marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait},
+    wrappers::{
+        marginfi_account::MarginfiAccountWrapper,
+        oracle::{price_adapter_name, OracleWrapperTrait},
+    },
 };
 use anchor_client::Program;
 use anyhow::{anyhow, Result};
@@ -240,7 +243,7 @@ impl CacheLoader {
             }
 
             // Use the first supported Oracle (for non-staked oracles only).
-            match {
+            let (oracle_address, oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
                 let mut oracle_address = None;
@@ -254,7 +257,9 @@ impl CacheLoader {
                 }
 
                 (oracle_address, oracle_account)
-            } {
+            };
+
+            match (oracle_address, oracle_account) {
                 (Some(oracle_address), Some(mut oracle_account)) => {
                     if cache.oracles.exists(&oracle_address) {
                         thread_debug!(
@@ -283,6 +288,7 @@ impl CacheLoader {
 
                     match price_adapter {
                         std::result::Result::Ok(adapter) => {
+                            let adapter_name = price_adapter_name(&adapter);
                             let oracle = T::new(oracle_address, adapter);
 
                             cache.oracles.try_insert(
@@ -293,7 +299,8 @@ impl CacheLoader {
                             )?;
 
                             thread_debug!(
-                                "Added the Oracle {:?} for the Bank {:?} to Cache.",
+                                "Added the {:?} Oracle {:?} for the Bank {:?} to Cache.",
+                                adapter_name,
                                 oracle_address,
                                 bank_address
                             );
@@ -391,8 +398,7 @@ impl CacheLoader {
 
                 let lst_mint_oracle_address = *oracle_keys.get(1).unwrap();
                 let mut lst_mint_oracle = oracle_map.get(&lst_mint_oracle_address).ok_or_else(|| {
-                            anyhow!(
-                                "Failed to find the Lst Mint Oracle key {} in Oracles map for the StakedWithPythPush Bank {:?}.",
+                            anyhow!("Failed to find the Lst Mint Oracle key {} in Oracles map for the StakedWithPythPush Bank {:?}.",
                                 lst_mint_oracle_address,
                                 bank_address
                             )

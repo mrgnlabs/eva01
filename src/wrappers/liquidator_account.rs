@@ -252,10 +252,10 @@ impl LiquidatorAccount {
                 .write()
                 .unwrap()
                 .insert(liquidatee_account_address);
-            self.transaction_tx.send(TransactionData {
+            Ok(self.transaction_tx.send(TransactionData {
                 transactions,
                 bundle_id: liquidatee_account_address,
-            })?;
+            })?)
         } else {
             let tx: solana_sdk::transaction::Transaction =
                 solana_sdk::transaction::Transaction::new_signed_with_payer(
@@ -265,8 +265,7 @@ impl LiquidatorAccount {
                     recent_blockhash,
                 );
 
-            let res = self
-                .rpc_client
+            self.rpc_client
                 .send_and_confirm_transaction_with_spinner_and_config(
                     &tx,
                     CommitmentConfig::confirmed(),
@@ -274,26 +273,9 @@ impl LiquidatorAccount {
                         skip_preflight: true,
                         ..Default::default()
                     },
-                );
-            match res {
-                Ok(res) => {
-                    thread_info!(
-                        "Liquidation Transaction sent for address {:?} landed successfully: {:?} ",
-                        liquidatee_account.address,
-                        res
-                    );
-                }
-                Err(err) => {
-                    thread_error!(
-                        "Liquidation Transaction sent for address {:?} failed: {:?} ",
-                        liquidatee_account.address,
-                        err
-                    );
-                }
-            }
+                )?;
+            Ok(())
         }
-
-        Ok(())
     }
 
     pub fn withdraw(
@@ -363,7 +345,7 @@ impl LiquidatorAccount {
                 },
             );
         thread_debug!(
-            "Withdrawing result for account {:?} (without preflight check): {:?} ",
+            "Withdrawing result for Liquidator account {:?} (without preflight check): {:?} ",
             marginfi_account,
             res
         );

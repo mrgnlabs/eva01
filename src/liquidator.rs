@@ -4,7 +4,7 @@ use crate::{
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
     thread_debug, thread_error, thread_info,
     transaction_manager::TransactionData,
-    utils::{swb_cranker::SwbCranker, BankAccountWithPriceFeedEva},
+    utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait,
@@ -198,6 +198,7 @@ impl Liquidator {
             .ok()
             .flatten()?;
 
+        // Calculated max liquidatable amount is the defining factor for liquidation.
         let (max_liquidatable_amount, profit) = self
             .compute_max_liquidatable_asset_amount_with_banks(
                 account,
@@ -247,13 +248,6 @@ impl Liquidator {
                 liquidation_asset_amount_capacity, asset_amount_to_liquidate, slippage_adjusted_asset_amount
             );
 
-        thread_debug!(
-            "Account {:?} health = {:?}",
-            account.address,
-            self.calc_health(account, RequirementType::Maintenance, true)
-                .unwrap()
-        );
-
         Some(PreparedLiquidatableAccount {
             liquidatee_account: account.clone(),
             asset_bank: asset_bank_wrapper,
@@ -264,17 +258,16 @@ impl Liquidator {
     }
 
     fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> Result<I80F48> {
-        let free_collateral = self.get_free_collateral()?;
+        let lq_account = &self
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?;
+
+        let free_collateral = get_free_collateral(&self.cache, &lq_account)?;
 
         let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
 
-        let (asset_amount, _) = self.get_balance_for_bank(
-            &self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&self.liquidator_account.liquidator_address)?,
-            bank_pk,
-        )?;
+        let (asset_amount, _) = self.get_balance_for_bank(&lq_account, bank_pk)?;
         thread_debug!(
             "Liquidator Asset amount: {:?}, free collateral: {:?}",
             asset_amount,
@@ -332,23 +325,6 @@ impl Liquidator {
         Ok(max_borrow_value)
     }
 
-    fn get_free_collateral(&self) -> Result<I80F48> {
-        let collateral = self.calc_health(
-            &self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&self.liquidator_account.liquidator_address)?,
-            RequirementType::Initial,
-            false,
-        )?;
-
-        if collateral > I80F48::ZERO {
-            Ok(collateral)
-        } else {
-            Ok(I80F48::ZERO)
-        }
-    }
-
     fn find_liquidation_bank_candidates(
         &self,
         deposit_values: Vec<(I80F48, Pubkey)>,
@@ -393,7 +369,9 @@ impl Liquidator {
         asset_bank_pk: &Pubkey,
         liab_bank_pk: &Pubkey,
     ) -> Result<(I80F48, I80F48)> {
-        let maintenance_health = self.calc_health(account, RequirementType::Maintenance, false)?;
+        let (total_weighted_assets, total_weighted_liabilities) =
+            calc_total_weighted_assets_liabs(&self.cache, account, RequirementType::Maintenance)?;
+        let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
@@ -444,46 +422,14 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        if liquidator_profit > self.config.min_profit {
-            thread_debug!("Account {:?}\nAsset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
+        thread_debug!("Account {:?}\nAsset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
             Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
             Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", 
             account.address, asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_amount, asset_value,
             liab_bank.address, liab_bank.bank.config.liability_weight_maint, liab_amount, liab_value,
             max_liquidatable_value,max_liquidatable_asset_amount, liquidator_profit);
-        }
 
         Ok((max_liquidatable_asset_amount, liquidator_profit))
-    }
-
-    fn calc_health(
-        &self,
-        account: &MarginfiAccountWrapper,
-        requirement_type: RequirementType,
-        print_logs: bool,
-    ) -> Result<I80F48> {
-        let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.cache.clone())?;
-
-        let (total_weighted_assets, total_weighted_liabilities) = baws.iter().fold(
-            (I80F48::ZERO, I80F48::ZERO),
-            |(total_assets, total_liabs), baw| {
-                let (assets, liabs) = baw
-                    .calc_weighted_assets_and_liabilities_values(requirement_type, print_logs)
-                    .unwrap();
-                if print_logs {
-                    thread_debug!(
-                        "Account {:?}, Bank: {:?}\nAssets: {:?}\nLiabilities: {:?}",
-                        account.address,
-                        baw.bank.address,
-                        assets,
-                        liabs
-                    );
-                }
-                (total_assets + assets, total_liabs + liabs)
-            },
-        );
-
-        Ok(total_weighted_assets - total_weighted_liabilities)
     }
 
     /// Gets the balance for a given [`MarginfiAccount`] and [`Bank`]
