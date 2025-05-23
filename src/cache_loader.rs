@@ -240,7 +240,7 @@ impl CacheLoader {
             }
 
             // Use the first supported Oracle (for non-staked oracles only).
-            match {
+            let (oracle_address, oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
                 let mut oracle_address = None;
@@ -254,7 +254,9 @@ impl CacheLoader {
                 }
 
                 (oracle_address, oracle_account)
-            } {
+            };
+
+            match (oracle_address, oracle_account) {
                 (Some(oracle_address), Some(mut oracle_account)) => {
                     if cache.oracles.exists(&oracle_address) {
                         thread_debug!(
@@ -461,7 +463,6 @@ impl CacheLoader {
 
         for (mint_address, mint_account_opt) in mint_addresses.iter().zip(mint_accounts.iter()) {
             if let Some(mint_account) = mint_account_opt {
-                info!("Loading Mint {:?}", mint_address,);
                 let token_address = associated_token::get_associated_token_address_with_program_id(
                     &cache.signer_pk,
                     mint_address,

@@ -3,7 +3,6 @@ use crate::{
     config::{GeneralConfig, LiquidatorCfg},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
     thread_debug, thread_error, thread_info,
-    transaction_manager::TransactionData,
     utils::{swb_cranker::SwbCranker, BankAccountWithPriceFeedEva},
     wrappers::{
         bank::BankWrapper, liquidator_account::LiquidatorAccount,
@@ -11,7 +10,6 @@ use crate::{
     },
 };
 use anyhow::{anyhow, Result};
-use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use marginfi::{
@@ -25,8 +23,7 @@ use marginfi::{
 use solana_program::pubkey::Pubkey;
 use std::{
     cmp::min,
-    collections::HashSet,
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 use std::{sync::atomic::Ordering, thread};
@@ -51,27 +48,15 @@ pub struct PreparedLiquidatableAccount {
 }
 
 impl Liquidator {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         general_config: GeneralConfig,
-        marginfi_group_id: Pubkey,
         liquidator_config: LiquidatorCfg,
+        liquidator_account: LiquidatorAccount,
         run_liquidation: Arc<AtomicBool>,
-        transaction_sender: Sender<TransactionData>,
-        pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
         swb_price_simulator: Arc<SwbCranker>,
     ) -> Result<Self> {
-        let liquidator_account = LiquidatorAccount::new(
-            transaction_sender,
-            &general_config,
-            marginfi_group_id,
-            pending_liquidations,
-            cache.clone(),
-            true,
-        )?;
-
         Ok(Liquidator {
             config: liquidator_config,
             min_profit: general_config.min_profit,

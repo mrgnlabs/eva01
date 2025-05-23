@@ -55,6 +55,7 @@ pub fn main_entry() -> anyhow::Result<()> {
                 let marginfi_groups = marginfi_groups_by_program(
                     &rpc_client,
                     config.general_config.marginfi_program_id,
+                    true,
                 )?;
 
                 for group in marginfi_groups {

@@ -175,13 +175,21 @@ pub fn marginfi_account_by_authority(
 pub fn marginfi_groups_by_program(
     rpc_client: &RpcClient,
     marginfi_program_id: Pubkey,
+    arena_only: bool,
 ) -> anyhow::Result<Vec<Pubkey>> {
     let discriminator_bytes = marginfi::state::marginfi_group::MarginfiGroup::DISCRIMINATOR;
 
-    let filters = vec![RpcFilterType::Memcmp(Memcmp::new(
+    let mut filters = vec![RpcFilterType::Memcmp(Memcmp::new(
         0,
         MemcmpEncodedBytes::Base58(bs58::encode(discriminator_bytes).into_string()),
     ))];
+
+    if arena_only {
+        filters.push(RpcFilterType::Memcmp(Memcmp::new(
+            8 + 32,
+            MemcmpEncodedBytes::Base58(bs58::encode(2u64.to_le_bytes()).into_string()), // 2 - is the mask for ARENA_GROUP flag
+        )));
+    }
 
     let accounts = rpc_client.get_program_accounts_with_config(
         &marginfi_program_id,

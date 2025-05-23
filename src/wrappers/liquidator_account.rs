@@ -9,7 +9,7 @@ use crate::{
     },
     thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
-    utils::{check_asset_tags_matching, jupiter_swap},
+    utils::check_asset_tags_matching,
 };
 use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
@@ -38,8 +38,6 @@ use switchboard_on_demand_client::{
 };
 use tokio::runtime::{Builder, Runtime};
 
-//const MIN_LIQUIDATIONS_COUNT: u64 = 10;
-
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
     pub signer_keypair: Arc<Keypair>,
@@ -62,7 +60,7 @@ impl LiquidatorAccount {
         marginfi_group_id: Pubkey,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
-        fund: bool,
+        should_fund: &mut bool,
     ) -> Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
         let rpc_client = RpcClient::new(config.rpc_url.clone());
@@ -95,41 +93,10 @@ impl LiquidatorAccount {
                 &signer_keypair,
             )?;
 
-            // Multiply by 40 because the profit is 0.025 of the amount that is being liquidated. And then multiply by 100 to get enough funds for 100 liquidations.
-            //let amount = ((config.min_profit * 40.0) as u64) * MIN_LIQUIDATIONS_COUNT;
-            let amount: f64 = config.min_profit * 2.0; // 40 * 10 / 200 (SOL/USDC)
-            info!(
-                "Funding newly created MarginFi account with {} of SOL...",
-                amount
-            );
-            jupiter_swap(
-                &tokio_rt,
-                &rpc_client,
-                solana_sdk::native_token::sol_to_lamports(amount),
-                spl_token::native_mint::ID,
-                config.swap_mint,
-                config,
-            )?;
+            *should_fund = true;
 
             liquidator_marginfi_account
         } else {
-            if fund {
-                // // Multiply by 40 because the profit is 0.025 of the amount that is being liquidated. And then multiply by 100 to get enough funds for 100 liquidations.
-                // // let amount = ((config.min_profit * 40.0) as u64) * MIN_LIQUIDATIONS_COUNT;
-                // let amount: f64 = config.min_profit * 1.0; // 40 * 10 / 200 (SOL/USDC)
-                // info!(
-                //     "Funding newly created MarginFi account with {} of SOL...",
-                //     amount
-                // );
-                // jupiter_swap(
-                //     &tokio_rt,
-                //     &rpc_client,
-                //     solana_sdk::native_token::sol_to_lamports(amount),
-                //     spl_token::native_mint::ID,
-                //     config.swap_mint,
-                //     config,
-                // )?;
-            }
             accounts[0]
         };
 
