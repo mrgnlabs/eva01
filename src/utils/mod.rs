@@ -344,7 +344,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
             RiskTier::Collateral => {
                 let amount = bank
                     .get_asset_amount(self.balance.asset_shares.into())
-                    .map_err(|e| Error::from(e))?;
+                    .map_err(Error::from)?;
 
                 calc_weighted_bank_assets(&self.bank, amount, requirement_type, emode_config)
             }

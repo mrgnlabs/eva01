@@ -7,7 +7,7 @@ use crate::{
         initialize_marginfi_account, make_deposit_ix, make_liquidate_ix, make_repay_ix,
         make_withdraw_ix,
     },
-    thread_debug, thread_error, thread_info,
+    thread_debug, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
     utils::check_asset_tags_matching,
 };

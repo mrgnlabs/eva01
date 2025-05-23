@@ -352,7 +352,7 @@ impl Rebalancer {
         let liab_usd_value = self.get_value(
             liab_to_purchase,
             &bank_pk,
-            &lq_account,
+            lq_account,
             RequirementType::Initial,
             BalanceSide::Liabilities,
         )?;
@@ -385,7 +385,7 @@ impl Rebalancer {
 
         let withdraw_amount = if token_balance_to_withdraw.is_positive() {
             let (max_withdraw_amount, withdraw_all) =
-                self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk, &lq_account)?;
+                self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk, lq_account)?;
 
             let withdraw_amount = min(max_withdraw_amount, token_balance_to_withdraw);
 
@@ -642,7 +642,7 @@ impl Rebalancer {
         bank_pk: &Pubkey,
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<(I80F48, bool)> {
-        let free_collateral = get_free_collateral(&self.cache, &lq_account)?;
+        let free_collateral = get_free_collateral(&self.cache, lq_account)?;
         let balance = lq_account.get_balance_for_bank(&self.cache.try_get_bank_wrapper(bank_pk)?);
         Ok(match balance {
             Some((balance, BalanceSide::Assets)) => {

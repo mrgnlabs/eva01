@@ -263,11 +263,11 @@ impl Liquidator {
             .marginfi_accounts
             .try_get_account(&self.liquidator_account.liquidator_address)?;
 
-        let free_collateral = get_free_collateral(&self.cache, &lq_account)?;
+        let free_collateral = get_free_collateral(&self.cache, lq_account)?;
 
         let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
 
-        let (asset_amount, _) = self.get_balance_for_bank(&lq_account, bank_pk)?;
+        let (asset_amount, _) = self.get_balance_for_bank(lq_account, bank_pk)?;
         thread_debug!(
             "Liquidator Asset amount: {:?}, free collateral: {:?}",
             asset_amount,
