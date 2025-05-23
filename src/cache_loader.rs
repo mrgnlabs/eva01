@@ -7,13 +7,10 @@ use std::{
 use anchor_lang::Discriminator;
 use anchor_spl::associated_token;
 use anyhow::{bail, Ok};
-use log::{debug, error, info};
 use marginfi::state::{
     marginfi_account::MarginfiAccount,
     marginfi_group::Bank,
-    price::{
-        OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed, SwitchboardV2PriceFeed,
-    },
+    price::{OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed},
 };
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
@@ -32,19 +29,21 @@ use solana_sdk::{
     signer::Signer,
 };
 use switchboard_on_demand_client::PullFeedAccountData;
-use tokio::runtime::{Builder, Runtime};
 
 use crate::{
     cache::CacheT,
     clock_manager,
     geyser::AccountType,
     sender::{SenderCfg, TransactionSender},
-    thread_debug,
+    thread_debug, thread_error, thread_info,
     utils::{
         batch_get_multiple_accounts, find_oracle_keys, load_swb_pull_account_from_bytes,
         log_genuine_error, BatchLoadingConfig,
     },
-    wrappers::{marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait},
+    wrappers::{
+        marginfi_account::MarginfiAccountWrapper,
+        oracle::{price_adapter_name, OracleWrapperTrait},
+    },
 };
 use anchor_client::Program;
 use anyhow::{anyhow, Result};
@@ -57,7 +56,6 @@ pub struct CacheLoader {
     signer: Keypair,
     rpc_url: String,
     rpc_client: RpcClient,
-    tokio_rt: Runtime,
     clock: Arc<Mutex<Clock>>,
 }
 
@@ -66,17 +64,11 @@ impl CacheLoader {
         let signer =
             read_keypair_file(&keypair_path).map_err(|e| anyhow!("Keypair read failed: {}", e))?;
         let rpc_client = RpcClient::new(&rpc_url);
-        let tokio_rt = Builder::new_multi_thread()
-            .thread_name("CacheLoader")
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
 
         Ok(Self {
             signer,
             rpc_url,
             rpc_client,
-            tokio_rt,
             clock,
         })
     }
@@ -97,7 +89,7 @@ impl CacheLoader {
         &self,
         cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
-        info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
+        thread_info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
         let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
             &cache.marginfi_program_id,
@@ -113,7 +105,7 @@ impl CacheLoader {
             },
         )?;
 
-        info!("Loaded {} marginfi accounts", marginfi_accounts.len());
+        thread_info!("Loaded {} marginfi accounts", marginfi_accounts.len());
 
         for (address, account_opt) in marginfi_accounts_pubkeys
             .iter()
@@ -129,7 +121,7 @@ impl CacheLoader {
             }
         }
 
-        info!("Loaded pubkeys in {:?}", start.elapsed());
+        thread_info!("Loaded pubkeys in {:?}", start.elapsed());
 
         Ok(())
     }
@@ -139,7 +131,7 @@ impl CacheLoader {
         marginfi_program_id: &Pubkey,
         marginfi_group_address: &Pubkey,
     ) -> anyhow::Result<Vec<Pubkey>> {
-        info!("Loading marginfi account addresses...");
+        thread_info!("Loading marginfi account addresses...");
         let marginfi_account_addresses = &self.rpc_client.get_program_accounts_with_config(
             marginfi_program_id,
             RpcProgramAccountsConfig {
@@ -152,26 +144,19 @@ impl CacheLoader {
                     ..Default::default()
                 },
                 filters: Some(vec![
-                    #[allow(deprecated)]
-                    RpcFilterType::Memcmp(Memcmp {
-                        offset: 8,
-                        #[allow(deprecated)]
-                        bytes: MemcmpEncodedBytes::Base58(marginfi_group_address.to_string()),
-                        #[allow(deprecated)]
-                        encoding: None,
-                    }),
-                    #[allow(deprecated)]
-                    RpcFilterType::Memcmp(Memcmp {
-                        offset: 0,
-                        #[allow(deprecated)]
-                        bytes: MemcmpEncodedBytes::Base58(
+                    RpcFilterType::Memcmp(Memcmp::new(
+                        8,
+                        MemcmpEncodedBytes::Base58(marginfi_group_address.to_string()),
+                    )),
+                    RpcFilterType::Memcmp(Memcmp::new(
+                        0,
+                        MemcmpEncodedBytes::Base58(
                             bs58::encode(MarginfiAccount::DISCRIMINATOR).into_string(),
                         ),
-                        #[allow(deprecated)]
-                        encoding: None,
-                    }),
+                    )),
                 ]),
                 with_context: Some(false),
+                sort_results: None,
             },
         )?;
 
@@ -180,7 +165,7 @@ impl CacheLoader {
             .map(|(pubkey, _)| *pubkey)
             .collect();
 
-        info!(
+        thread_info!(
             "Loaded {} marginfi account addresses.",
             marginfi_account_pubkeys.len()
         );
@@ -198,21 +183,19 @@ impl CacheLoader {
 
         let program: Program<Arc<Keypair>> = anchor_client.program(cache.marginfi_program_id)?;
 
-        info!("Loading banks...");
-        for (bank_address, bank) in self
-            .tokio_rt
-            .block_on(program.accounts::<Bank>(vec![RpcFilterType::Memcmp(
-                Memcmp::new_base58_encoded(
-                    BANK_GROUP_PK_OFFSET,
-                    cache.marginfi_group_address.as_ref(),
-                ),
-            )]))?
+        thread_info!("Loading banks...");
+        for (bank_address, bank) in program
+            .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
+                BANK_GROUP_PK_OFFSET,
+                cache.marginfi_group_address.as_ref(),
+            ))])?
             .iter()
         {
             cache.banks.insert(*bank_address, *bank);
+            thread_debug!("Loaded the Bank {:?}.", bank_address);
         }
 
-        info!("Loaded {} banks", cache.banks.len());
+        thread_info!("Loaded {} banks", cache.banks.len());
 
         Ok(())
     }
@@ -221,7 +204,7 @@ impl CacheLoader {
         &self,
         cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
-        info!("Loading Oracles...");
+        thread_info!("Loading Oracles...");
 
         let oracle_addresses = cache.banks.get_oracles();
         let oracle_accounts = batch_get_multiple_accounts(
@@ -236,9 +219,10 @@ impl CacheLoader {
             .collect();
 
         for (bank_address, bank) in cache.banks.get_banks().iter() {
-            debug!(
+            thread_debug!(
                 "Loading the {:?} Oracles for the Bank {:?} ...",
-                bank.config.oracle_setup, bank_address
+                bank.config.oracle_setup,
+                bank_address
             );
 
             let oracle_keys_excluded_default = bank
@@ -251,15 +235,15 @@ impl CacheLoader {
             if oracle_keys_excluded_default.len() > 1
                 && bank.config.oracle_setup != OracleSetup::StakedWithPythPush
             {
-                error!(
-                    "Discarding the non-staked Bank {:?} because has more than one oracle key, which is not supported.",
+                thread_error!(
+                    "Discarding Oracles for the non-staked Bank {:?} because it has more than one oracle key, which is not supported.",
                     bank_address
                 );
                 continue;
             }
 
             // Use the first supported Oracle (for non-staked oracles only).
-            let (oracle_address, mut oracle_account) = {
+            let (oracle_address, oracle_account) = {
                 let oracle_addresses = find_oracle_keys(&bank.config);
                 let mut oracle_account = None;
                 let mut oracle_address = None;
@@ -272,152 +256,208 @@ impl CacheLoader {
                     }
                 }
 
-                (oracle_address.unwrap(), oracle_account.unwrap())
+                (oracle_address, oracle_account)
             };
 
-            if cache.oracles.exists(&oracle_address) {
-                thread_debug!(
-                    "The {} Oracle is already registered. Wiring it with the Bank {}.",
-                    oracle_address,
-                    bank_address
-                );
-                cache
-                    .oracles
-                    .try_wire_with_bank(&oracle_address, bank_address)?;
-                if let OracleSetup::StakedWithPythPush = bank.config.oracle_setup {
-                } else {
+            match (oracle_address, oracle_account) {
+                (Some(oracle_address), Some(mut oracle_account)) => {
+                    if cache.oracles.exists(&oracle_address) {
+                        thread_debug!(
+                            "The {} Oracle is already registered. Wiring it with the Bank {}.",
+                            oracle_address,
+                            bank_address
+                        );
+                        cache
+                            .oracles
+                            .try_wire_with_bank(&oracle_address, bank_address)?;
+                        if let OracleSetup::StakedWithPythPush = bank.config.oracle_setup {
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    let price_adapter = CacheLoader::try_create_price_adapter(
+                        cache,
+                        bank_address,
+                        bank,
+                        oracle_address,
+                        &mut oracle_account,
+                        &oracle_map,
+                        self.clock.clone(),
+                    );
+
+                    match price_adapter {
+                        std::result::Result::Ok(adapter) => {
+                            let adapter_name = price_adapter_name(&adapter);
+                            let oracle = T::new(oracle_address, adapter);
+
+                            cache.oracles.try_insert(
+                                oracle_address,
+                                oracle_account.clone(),
+                                Some(oracle),
+                                *bank_address,
+                            )?;
+
+                            thread_debug!(
+                                "Added the {:?} Oracle {:?} for the Bank {:?} to Cache.",
+                                adapter_name,
+                                oracle_address,
+                                bank_address
+                            );
+                        }
+                        Err(error) => {
+                            cache.oracles.try_insert(
+                                oracle_address,
+                                oracle_account.clone(),
+                                None,
+                                *bank_address,
+                            )?;
+
+                            log_genuine_error(
+                                format!(
+                                    "Failed to load Oracle {:?} for Bank {:?}",
+                                    oracle_address, bank_address
+                                )
+                                .as_str(),
+                                error,
+                            );
+                        }
+                    };
+                }
+                (_, _) => {
+                    thread_error!(
+                        "Failed to bind Oracles to the Bank {:?} with config {:?}.",
+                        bank_address,
+                        bank.config
+                    );
                     continue;
                 }
-            }
-
-            let price_adapter = match bank.config.oracle_setup {
-                OracleSetup::SwitchboardPull => {
-                    let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
-                    offsets_data.copy_from_slice(
-                        &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
-                    );
-                    let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
-
-                    Ok(OraclePriceFeedAdapter::SwitchboardPull(
-                        SwitchboardPullPriceFeed {
-                            feed: Box::new((&swb_feed).into()),
-                        },
-                    ))
-                }
-                OracleSetup::SwitchboardV2 => {
-                    let oracle_account_info =
-                        (&oracle_address, &mut oracle_account).into_account_info();
-
-                    Ok(OraclePriceFeedAdapter::SwitchboardV2(
-                        SwitchboardV2PriceFeed::load_checked(&oracle_account_info, i64::MAX, 0)?,
-                    ))
-                }
-                OracleSetup::PythPushOracle => {
-                    let oracle_account_info =
-                        (&oracle_address, &mut oracle_account).into_account_info();
-                    OraclePriceFeedAdapter::try_from_bank_config(
-                        &bank.config,
-                        &[oracle_account_info],
-                        &clock_manager::get_clock(&self.clock)?,
-                    )
-                    .map_err(Into::into)
-                }
-                OracleSetup::StakedWithPythPush => {
-                    let oracle_keys = find_oracle_keys(&bank.config);
-                    if oracle_keys.len() != 3 {
-                        error!(
-                            "StakedWithPythPush setup requires exactly 3 oracle keys, but found {}",
-                            oracle_keys.len()
-                        )
-                    }
-
-                    // Note: this is written this strange way to avoid the borrow checker issues
-                    let oracle_to_account = |&key| (key, oracle_map.get(&key).unwrap().clone());
-
-                    let mut oracle_key_to_account = oracle_to_account(oracle_keys.first().unwrap());
-                    let mut lst_mint_key_to_account =
-                        oracle_to_account(oracle_keys.get(1).unwrap());
-                    let mut sol_pool_key_to_account =
-                        oracle_to_account(oracle_keys.get(2).unwrap());
-
-                    // The oracle itself will be added later, just like for the other oracle setups
-                    for staked_specific_ai in [&lst_mint_key_to_account, &sol_pool_key_to_account] {
-                        cache.oracles.try_insert(
-                            staked_specific_ai.0,
-                            staked_specific_ai.1.clone(),
-                            None,
-                            *bank_address,
-                        )?;
-                    }
-
-                    let oracle_account_info = oracle_key_to_account.into_account_info();
-                    let lst_mint_account_info = lst_mint_key_to_account.into_account_info();
-                    let sol_pool_account_info = sol_pool_key_to_account.into_account_info();
-
-                    OraclePriceFeedAdapter::try_from_bank_config(
-                        &bank.config,
-                        &[
-                            oracle_account_info,
-                            lst_mint_account_info,
-                            sol_pool_account_info,
-                        ],
-                        &clock_manager::get_clock(&self.clock)?,
-                    )
-                    .map_err(Into::into)
-                }
-
-                _ => bail!(
-                    "Unsupported oracle setup for the Bank {:?}! {:?}",
-                    bank_address,
-                    bank.config.oracle_setup
-                ),
             };
-
-            match price_adapter {
-                std::result::Result::Ok(adapter) => {
-                    let oracle = T::new(oracle_address, adapter);
-
-                    cache.oracles.try_insert(
-                        oracle_address,
-                        oracle_account.clone(),
-                        Some(oracle),
-                        *bank_address,
-                    )?;
-
-                    debug!(
-                        "Added to Cache the {:?} Oracle {:?} for the Bank {:?}.",
-                        bank.config.oracle_setup, oracle_address, bank_address
-                    );
-                }
-                Err(error) => {
-                    cache.oracles.try_insert(
-                        oracle_address,
-                        oracle_account.clone(),
-                        None,
-                        *bank_address,
-                    )?;
-
-                    log_genuine_error(
-                        format!(
-                            "Failed to load Oracle {:?} for Bank {:?}",
-                            oracle_address, bank_address
-                        )
-                        .as_str(),
-                        error,
-                    );
-                }
-            };
-            info!("Loaded {} Oracles.", cache.oracles.len());
         }
+        thread_info!("Loaded {} Oracles.", cache.oracles.len());
 
         Ok(())
+    }
+
+    fn try_create_price_adapter<T: OracleWrapperTrait + Clone>(
+        cache: &mut CacheT<T>,
+        bank_address: &Pubkey,
+        bank: &Bank,
+        oracle_address: Pubkey,
+        oracle_account: &mut Account,
+        oracle_map: &HashMap<Pubkey, Account>,
+        clock: Arc<Mutex<Clock>>,
+    ) -> Result<OraclePriceFeedAdapter> {
+        match bank.config.oracle_setup {
+            OracleSetup::SwitchboardPull => {
+                let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                offsets_data.copy_from_slice(
+                    &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
+                );
+                let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
+
+                Ok(OraclePriceFeedAdapter::SwitchboardPull(
+                    SwitchboardPullPriceFeed {
+                        feed: Box::new((&swb_feed).into()),
+                    },
+                ))
+            }
+            OracleSetup::PythPushOracle => {
+                let oracle_account_info = (&oracle_address, oracle_account).into_account_info();
+                OraclePriceFeedAdapter::try_from_bank_config(
+                    &bank.config,
+                    &[oracle_account_info],
+                    &clock_manager::get_clock(&clock)?,
+                )
+                .map_err(Into::into)
+            }
+            OracleSetup::StakedWithPythPush => {
+                let oracle_keys = find_oracle_keys(&bank.config);
+                if oracle_keys.len() != 3 {
+                    return Err(anyhow!(
+                        "StakedWithPythPush setup requires exactly 3 oracle keys, but found {} for the Bank {:?}.",
+                        oracle_keys.len(), bank_address
+                    ));
+                }
+
+                let bank_oracle_address = *oracle_keys.first().unwrap();
+                let mut bank_oracle =
+                        oracle_map.get(&bank_oracle_address).ok_or_else(|| {
+                            anyhow!(
+                                "Failed to find the Oracle key {} in Oracles map for the StakedWithPythPush Bank {:?}.",
+                                bank_oracle_address,
+                                bank_address
+                            )
+                        })?.clone();
+                cache.oracles.try_insert(
+                    bank_oracle_address,
+                    bank_oracle.clone(),
+                    None,
+                    *bank_address,
+                )?;
+
+                let lst_mint_oracle_address = *oracle_keys.get(1).unwrap();
+                let mut lst_mint_oracle = oracle_map.get(&lst_mint_oracle_address).ok_or_else(|| {
+                            anyhow!("Failed to find the Lst Mint Oracle key {} in Oracles map for the StakedWithPythPush Bank {:?}.",
+                                lst_mint_oracle_address,
+                                bank_address
+                            )
+                        })?.clone();
+                cache.oracles.try_insert(
+                    lst_mint_oracle_address,
+                    lst_mint_oracle.clone(),
+                    None,
+                    *bank_address,
+                )?;
+
+                let sol_pool_oracle_address = *oracle_keys.get(2).unwrap();
+                let mut sol_pool_oracle = oracle_map.get(&sol_pool_oracle_address).ok_or_else(|| {
+                            anyhow!(
+                                "Failed to find the SOL pool Oracle key {} the Oracles map for the StakedWithPythPush Bank {:?}.",
+                                sol_pool_oracle_address,
+                                bank_address
+                            )
+                        })?.clone();
+                cache.oracles.try_insert(
+                    sol_pool_oracle_address,
+                    sol_pool_oracle.clone(),
+                    None,
+                    *bank_address,
+                )?;
+
+                // Convert Account to AccountInfo-compatible structure if needed
+                let oracle_account_info =
+                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
+                let lst_mint_account_info =
+                    (&lst_mint_oracle_address, &mut lst_mint_oracle).into_account_info();
+                let sol_pool_account_info =
+                    (&sol_pool_oracle_address, &mut sol_pool_oracle).into_account_info();
+
+                OraclePriceFeedAdapter::try_from_bank_config(
+                    &bank.config,
+                    &[
+                        oracle_account_info,
+                        lst_mint_account_info,
+                        sol_pool_account_info,
+                    ],
+                    &clock_manager::get_clock(&clock)?,
+                )
+                .map_err(Into::into)
+            }
+
+            _ => bail!(
+                "Unsupported oracle setup for the Bank {:?}! {:?}",
+                bank_address,
+                bank.config.oracle_setup
+            ),
+        }
     }
 
     fn load_mints<T: OracleWrapperTrait + Clone>(
         &self,
         cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
-        info!("Loading Mints");
+        thread_info!("Loading Mints");
         let mint_addresses = cache.banks.get_mints();
         let mint_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
@@ -436,10 +476,11 @@ impl CacheLoader {
                 cache
                     .mints
                     .insert(*mint_address, mint_account.clone(), token_address);
+                thread_debug!("Loaded the Mint {:?}.", mint_address);
             }
         }
 
-        info!("Loaded {} mints.", cache.mints.len());
+        thread_info!("Loaded {} mints.", cache.mints.len());
         Ok(())
     }
 
@@ -447,7 +488,7 @@ impl CacheLoader {
         &self,
         cache: &mut CacheT<T>,
     ) -> anyhow::Result<()> {
-        info!("Loading Token accounts...");
+        thread_info!("Loading Token accounts...");
 
         let token_addresses = cache.mints.get_tokens();
         let token_accounts = batch_get_multiple_accounts(
@@ -465,16 +506,17 @@ impl CacheLoader {
                     cache
                         .tokens
                         .try_insert(*token_address, token_account.clone(), mint_address)?;
+                    thread_debug!("Loaded the Token account {:?}.", token_address);
                 }
                 None => {
                     new_token_addresses.push(*token_address);
                 }
             }
         }
-        info!("Loaded {}  Token accounts.", cache.tokens.len()?);
+        thread_info!("Loaded {}  Token accounts.", cache.tokens.len()?);
 
         if !new_token_addresses.is_empty() {
-            info!("Creating {} new Token accounts", new_token_addresses.len());
+            thread_info!("Creating {} new Token accounts", new_token_addresses.len());
 
             let mut instructions: Vec<Instruction> = vec![];
             for token_address in &new_token_addresses {
@@ -487,7 +529,7 @@ impl CacheLoader {
 
             self.create_token_accounts(instructions)?;
 
-            info!("Fetching newly created Token accounts...");
+            thread_info!("Fetching newly created Token accounts...");
             let new_token_accounts = batch_get_multiple_accounts(
                 &self.rpc_client,
                 &new_token_addresses,
@@ -503,9 +545,13 @@ impl CacheLoader {
                         new_token_account.clone(),
                         mint_address,
                     )?;
+                    thread_debug!(
+                        "Fetched the newly created Token account {:?}.",
+                        new_token_address
+                    );
                 }
             }
-            info!(
+            thread_info!(
                 "Fetched {} newly created Token accounts.",
                 new_token_addresses.len()
             );
@@ -537,7 +583,7 @@ impl CacheLoader {
                 )
                 .map_err(|e| anyhow!("Failed to send transaction: {:?}", e))?;
 
-                info!(
+                thread_info!(
                     "{} new Token accounts were successfully registered. Txn sig: {:?}",
                     chunk.len(),
                     sig

@@ -50,6 +50,15 @@ impl OracleWrapperTrait for OracleWrapper {
     }
 }
 
+pub fn price_adapter_name(adapter: &OraclePriceFeedAdapter) -> &'static str {
+    match adapter {
+        OraclePriceFeedAdapter::PythLegacy(_) => "PythLegacy",
+        OraclePriceFeedAdapter::SwitchboardV2(_) => "SwitchboardV2",
+        OraclePriceFeedAdapter::PythPushOracle(_) => "PythPushOracle",
+        OraclePriceFeedAdapter::SwitchboardPull(_) => "SwitchboardPull",
+    }
+}
+
 #[cfg(test)]
 pub mod test_utils {
     use std::str::FromStr;

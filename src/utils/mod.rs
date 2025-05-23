@@ -1,9 +1,8 @@
 pub mod swb_cranker;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use backoff::ExponentialBackoff;
 use fixed::types::I80F48;
-use log::debug;
 use marginfi::{
     bank_authority_seed,
     constants::{
@@ -11,8 +10,8 @@ use marginfi::{
         PYTH_PUSH_PYTH_SPONSORED_SHARD_ID,
     },
     errors::MarginfiError,
-    prelude::MarginfiResult,
     state::{
+        emode::{reconcile_emode_configs, EmodeConfig},
         marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
         marginfi_group::{Bank, BankConfig, BankVaultType, RiskTier},
         price::{PriceBias, PythPushOraclePriceFeed},
@@ -40,8 +39,11 @@ use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 use crate::{
     cache::Cache,
-    wrappers::{bank::BankWrapper, oracle::OracleWrapperTrait},
+    wrappers::{
+        bank::BankWrapper, marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait,
+    },
 };
+use std::cmp::max;
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
@@ -72,7 +74,7 @@ pub fn batch_get_multiple_accounts(
         max_batch_size,
         max_concurrent_calls,
     }: BatchLoadingConfig,
-) -> anyhow::Result<Vec<Option<Account>>> {
+) -> Result<Vec<Option<Account>>> {
     let batched_addresses = addresses.chunks(max_batch_size * max_concurrent_calls);
     let total_addresses = addresses.len();
     let total_batches = batched_addresses.len();
@@ -92,7 +94,7 @@ pub fn batch_get_multiple_accounts(
 
         let mut batched_accounts = batch
             .par_chunks(max_batch_size)
-            .map(|chunk| -> anyhow::Result<Vec<_>> {
+            .map(|chunk| -> Result<Vec<_>> {
                 let chunk = chunk.to_vec();
                 let chunk_size = chunk.len();
 
@@ -127,7 +129,7 @@ pub fn batch_get_multiple_accounts(
 
                 Ok(chunk_res)
             })
-            .collect::<anyhow::Result<Vec<_>>>()?
+            .collect::<Result<Vec<_>>>()?
             .iter()
             .flatten()
             .cloned()
@@ -288,8 +290,8 @@ pub struct BankAccountWithPriceFeedEva<'a> {
 impl<'a> BankAccountWithPriceFeedEva<'a> {
     pub fn load(
         lending_account: &'a LendingAccount,
-        cache: Arc<Cache>,
-    ) -> anyhow::Result<Vec<BankAccountWithPriceFeedEva<'a>>> {
+        cache: &Arc<Cache>,
+    ) -> Result<Vec<BankAccountWithPriceFeedEva<'a>>> {
         let active_balances = lending_account
             .balances
             .iter()
@@ -304,7 +306,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     }
 
     #[inline(always)]
-    /// Calculate the value of the assets and liabilities of the account in the form of (assets, liabilities)
+    /// Calculate the value of weighted assets and liabilities of the account in the form of (assets, liabilities)
     ///
     /// Nuances:
     /// 1. Maintenance requirement is calculated using the real time price feed.
@@ -312,21 +314,20 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     /// 3. Initial requirement is discounted by the initial discount, if enabled and the usd limit is exceeded.
     /// 4. Assets are only calculated for collateral risk tier.
     /// 5. Oracle errors are ignored for deposits in isolated risk tier.
-    pub fn calc_weighted_assets_and_liabilities_values(
+    pub fn calc_weighted_assets_liabs(
         &self,
         requirement_type: RequirementType,
-        print_logs: bool,
-    ) -> anyhow::Result<(I80F48, I80F48)> {
+        emode_config: &EmodeConfig,
+    ) -> Result<(I80F48, I80F48)> {
         match self.balance.get_side() {
             Some(side) => match side {
                 BalanceSide::Assets => Ok((
-                    self.calc_weighted_assets(requirement_type, &self.bank.bank, print_logs)?,
+                    self.calc_weighted_assets(requirement_type, emode_config)?,
                     I80F48::ZERO,
                 )),
-                BalanceSide::Liabilities => Ok((
-                    I80F48::ZERO,
-                    self.calc_weighted_liabs(requirement_type, &self.bank.bank, print_logs)?,
-                )),
+                BalanceSide::Liabilities => {
+                    Ok((I80F48::ZERO, self.calc_weighted_liabs(requirement_type)?))
+                }
             },
             None => Ok((I80F48::ZERO, I80F48::ZERO)),
         }
@@ -336,88 +337,67 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     fn calc_weighted_assets(
         &self,
         requirement_type: RequirementType,
-        bank: &Bank,
-        print_logs: bool,
-    ) -> anyhow::Result<I80F48> {
+        emode_config: &EmodeConfig,
+    ) -> Result<I80F48> {
+        let bank = &self.bank.bank;
         match bank.config.risk_tier {
             RiskTier::Collateral => {
-                let oracle_adapter = &self.bank.oracle_adapter;
-                let mut asset_weight = bank
-                    .config
-                    .get_weight(requirement_type, BalanceSide::Assets);
+                let amount = bank
+                    .get_asset_amount(self.balance.asset_shares.into())
+                    .map_err(Error::from)?;
 
-                let lower_price = oracle_adapter.get_price_of_type(
-                    requirement_type.get_oracle_price_type(),
-                    Some(PriceBias::Low),
-                )?;
-
-                if matches!(requirement_type, RequirementType::Initial) {
-                    if let Some(discount) =
-                        bank.maybe_get_asset_weight_init_discount(lower_price)?
-                    {
-                        asset_weight = asset_weight
-                            .checked_mul(discount)
-                            .ok_or_else(|| anyhow!("math error"))?;
-                    }
-                }
-
-                if print_logs {
-                    let high_price = oracle_adapter
-                        .get_price_of_type(
-                            requirement_type.get_oracle_price_type(),
-                            Some(PriceBias::High),
-                        )
-                        .unwrap();
-                    debug!("Asset mint: {:?}, weight: {:?}, low_price: {:?}, high price: {:?}, shares: {:?}, share_value: {:?}", bank.mint, asset_weight, lower_price, high_price, self.balance.asset_shares, bank.asset_share_value);
-                }
-
-                Ok(calc_value(
-                    bank.get_asset_amount(self.balance.asset_shares.into())?,
-                    lower_price,
-                    bank.mint_decimals,
-                    Some(asset_weight),
-                )?)
+                calc_weighted_bank_assets(&self.bank, amount, requirement_type, emode_config)
             }
             RiskTier::Isolated => Ok(I80F48::ZERO),
         }
     }
 
     #[inline(always)]
-    fn calc_weighted_liabs(
-        &self,
-        requirement_type: RequirementType,
-        bank: &Bank,
-        print_logs: bool,
-    ) -> MarginfiResult<I80F48> {
-        let oracle_adapter = &self.bank.oracle_adapter;
+    fn calc_weighted_liabs(&self, requirement_type: RequirementType) -> Result<I80F48> {
+        let bank = &self.bank.bank;
+        let liability_amount = bank
+            .get_liability_amount(self.balance.asset_shares.into())
+            .map_err(|err| anyhow!("Failed to calculate liability amount: {}", err))?;
+        calc_weighted_bank_liabs(&self.bank, liability_amount, requirement_type)
+    }
+}
 
-        let liability_weight = bank
-            .config
-            .get_weight(requirement_type, BalanceSide::Liabilities);
+pub fn calc_total_weighted_assets_liabs(
+    cache: &Arc<Cache>,
+    account: &MarginfiAccountWrapper,
+    requirement_type: RequirementType,
+) -> Result<(I80F48, I80F48)> {
+    let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, cache)?;
+    let emode_config = build_emode_config(&baws)?;
 
-        let higher_price = oracle_adapter
-            .get_price_of_type(
-                requirement_type.get_oracle_price_type(),
-                Some(PriceBias::High),
-            )
-            .unwrap();
+    let mut total_assets = I80F48::ZERO;
+    let mut total_liabs = I80F48::ZERO;
 
-        if print_logs {
-            let low_price = oracle_adapter
-                .get_price_of_type(
-                    requirement_type.get_oracle_price_type(),
-                    Some(PriceBias::Low),
-                )
-                .unwrap();
-            debug!("Liability mint: {:?}, weight: {:?}, low_price: {:?}, high price: {:?}, shares: {:?}, share_value: {:?}", bank.mint, liability_weight, low_price, higher_price, self.balance.liability_shares, bank.liability_share_value);
-        }
+    for baw in baws.iter() {
+        let (assets, liabs) = baw.calc_weighted_assets_liabs(requirement_type, &emode_config)?;
+        total_assets += assets;
+        total_liabs += liabs;
+    }
 
-        calc_value(
-            bank.get_liability_amount(self.balance.liability_shares.into())?,
-            higher_price,
-            bank.mint_decimals,
-            Some(liability_weight),
-        )
+    Ok((total_assets, total_liabs))
+}
+
+pub fn build_emode_config(baws: &Vec<BankAccountWithPriceFeedEva>) -> Result<EmodeConfig> {
+    let configs = baws
+        .iter()
+        .filter(|baw| baw.balance.is_empty(BalanceSide::Liabilities))
+        .map(|baw| baw.bank.bank.emode.emode_config)
+        .collect();
+    Ok(reconcile_emode_configs(configs))
+}
+
+pub fn get_free_collateral(cache: &Arc<Cache>, account: &MarginfiAccountWrapper) -> Result<I80F48> {
+    let (assets, liabs) =
+        calc_total_weighted_assets_liabs(cache, account, RequirementType::Initial)?;
+    if assets > liabs {
+        Ok(assets - liabs)
+    } else {
+        Ok(I80F48::ZERO)
     }
 }
 
@@ -429,16 +409,14 @@ pub fn find_bank_liquidity_vault_authority(bank_pk: &Pubkey, program_id: &Pubkey
     .0
 }
 
-pub fn calc_weighted_assets_new(
+pub fn calc_weighted_bank_assets(
     bank: &BankWrapper,
     amount: I80F48,
     requirement_type: RequirementType,
-) -> anyhow::Result<I80F48> {
+    emode_config: &EmodeConfig,
+) -> Result<I80F48> {
     let oracle_adapter = &bank.oracle_adapter;
-    let mut asset_weight = bank
-        .bank
-        .config
-        .get_weight(requirement_type, BalanceSide::Assets);
+    let mut asset_weight = calculate_bank_asset_weight(&bank.bank, emode_config, requirement_type);
 
     let price_bias = if matches!(requirement_type, RequirementType::Equity) {
         None
@@ -469,11 +447,37 @@ pub fn calc_weighted_assets_new(
 }
 
 #[inline(always)]
-pub fn calc_weighted_liabs_new(
+// Copy pasta from https://github.com/mrgnlabs/marginfi-v2/blob/87f1b8fdcde591566ab51e26a3c47554af4bf856/programs/marginfi/src/state/marginfi_account.rs#L322
+// TODO: replace with the on-chain program function call when it becomes available
+fn calculate_bank_asset_weight(
+    bank: &Bank,
+    emode_config: &EmodeConfig,
+    requirement_type: RequirementType,
+) -> I80F48 {
+    if let Some(emode_entry) = emode_config.find_with_tag(bank.emode.emode_tag) {
+        let bank_weight = bank
+            .config
+            .get_weight(requirement_type, BalanceSide::Assets);
+        let emode_weight = match requirement_type {
+            RequirementType::Initial => I80F48::from(emode_entry.asset_weight_init),
+            RequirementType::Maintenance => I80F48::from(emode_entry.asset_weight_maint),
+            // Note: For equity (which is only used for bankruptcies) emode does not
+            // apply, as the asset weight is always 1
+            RequirementType::Equity => I80F48::ONE,
+        };
+        max(bank_weight, emode_weight)
+    } else {
+        bank.config
+            .get_weight(requirement_type, BalanceSide::Assets)
+    }
+}
+
+#[inline(always)]
+pub fn calc_weighted_bank_liabs(
     bank: &BankWrapper,
     amount: I80F48,
     requirement_type: RequirementType,
-) -> anyhow::Result<I80F48> {
+) -> Result<I80F48> {
     let liability_weight = bank
         .bank
         .config
@@ -541,13 +545,13 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
     }
 }
 
-pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> anyhow::Result<PullFeedAccountData> {
+pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> Result<PullFeedAccountData> {
     if bytes
         .as_ptr()
         .align_offset(std::mem::align_of::<PullFeedAccountData>())
         != 0
     {
-        return Err(anyhow::anyhow!("Invalid alignment"));
+        return Err(anyhow!("Invalid alignment"));
     }
 
     let num = bytes.len() / std::mem::size_of::<PullFeedAccountData>();
@@ -583,7 +587,7 @@ pub fn is_valid_url(input: &str) -> bool {
     Url::parse(input).is_ok()
 }
 
-pub fn prompt_user(prompt_text: &str) -> anyhow::Result<String> {
+pub fn prompt_user(prompt_text: &str) -> Result<String> {
     print!("{}", prompt_text);
     let mut input = String::new();
     std::io::stdout().flush()?;
@@ -594,7 +598,7 @@ pub fn prompt_user(prompt_text: &str) -> anyhow::Result<String> {
 
 /// Simply asks the keypair path until it is a valid one,
 /// Returns (keypair_path, signer_keypair)
-pub fn ask_keypair_until_valid() -> anyhow::Result<(PathBuf, Keypair)> {
+pub fn ask_keypair_until_valid() -> Result<(PathBuf, Keypair)> {
     loop {
         let keypair_path = expand_tilde(&prompt_user("Keypair file path [required]: ")?);
         match read_keypair_file(&keypair_path) {
@@ -683,7 +687,7 @@ macro_rules! thread_error {
     };
 }
 
-pub fn log_genuine_error(prefix: &str, error: anyhow::Error) {
+pub fn log_genuine_error(prefix: &str, error: Error) {
     match error.downcast::<anchor_lang::error::Error>() {
         Ok(error) => match error {
             anchor_lang::error::Error::AnchorError(anchor_error) => {

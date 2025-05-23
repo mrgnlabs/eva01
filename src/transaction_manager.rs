@@ -3,10 +3,10 @@ use crossbeam::channel::{Receiver, Sender};
 use jito_sdk_rust::JitoJsonRpcSDK;
 use log::{debug, error, info};
 use serde_json::json;
-use solana_address_lookup_table_program::state::AddressLookupTable;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
-    address_lookup_table_account::AddressLookupTableAccount,
+    address_lookup_table::state::AddressLookupTable,
+    address_lookup_table::AddressLookupTableAccount,
     bs58,
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
