@@ -54,8 +54,17 @@ impl TokensCache {
             .ok()
     }
 
-    pub fn get_addresses(&self) -> Vec<Pubkey> {
-        self.token_addresses.iter().copied().collect()
+    pub fn get_non_preferred_addresses(&self, preferred_mints: Vec<Pubkey>) -> Vec<Pubkey> {
+        self.mint_to_token
+            .iter()
+            .filter_map(|(mint_address, token_address)| {
+                if preferred_mints.iter().any(|mint| mint == mint_address) {
+                    None
+                } else {
+                    Some(*token_address)
+                }
+            })
+            .collect()
     }
 
     pub fn try_update_account(&self, address: Pubkey, account: Account) -> Result<()> {
@@ -136,7 +145,11 @@ mod tests {
             .try_insert(token_address, account, mint_address)
             .unwrap();
 
-        let retrieved_address = cache.get_addresses().get(0).unwrap().clone();
+        let retrieved_address = cache
+            .get_non_preferred_addresses(vec![])
+            .get(0)
+            .unwrap()
+            .clone();
         assert_eq!(retrieved_address, token_address);
     }
 

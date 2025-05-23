@@ -43,19 +43,14 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_deposits<T: OracleWrapperTrait + Clone>(
-        &self,
-        mints_to_exclude: &[Pubkey],
-        cache: Arc<CacheT<T>>,
-    ) -> Vec<Pubkey> {
+    pub fn get_deposits(&self, banks_to_exclude: &[Pubkey]) -> Vec<Pubkey> {
         self.lending_account
             .balances
             .iter()
             .filter_map(|b| {
-                let bank = cache.banks.get_bank(&b.bank_pk)?;
                 if b.is_active()
                     && matches!(b.get_side(), Some(BalanceSide::Assets))
-                    && !mints_to_exclude.contains(&bank.mint)
+                    && !banks_to_exclude.contains(&b.bank_pk)
                 {
                     Some(b.bank_pk)
                 } else {
@@ -302,18 +297,13 @@ mod tests {
         cache.banks.insert(sol_bank.address, sol_bank.bank);
         cache.banks.insert(usdc_bank.address, usdc_bank.bank);
 
-        let cache = Arc::new(cache);
-
         let healthy = MarginfiAccountWrapper::test_healthy(&sol_bank, &usdc_bank);
         assert!(healthy.has_liabs());
         assert_eq!(
             healthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), usdc_bank.address)]
         );
-        assert_eq!(
-            healthy.get_deposits(&[], cache.clone()),
-            vec![sol_bank.address]
-        );
+        assert_eq!(healthy.get_deposits(&[]), vec![sol_bank.address]);
         let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
@@ -344,7 +334,7 @@ mod tests {
             unhealthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), sol_bank.address)]
         );
-        assert_eq!(unhealthy.get_deposits(&[], cache), vec![usdc_bank.address]);
+        assert_eq!(unhealthy.get_deposits(&[]), vec![usdc_bank.address]);
         let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {

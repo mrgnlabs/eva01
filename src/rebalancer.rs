@@ -23,7 +23,7 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
-use log::info;
+use log::{debug, info};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
@@ -134,6 +134,7 @@ impl Rebalancer {
 
     pub fn start(&mut self) -> anyhow::Result<()> {
         thread_info!("Starting the Rebalancer loop");
+        self.rebalance_accounts();
 
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             if self.run_rebalance.load(Ordering::Relaxed) && self.needs_to_be_rebalanced()? {
@@ -225,14 +226,21 @@ impl Rebalancer {
             .sell_non_preferred_deposits()
             .map_err(|e| thread_error!("Failed to sell non preferred deposits! {}", e))
             .ok());
+        debug!("Sold {:?} non-preferred deposits.", sold_deposits.len());
 
         let drained_amount = ward!(self
             .drain_tokens_from_token_accounts(sold_deposits)
             .map_err(|e| thread_error!("Failed to drain the Liquidator's tokens! {}", e))
             .ok());
+        debug!(
+            "Drained {:?} tokens from the Liquidator's token accounts.",
+            drained_amount
+        );
 
-        if let Err(error) = self.deposit_preferred_token(drained_amount) {
-            thread_error!("Failed to deposit preferred token: {}", error)
+        if drained_amount > 0 {
+            if let Err(error) = self.deposit_preferred_token(drained_amount) {
+                thread_error!("Failed to deposit preferred token: {}", error)
+            }
         }
     }
 
@@ -278,10 +286,7 @@ impl Rebalancer {
             .cache
             .marginfi_accounts
             .try_get_account(&self.liquidator_account.liquidator_address)?;
-        let non_preferred_deposits = liquidator_account.get_deposits(
-            self.cache.mints.get_preferred_mints().as_slice(),
-            self.cache.clone(),
-        );
+        let non_preferred_deposits = liquidator_account.get_deposits(&[self.swap_mint_bank_pk]);
 
         if non_preferred_deposits.is_empty() {
             return Ok(vec![]);
@@ -455,7 +460,11 @@ impl Rebalancer {
     }
 
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
-        for token_address in self.cache.tokens.get_addresses() {
+        for token_address in self
+            .cache
+            .tokens
+            .get_non_preferred_addresses(self.cache.mints.get_preferred_mints())
+        {
             match self.cache.try_get_token_wrapper(&token_address) {
                 Ok(wrapper) => match wrapper.get_value() {
                     Ok(value) => {
@@ -481,6 +490,7 @@ impl Rebalancer {
     }
 
     fn has_non_preferred_deposits(&self) -> Result<bool> {
+        let preferred_mints = self.cache.mints.get_preferred_mints();
         Ok(self
             .cache
             .marginfi_accounts
@@ -495,7 +505,7 @@ impl Rebalancer {
                     .get_bank(&balance.bank_pk)
                     .is_some_and(|bank| {
                         matches!(balance.get_side(), Some(BalanceSide::Assets))
-                            && self.general_config.swap_mint != bank.mint
+                            && !preferred_mints.contains(&bank.mint)
                     })
             }))
     }
@@ -692,7 +702,7 @@ impl Rebalancer {
             (I80F48::ZERO, I80F48::ZERO),
             |(total_assets, total_liabs), baw| {
                 let (assets, liabs) = baw
-                    .calc_weighted_assets_and_liabilities_values(requirement_type, false)
+                    .calc_weighted_assets_and_liabilities_values(requirement_type, true)
                     .unwrap();
                 (total_assets + assets, total_liabs + liabs)
             },

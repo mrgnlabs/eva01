@@ -154,7 +154,12 @@ mod tests {
         let cache = create_test_cache(&vec![sol_bank_wrapper.clone(), usdc_bank_wrapper.clone()]);
         let cache = Arc::new(cache);
 
-        let token_address = cache.tokens.get_addresses().get(0).unwrap().clone();
+        let token_address = cache
+            .tokens
+            .get_non_preferred_addresses(vec![])
+            .get(0)
+            .unwrap()
+            .clone();
         let result = cache.try_get_token_wrapper(&token_address);
         assert!(result.is_ok());
     }

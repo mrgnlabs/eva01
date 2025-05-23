@@ -146,8 +146,6 @@ pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> any
         swb_price_simulator.clone(),
     )?;
 
-    info!("should_fund: {:?}", should_fund);
-    should_fund = true;
     if should_fund {
         rebalancer.fund_liquidator_account()?;
     }
