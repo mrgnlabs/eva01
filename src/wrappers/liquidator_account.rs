@@ -7,7 +7,7 @@ use crate::{
         initialize_marginfi_account, make_deposit_ix, make_liquidate_ix, make_repay_ix,
         make_withdraw_ix,
     },
-    thread_debug, thread_error, thread_info,
+    thread_debug, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
     utils::check_asset_tags_matching,
 };
@@ -95,6 +95,7 @@ impl LiquidatorAccount {
             .enable_all()
             .build()?;
 
+        //TODO: parametrize the Swb feed key.
         let queue = tokio_rt.block_on(QueueAccountData::load(
             &non_blocking_rpc_client,
             &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
@@ -197,9 +198,14 @@ impl LiquidatorAccount {
                 swb_oracles.push(swb_oracle);
             }
         }
+
+        // TODO: move to utils/swb_cranker.rs
         let crank_data = if !swb_oracles.is_empty() {
-            thread_debug!("Cranking Swb Oracles for observation accounts.",);
-            if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
+            thread_debug!(
+                "Cranking Swb Oracles for observation accounts {:#?}",
+                swb_oracles
+            );
+            if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
@@ -207,6 +213,7 @@ impl LiquidatorAccount {
                     payer: self.signer_keypair.pubkey(),
                     gateway: self.swb_gateway.clone(),
                     num_signatures: Some(1),
+                    //                    debug: Some(true),
                     ..Default::default()
                 },
             )) {
@@ -237,7 +244,7 @@ impl LiquidatorAccount {
 
         if let Some((crank_ix, crank_lut)) = crank_data {
             let mut transactions =
-                vec![RawTransaction::new(vec![crank_ix]).with_lookup_tables(crank_lut)];
+                vec![RawTransaction::new(crank_ix).with_lookup_tables(crank_lut)];
 
             transactions.push(RawTransaction::new(vec![liquidate_ix]));
 
@@ -245,10 +252,10 @@ impl LiquidatorAccount {
                 .write()
                 .unwrap()
                 .insert(liquidatee_account_address);
-            self.transaction_tx.send(TransactionData {
+            Ok(self.transaction_tx.send(TransactionData {
                 transactions,
                 bundle_id: liquidatee_account_address,
-            })?;
+            })?)
         } else {
             let tx: solana_sdk::transaction::Transaction =
                 solana_sdk::transaction::Transaction::new_signed_with_payer(
@@ -258,8 +265,7 @@ impl LiquidatorAccount {
                     recent_blockhash,
                 );
 
-            let res = self
-                .rpc_client
+            self.rpc_client
                 .send_and_confirm_transaction_with_spinner_and_config(
                     &tx,
                     CommitmentConfig::confirmed(),
@@ -267,26 +273,9 @@ impl LiquidatorAccount {
                         skip_preflight: true,
                         ..Default::default()
                     },
-                );
-            match res {
-                Ok(res) => {
-                    thread_info!(
-                        "Liquidation Transaction sent for address {:?} landed successfully: {:?} ",
-                        liquidatee_account.address,
-                        res
-                    );
-                }
-                Err(err) => {
-                    thread_error!(
-                        "Liquidation Transaction sent for address {:?} failed: {:?} ",
-                        liquidatee_account.address,
-                        err
-                    );
-                }
-            }
+                )?;
+            Ok(())
         }
-
-        Ok(())
     }
 
     pub fn withdraw(
@@ -356,7 +345,7 @@ impl LiquidatorAccount {
                 },
             );
         thread_debug!(
-            "Withdrawing result for account {:?} (without preflight check): {:?} ",
+            "Withdrawing result for Liquidator account {:?} (without preflight check): {:?} ",
             marginfi_account,
             res
         );

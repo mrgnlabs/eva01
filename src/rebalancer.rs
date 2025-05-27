@@ -5,7 +5,8 @@ use crate::{
     thread_debug, thread_error, thread_info, thread_warn,
     transaction_manager::{RawTransaction, TransactionData},
     utils::{
-        self, calc_weighted_assets_new, calc_weighted_liabs_new, swb_cranker::SwbCranker,
+        self, build_emode_config, calc_total_weighted_assets_liabs, calc_weighted_bank_assets,
+        calc_weighted_bank_liabs, get_free_collateral, swb_cranker::SwbCranker,
         BankAccountWithPriceFeedEva,
     },
     wrappers::{
@@ -135,11 +136,16 @@ impl Rebalancer {
     }
 
     fn needs_to_be_rebalanced(&mut self) -> Result<bool> {
-        self.should_stop_liquidator()?;
+        let lq_account = self
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_account.liquidator_address)?;
+
+        self.should_stop_liquidator(&lq_account)?;
 
         Ok(self.has_tokens_in_token_accounts()?
-            || self.has_non_preferred_deposits()?
-            || self.has_liabilities()?)
+            || self.has_non_preferred_deposits(&lq_account)?
+            || lq_account.has_liabs())
     }
 
     // TODO: move to SwbCranker
@@ -165,9 +171,10 @@ impl Rebalancer {
             })
             .collect();
 
+        // TODO: moved to utils/swb_cranker.rs
         if !active_swb_oracles.is_empty() {
             thread_debug!("Fetching SWB prices...");
-            let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_many_ix(
+            let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
@@ -181,7 +188,7 @@ impl Rebalancer {
             self.liquidator_account
                 .transaction_tx
                 .send(TransactionData {
-                    transactions: vec![RawTransaction::new(vec![ix]).with_lookup_tables(lut)],
+                    transactions: vec![RawTransaction::new(ix).with_lookup_tables(lut)],
                     bundle_id: self.liquidator_account.liquidator_address,
                 })?;
             thread_debug!("SWB prices fetching is completed.");
@@ -219,16 +226,11 @@ impl Rebalancer {
     }
 
     // If our margin is at 50% or lower, we should stop the Liquidator and manually adjust it's balances.
-    pub fn should_stop_liquidator(&self) -> Result<()> {
-        let (assets, liabs) = self.calc_health(
-            &self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&self.liquidator_account.liquidator_address)?,
-            RequirementType::Initial,
-        );
+    pub fn should_stop_liquidator(&self, lq_account: &MarginfiAccountWrapper) -> Result<()> {
+        let (weighted_assets, weighted_liabs) =
+            calc_total_weighted_assets_liabs(&self.cache, lq_account, RequirementType::Initial)?;
 
-        if assets.is_zero() {
+        if weighted_assets.is_zero() {
             thread_error!(
                 "The Liquidator {:?} has no assets!",
                 self.liquidator_account.liquidator_address
@@ -238,12 +240,12 @@ impl Rebalancer {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
-        let ratio = (assets - liabs) / assets;
+        let ratio = (weighted_assets - weighted_liabs) / weighted_assets;
         if ratio <= 0.5 {
             thread_error!(
                 "The Assets ({}) to Liabilities ({}) ratio ({}) too low for the Liquidator {:?}!",
-                assets,
-                liabs,
+                weighted_assets,
+                weighted_liabs,
                 ratio,
                 self.liquidator_account.liquidator_address
             );
@@ -256,17 +258,19 @@ impl Rebalancer {
     }
 
     fn sell_non_preferred_deposits(&mut self) -> Result<()> {
-        let non_preferred_deposits = self
+        let lq_account = self
             .cache
             .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?
-            .get_deposits(&self.config.preferred_mints, self.cache.clone());
+            .try_get_account(&self.liquidator_account.liquidator_address)?;
+
+        let non_preferred_deposits =
+            lq_account.get_deposits(&self.config.preferred_mints, self.cache.clone());
 
         if !non_preferred_deposits.is_empty() {
             thread_debug!("Selling non-preferred deposits.");
 
             for bank_pk in non_preferred_deposits {
-                if let Err(error) = self.withdraw_and_sell_deposit(&bank_pk) {
+                if let Err(error) = self.withdraw_and_sell_deposit(&bank_pk, &lq_account) {
                     thread_error!(
                         "Failed to withdraw and sell deposit for the Bank ({}): {:?}",
                         bank_pk,
@@ -280,16 +284,16 @@ impl Rebalancer {
     }
 
     fn repay_liabilities(&mut self) -> Result<()> {
-        let liabilities = self
+        let lq_account = self
             .cache
             .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?
-            .get_liabilities_shares();
+            .try_get_account(&self.liquidator_account.liquidator_address)?;
+        let liabilities = lq_account.get_liabilities_shares();
 
         if !liabilities.is_empty() {
             thread_debug!("Repaying liabilities.");
             for (_, bank_pk) in liabilities {
-                if let Err(err) = self.repay_liability(bank_pk) {
+                if let Err(err) = self.repay_liability(bank_pk, &lq_account) {
                     thread_error!(
                         "Failed to repay liability for the Bank ({}): {:?}",
                         bank_pk,
@@ -311,17 +315,21 @@ impl Rebalancer {
     /// - Withdraw USDC
     /// - Swap USDC for bank tokens
     /// - Repay liability
-    fn repay_liability(&mut self, bank_pk: Pubkey) -> anyhow::Result<()> {
+    fn repay_liability(
+        &mut self,
+        bank_pk: Pubkey,
+        lq_account: &MarginfiAccountWrapper,
+    ) -> anyhow::Result<()> {
         let bank = self.cache.try_get_bank_wrapper(&bank_pk)?;
 
-        thread_debug!("Evaluating the {:?} Bank liability.", &bank_pk);
+        thread_debug!(
+            "Evaluating the {:?} Bank liability for the Liquidator account {:?}.",
+            &bank_pk,
+            lq_account.address
+        );
 
         // Get the balance for the liability bank and check if it's valid
-        let liab_balance_opt = self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?
-            .get_balance_for_bank(&bank);
+        let liab_balance_opt = lq_account.get_balance_for_bank(&bank);
 
         if liab_balance_opt.is_none() || matches!(liab_balance_opt, Some((_, BalanceSide::Assets)))
         {
@@ -344,6 +352,7 @@ impl Rebalancer {
         let liab_usd_value = self.get_value(
             liab_to_purchase,
             &bank_pk,
+            lq_account,
             RequirementType::Initial,
             BalanceSide::Liabilities,
         )?;
@@ -376,7 +385,7 @@ impl Rebalancer {
 
         let withdraw_amount = if token_balance_to_withdraw.is_positive() {
             let (max_withdraw_amount, withdraw_all) =
-                self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk)?;
+                self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk, lq_account)?;
 
             let withdraw_amount = min(max_withdraw_amount, token_balance_to_withdraw);
 
@@ -457,6 +466,7 @@ impl Rebalancer {
         Ok(())
     }
 
+    // FIXME: broken, it supposed to be checking if the liquidator has any tokens in it's token accounts
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
         for token_address in self.cache.tokens.get_addresses() {
             match self.cache.try_get_token_wrapper(&token_address) {
@@ -483,11 +493,8 @@ impl Rebalancer {
         Ok(false)
     }
 
-    fn has_non_preferred_deposits(&self) -> Result<bool> {
-        Ok(self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?
+    fn has_non_preferred_deposits(&self, lq_account: &MarginfiAccountWrapper) -> Result<bool> {
+        Ok(lq_account
             .lending_account
             .balances
             .iter()
@@ -501,14 +508,6 @@ impl Rebalancer {
                             && !self.preferred_mints.contains(&bank.mint)
                     })
             }))
-    }
-
-    fn has_liabilities(&self) -> Result<bool> {
-        Ok(self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?
-            .has_liabs())
     }
 
     fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<()> {
@@ -548,19 +547,20 @@ impl Rebalancer {
     }
 
     /// Withdraw and sells a given asset
-    fn withdraw_and_sell_deposit(&mut self, bank_pk: &Pubkey) -> anyhow::Result<()> {
+    fn withdraw_and_sell_deposit(
+        &mut self,
+        bank_pk: &Pubkey,
+        lq_account: &MarginfiAccountWrapper,
+    ) -> anyhow::Result<()> {
         let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
-        let balance = self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?
-            .get_balance_for_bank(&bank);
+        let balance = lq_account.get_balance_for_bank(&bank);
 
         if !matches!(&balance, Some((_, BalanceSide::Assets))) {
             return Ok(());
         }
 
-        let (withdraw_amount, withdrawl_all) = self.get_max_withdraw_for_bank(bank_pk)?;
+        let (withdraw_amount, withdrawl_all) =
+            self.get_max_withdraw_for_bank(bank_pk, lq_account)?;
 
         let amount = withdraw_amount.to_num::<u64>();
 
@@ -606,18 +606,21 @@ impl Rebalancer {
             }))?;
 
         let swap = self.tokio_rt.block_on(
-            jup_swap_client.swap(&SwapRequest {
-                user_public_key: self.general_config.signer_pubkey,
-                quote_response,
-                config: TransactionConfig {
-                    wrap_and_unwrap_sol: false,
-                    compute_unit_price_micro_lamports: self
-                        .config
-                        .compute_unit_price_micro_lamports
-                        .map(ComputeUnitPriceMicroLamports::MicroLamports),
-                    ..Default::default()
+            jup_swap_client.swap(
+                &SwapRequest {
+                    user_public_key: self.general_config.signer_pubkey,
+                    quote_response,
+                    config: TransactionConfig {
+                        wrap_and_unwrap_sol: false,
+                        compute_unit_price_micro_lamports: self
+                            .config
+                            .compute_unit_price_micro_lamports
+                            .map(ComputeUnitPriceMicroLamports::MicroLamports),
+                        ..Default::default()
+                    },
                 },
-            }),
+                None,
+            ),
         )?;
 
         let mut tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
@@ -634,18 +637,19 @@ impl Rebalancer {
         Ok(())
     }
 
-    pub fn get_max_withdraw_for_bank(&self, bank_pk: &Pubkey) -> anyhow::Result<(I80F48, bool)> {
-        let free_collateral = self.get_free_collateral()?;
-        let balance = self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?
-            .get_balance_for_bank(&self.cache.try_get_bank_wrapper(bank_pk)?);
+    pub fn get_max_withdraw_for_bank(
+        &self,
+        bank_pk: &Pubkey,
+        lq_account: &MarginfiAccountWrapper,
+    ) -> anyhow::Result<(I80F48, bool)> {
+        let free_collateral = get_free_collateral(&self.cache, lq_account)?;
+        let balance = lq_account.get_balance_for_bank(&self.cache.try_get_bank_wrapper(bank_pk)?);
         Ok(match balance {
             Some((balance, BalanceSide::Assets)) => {
                 let value = self.get_value(
                     balance,
                     bank_pk,
+                    lq_account,
                     RequirementType::Initial,
                     BalanceSide::Assets,
                 )?;
@@ -664,54 +668,25 @@ impl Rebalancer {
         &self,
         amount: I80F48,
         bank_pk: &Pubkey,
+        lq_account: &MarginfiAccountWrapper,
         requirement_type: RequirementType,
         side: BalanceSide,
     ) -> anyhow::Result<I80F48> {
         let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
+
         let value = match side {
             BalanceSide::Assets => {
-                calc_weighted_assets_new(&bank, amount.to_num(), requirement_type)?
+                let baws =
+                    BankAccountWithPriceFeedEva::load(&lq_account.lending_account, &self.cache)?;
+                let emode_config = build_emode_config(&baws)?;
+
+                calc_weighted_bank_assets(&bank, amount.to_num(), requirement_type, &emode_config)?
             }
             BalanceSide::Liabilities => {
-                calc_weighted_liabs_new(&bank, amount.to_num(), requirement_type)?
+                calc_weighted_bank_liabs(&bank, amount.to_num(), requirement_type)?
             }
         };
         Ok(value)
-    }
-
-    fn get_free_collateral(&self) -> anyhow::Result<I80F48> {
-        let (assets, liabs) = self.calc_health(
-            &self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&self.liquidator_account.liquidator_address)?,
-            RequirementType::Initial,
-        );
-        if assets > liabs {
-            Ok(assets - liabs)
-        } else {
-            Ok(I80F48::ZERO)
-        }
-    }
-
-    /// Calculates the health of a given account
-    fn calc_health(
-        &self,
-        account: &MarginfiAccountWrapper,
-        requirement_type: RequirementType,
-    ) -> (I80F48, I80F48) {
-        let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.cache.clone())
-            .unwrap();
-
-        baws.iter().fold(
-            (I80F48::ZERO, I80F48::ZERO),
-            |(total_assets, total_liabs), baw| {
-                let (assets, liabs) = baw
-                    .calc_weighted_assets_and_liabilities_values(requirement_type, false)
-                    .unwrap();
-                (total_assets + assets, total_liabs + liabs)
-            },
-        )
     }
 
     fn get_token_balance_for_bank(&self, bank_pk: &Pubkey) -> Option<I80F48> {

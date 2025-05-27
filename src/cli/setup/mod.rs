@@ -151,24 +151,17 @@ pub fn marginfi_account_by_authority(
                 ..Default::default()
             },
             filters: Some(vec![
-                #[allow(deprecated)]
-                RpcFilterType::Memcmp(Memcmp {
-                    offset: 8,
-                    #[allow(deprecated)]
-                    bytes: MemcmpEncodedBytes::Base58(marginfi_group_id.to_string()),
-                    #[allow(deprecated)]
-                    encoding: None,
-                }),
-                #[allow(deprecated)]
-                RpcFilterType::Memcmp(Memcmp {
-                    offset: 8 + 32,
-                    #[allow(deprecated)]
-                    bytes: MemcmpEncodedBytes::Base58(authority.to_string()),
-                    #[allow(deprecated)]
-                    encoding: None,
-                }),
+                RpcFilterType::Memcmp(Memcmp::new(
+                    8,
+                    MemcmpEncodedBytes::Base58(marginfi_group_id.to_string()),
+                )),
+                RpcFilterType::Memcmp(Memcmp::new(
+                    8 + 32,
+                    MemcmpEncodedBytes::Base58(authority.to_string()),
+                )),
             ]),
             with_context: Some(false),
+            sort_results: None,
         },
     )?;
 
@@ -184,18 +177,12 @@ pub fn marginfi_groups_by_program(
     rpc_client: &RpcClient,
     marginfi_program_id: Pubkey,
 ) -> anyhow::Result<Vec<Pubkey>> {
-    let discriminator_bytes = marginfi::state::marginfi_group::MarginfiGroup::discriminator();
+    let discriminator_bytes = marginfi::state::marginfi_group::MarginfiGroup::DISCRIMINATOR;
 
-    let filters = vec![
-        #[allow(deprecated)]
-        RpcFilterType::Memcmp(Memcmp {
-            offset: 0,
-            #[allow(deprecated)]
-            bytes: MemcmpEncodedBytes::Base58(bs58::encode(discriminator_bytes).into_string()),
-            #[allow(deprecated)]
-            encoding: None,
-        }),
-    ];
+    let filters = vec![RpcFilterType::Memcmp(Memcmp::new(
+        0,
+        MemcmpEncodedBytes::Base58(bs58::encode(discriminator_bytes).into_string()),
+    ))];
 
     let accounts = rpc_client.get_program_accounts_with_config(
         &marginfi_program_id,
@@ -210,6 +197,7 @@ pub fn marginfi_groups_by_program(
             },
             filters: Some(filters),
             with_context: Some(false),
+            sort_results: None,
         },
     )?;
 

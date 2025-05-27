@@ -3,6 +3,7 @@
 use crate::{cache::Cache, crossbar::CrossbarMaintainer, thread_info};
 use anyhow::Result;
 use marginfi::state::price::OraclePriceFeedAdapter;
+use num_traits::ToPrimitive;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -85,7 +86,7 @@ impl SwbCranker {
                         .cache
                         .oracles
                         .try_get_wrapper(&oracle_address, &bank_address)?;
-                    wrapper.simulated_price = Some(price);
+                    wrapper.simulated_price = price.to_f64();
                     self.cache.oracles.try_update_account_wrapper(
                         &wrapper.address,
                         &bank_address,

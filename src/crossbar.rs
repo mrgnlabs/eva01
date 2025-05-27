@@ -1,6 +1,7 @@
 use futures::stream::{self, StreamExt};
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
+use switchboard_on_demand::prelude::rust_decimal::Decimal;
 use switchboard_on_demand_client::CrossbarClient;
 
 const CHUNK_SIZE: usize = 20;
@@ -18,7 +19,7 @@ impl CrossbarMaintainer {
         Self { crossbar_client }
     }
 
-    pub async fn simulate(&self, feeds: Vec<(Pubkey, String)>) -> Vec<(Pubkey, f64)> {
+    pub async fn simulate(&self, feeds: Vec<(Pubkey, String)>) -> Vec<(Pubkey, Decimal)> {
         if feeds.is_empty() {
             return Vec::new();
         }
@@ -60,7 +61,7 @@ impl CrossbarMaintainer {
     }
 }
 
-fn calculate_price(mut numbers: Vec<f64>) -> Option<f64> {
+fn calculate_price(mut numbers: Vec<Decimal>) -> Option<Decimal> {
     if numbers.is_empty() {
         return None;
     }
@@ -69,7 +70,7 @@ fn calculate_price(mut numbers: Vec<f64>) -> Option<f64> {
     let mid = numbers.len() / 2;
 
     if numbers.len() % 2 == 0 {
-        Some((numbers[mid - 1] + numbers[mid]) / 2.0)
+        Some((numbers[mid - 1] + numbers[mid]) / Decimal::from(2u32))
     } else {
         Some(numbers[mid])
     }
@@ -85,12 +86,30 @@ mod tests {
         assert_eq!(calculate_price(vec![]), None);
 
         // Test single element vector
-        assert_eq!(calculate_price(vec![5.0]), Some(5.0));
+        assert_eq!(
+            calculate_price(vec![Decimal::new(5, 0)]),
+            Some(Decimal::new(5, 0))
+        );
 
         // Test odd number of elements
-        assert_eq!(calculate_price(vec![3.0, 1.0, 2.0]), Some(2.0));
+        assert_eq!(
+            calculate_price(vec![
+                Decimal::new(3, 0),
+                Decimal::new(1, 0),
+                Decimal::new(2, 0)
+            ]),
+            Some(Decimal::new(2, 0))
+        );
 
         // Test even number of elements
-        assert_eq!(calculate_price(vec![4.0, 1.0, 3.0, 2.0]), Some(2.5));
+        assert_eq!(
+            calculate_price(vec![
+                Decimal::new(4, 0),
+                Decimal::new(1, 0),
+                Decimal::new(3, 0),
+                Decimal::new(2, 0)
+            ]),
+            Some(Decimal::new(25, 1))
+        );
     }
 }
