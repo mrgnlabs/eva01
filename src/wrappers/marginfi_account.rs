@@ -9,7 +9,7 @@ use marginfi::state::{
     price::OracleSetup,
 };
 use solana_program::pubkey::Pubkey;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone)]
 pub struct MarginfiAccountWrapper {
@@ -123,15 +123,17 @@ impl MarginfiAccountWrapper {
         exclude_banks: &[Pubkey],
         cache: Arc<CacheT<T>>,
     ) -> Result<(Vec<Pubkey>, Vec<Pubkey>)> {
-        let mut bank_pks = MarginfiAccountWrapper::get_active_banks(lending_account);
+        let mut bank_pks: HashSet<Pubkey> =
+            MarginfiAccountWrapper::get_active_banks(lending_account)
+                .into_iter()
+                .collect();
 
-        for bank_pk in include_banks {
-            if !bank_pks.contains(bank_pk) {
-                bank_pks.push(*bank_pk);
-            }
-        }
+        bank_pks.extend(include_banks.iter());
 
-        bank_pks.retain(|bank_pk| !exclude_banks.contains(bank_pk));
+        let mut bank_pks = bank_pks
+            .into_iter()
+            .filter(|bank_pk| !exclude_banks.contains(bank_pk))
+            .collect::<Vec<_>>();
 
         // Sort all bank_pks in descending order
         bank_pks.sort_by(|a, b| b.cmp(a));
