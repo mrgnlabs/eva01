@@ -6,8 +6,10 @@ use crate::{
     transaction_manager::TransactionData,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
     wrappers::{
-        bank::BankWrapper, liquidator_account::LiquidatorAccount,
-        marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait,
+        bank::BankWrapper,
+        liquidator_account::LiquidatorAccount,
+        marginfi_account::MarginfiAccountWrapper,
+        oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
 use anyhow::{anyhow, Result};
@@ -131,17 +133,24 @@ impl Liquidator {
         let mut result: Vec<PreparedLiquidatableAccount> = vec![];
         while index < self.cache.marginfi_accounts.len()? {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
-                Ok(account) => {
-                    if let Some(acc) = self.process_account(&account) {
-                        result.push(acc)
-                    };
-                }
+                Ok(account) => match self.process_account(&account) {
+                    Ok(acc_opt) => {
+                        if let Some(acc) = acc_opt {
+                            result.push(acc);
+                        }
+                    }
+                    Err(e) => {
+                        thread_error!("Failed to process account {:?}: {:?}", account.address, e);
+                        ERROR_COUNT.inc();
+                    }
+                },
                 Err(err) => {
                     thread_error!(
                         "Failed to get Marginfi account by index {}: {:?}",
                         index,
                         err
                     );
+                    ERROR_COUNT.inc();
                 }
             }
             index += 1;
@@ -153,7 +162,11 @@ impl Liquidator {
     fn process_account(
         &self,
         account: &MarginfiAccountWrapper,
-    ) -> Option<PreparedLiquidatableAccount> {
+    ) -> Result<Option<PreparedLiquidatableAccount>> {
+        if account.address.to_string() == "A2cNgW5o66rquaiWjnAKkbdimU3x82exrqCvKzzrP1Wy" {
+            println!("Got A2cNgW5o66rquaiWjnAKkbdimU3x82exrqCvKzzrP1Wy");
+        }
+
         if self
             .liquidator_account
             .pending_liquidations
@@ -165,38 +178,31 @@ impl Liquidator {
                 "Account {:?} is already in the pending liquidations list.",
                 account.address
             );
-            return None;
+            return Ok(None);
         }
 
         let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
         if liabs_shares.is_empty() {
-            return None;
+            return Ok(None);
         }
 
-        let deposit_values = self
-            .get_value_of_shares(
-                deposit_shares,
-                &BalanceSide::Assets,
-                RequirementType::Maintenance,
-            )
-            .ok()?;
+        let deposit_values = self.get_value_of_shares(
+            deposit_shares,
+            &BalanceSide::Assets,
+            RequirementType::Maintenance,
+        )?;
 
-        let liab_values = self
-            .get_value_of_shares(
-                liabs_shares,
-                &BalanceSide::Liabilities,
-                RequirementType::Maintenance,
-            )
-            .ok()?;
+        let liab_values = self.get_value_of_shares(
+            liabs_shares,
+            &BalanceSide::Liabilities,
+            RequirementType::Maintenance,
+        )?;
 
-        let (asset_bank_pk, liab_bank_pk) = self
-            .find_liquidation_bank_candidates(deposit_values, liab_values)
-            .inspect_err(|e| {
-                thread_error!("Error finding liquidation bank candidates: {:?}", e);
-                ERROR_COUNT.inc();
-            })
-            .ok()
-            .flatten()?;
+        let (asset_bank_pk, liab_bank_pk) =
+            match self.find_liquidation_bank_candidates(deposit_values, liab_values)? {
+                Some(banks) => banks,
+                None => return Ok(None),
+            };
 
         // Calculated max liquidatable amount is the defining factor for liquidation.
         let (max_liquidatable_amount, profit) = self
@@ -204,39 +210,24 @@ impl Liquidator {
                 account,
                 &asset_bank_pk,
                 &liab_bank_pk,
-            )
-            .ok()?;
+            )?;
 
         if max_liquidatable_amount.is_zero() {
-            return None;
+            return Ok(None);
         }
 
         // Liability
         let max_liab_coverage_value = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
-        let liab_bank_wrapper = self
-            .cache
-            .try_get_bank_wrapper(&liab_bank_pk)
-            .map_err(|err| {
-                thread_error!("Failed to create the Liability Bank Wrapper! {}", err);
-            })
-            .ok()?;
+        let liab_bank_wrapper = self.cache.try_get_bank_wrapper(&liab_bank_pk)?;
 
         // Asset
-        let asset_bank_wrapper = self
-            .cache
-            .try_get_bank_wrapper(&asset_bank_pk)
-            .map_err(|err| {
-                thread_error!("Failed to create the Asset Bank Wrapper! {}", err);
-            })
-            .ok()?;
+        let asset_bank_wrapper = self.cache.try_get_bank_wrapper(&asset_bank_pk)?;
 
-        let liquidation_asset_amount_capacity = asset_bank_wrapper
-            .calc_amount(
-                max_liab_coverage_value,
-                BalanceSide::Assets,
-                RequirementType::Initial,
-            )
-            .ok()?;
+        let liquidation_asset_amount_capacity = asset_bank_wrapper.calc_amount(
+            max_liab_coverage_value,
+            BalanceSide::Assets,
+            RequirementType::Initial,
+        )?;
 
         let asset_amount_to_liquidate =
             min(max_liquidatable_amount, liquidation_asset_amount_capacity);
@@ -248,13 +239,13 @@ impl Liquidator {
                 liquidation_asset_amount_capacity, asset_amount_to_liquidate, slippage_adjusted_asset_amount
             );
 
-        Some(PreparedLiquidatableAccount {
+        Ok(Some(PreparedLiquidatableAccount {
             liquidatee_account: account.clone(),
             asset_bank: asset_bank_wrapper,
             liab_bank: liab_bank_wrapper,
             asset_amount: slippage_adjusted_asset_amount.to_num(),
             profit: profit.to_num(),
-        })
+        }))
     }
 
     fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> Result<I80F48> {
@@ -265,7 +256,7 @@ impl Liquidator {
 
         let free_collateral = get_free_collateral(&self.cache, lq_account)?;
 
-        let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
+        let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?;
 
         let (asset_amount, _) = self.get_balance_for_bank(lq_account, bank_pk)?;
         thread_debug!(
@@ -376,8 +367,12 @@ impl Liquidator {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
 
-        let asset_bank = self.cache.try_get_bank_wrapper(asset_bank_pk)?;
-        let liab_bank = self.cache.try_get_bank_wrapper(liab_bank_pk)?;
+        let asset_bank = self
+            .cache
+            .try_get_bank_wrapper::<OracleWrapper>(asset_bank_pk)?;
+        let liab_bank = self
+            .cache
+            .try_get_bank_wrapper::<OracleWrapper>(liab_bank_pk)?;
 
         let asset_weight_maint: I80F48 = asset_bank.bank.config.asset_weight_maint.into();
         let liab_weight_maint: I80F48 = liab_bank.bank.config.liability_weight_maint.into();
@@ -433,6 +428,7 @@ impl Liquidator {
     }
 
     /// Gets the balance for a given [`MarginfiAccount`] and [`Bank`]
+    // TODO: merge with `get_balance_for_bank` in `MarginfiAccountWrapper`
     fn get_balance_for_bank(
         &self,
         account: &MarginfiAccountWrapper,
@@ -474,7 +470,7 @@ impl Liquidator {
         let mut values: Vec<(I80F48, Pubkey)> = Vec::new();
 
         for (shares_amount, bank_pk) in shares {
-            let bank = self.cache.try_get_bank_wrapper(&bank_pk)?;
+            let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(&bank_pk)?;
 
             if !self.config.isolated_banks
                 && matches!(bank.bank.config.risk_tier, RiskTier::Isolated)

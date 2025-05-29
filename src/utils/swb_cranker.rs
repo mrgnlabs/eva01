@@ -1,16 +1,10 @@
 #![allow(dead_code)]
 
-use crate::{cache::Cache, crossbar::CrossbarMaintainer, thread_info};
+use crate::{cache::Cache, crossbar::CrossbarMaintainer};
 use anyhow::Result;
-use marginfi::state::price::OraclePriceFeedAdapter;
-use num_traits::ToPrimitive;
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    thread,
-    time::Duration,
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use tokio::runtime::{Builder, Runtime};
 
@@ -48,6 +42,7 @@ impl SwbCranker {
 
     // FIXME: simulation is halting the thread that is why it is currently disabled.
     // Will be addressed in https://linear.app/marginfi/issue/LIQ-16/overhaul-the-way-eva-is-obtaining-recent-oracle-prices
+    /* Probably will be removed by the end of the sprint
     pub fn simulate_swb_prices(&self) -> Result<()> {
         if !self.simulation_is_running.load(Ordering::SeqCst) {
             thread_info!("Simulating Swb prices...");
@@ -76,23 +71,11 @@ impl SwbCranker {
                 .block_on(self.crossbar_client.simulate(swb_feed_hashes));
 
             for (oracle_address, price) in simulated_prices {
-                // In this (Switchboard) case there will always be exactly one bank for each oracle
-                let banks = self
-                    .cache
+                let mut wrapper = self.cache.oracles.try_get_wrapper(&oracle_address)?;
+                wrapper.simulated_price = price.to_f64();
+                self.cache
                     .oracles
-                    .try_get_banks_from_oracle(&oracle_address)?;
-                for bank_address in banks {
-                    let mut wrapper = self
-                        .cache
-                        .oracles
-                        .try_get_wrapper(&oracle_address, &bank_address)?;
-                    wrapper.simulated_price = price.to_f64();
-                    self.cache.oracles.try_update_account_wrapper(
-                        &wrapper.address,
-                        &bank_address,
-                        wrapper.price_adapter,
-                    )?;
-                }
+                    .try_update_account_wrapper(&wrapper.address, wrapper.price_adapter)?;
             }
         } else {
             thread_info!("Swb price simulation is already running. Waiting for it to complete...");
@@ -104,4 +87,5 @@ impl SwbCranker {
 
         Ok(())
     }
+    */
 }

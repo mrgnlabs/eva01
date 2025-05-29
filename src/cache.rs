@@ -4,41 +4,43 @@ mod mints;
 mod oracles;
 mod tokens;
 
+use std::sync::{Arc, Mutex};
+
 use accounts::MarginfiAccountsCache;
 use anyhow::Result;
 use banks::BanksCache;
 use mints::MintsCache;
 use oracles::OraclesCache;
-use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
 use tokens::TokensCache;
 
 use crate::{
     utils::accessor,
     wrappers::{
         bank::BankWrapperT,
-        oracle::{OracleWrapper, OracleWrapperTrait},
+        oracle::{try_build_oracle_wrapper, OracleWrapperTrait},
         token_account::TokenAccountWrapperT,
     },
 };
 
-pub struct CacheT<T: OracleWrapperTrait + Clone> {
+pub struct Cache {
     pub signer_pk: Pubkey,
     pub marginfi_program_id: Pubkey,
     pub marginfi_group_address: Pubkey,
     pub marginfi_accounts: MarginfiAccountsCache,
     pub banks: BanksCache,
     pub mints: MintsCache,
-    pub oracles: OraclesCache<T>,
+    pub oracles: OraclesCache,
     pub tokens: TokensCache,
+    pub clock: Arc<Mutex<Clock>>,
 }
 
-pub type Cache = CacheT<OracleWrapper>;
-
-impl<T: OracleWrapperTrait + Clone> CacheT<T> {
+impl Cache {
     pub fn new(
         signer_pk: Pubkey,
         marginfi_program_id: Pubkey,
         marginfi_group_address: Pubkey,
+        clock: Arc<Mutex<Clock>>,
     ) -> Self {
         Self {
             signer_pk,
@@ -49,18 +51,16 @@ impl<T: OracleWrapperTrait + Clone> CacheT<T> {
             mints: MintsCache::new(),
             oracles: OraclesCache::new(),
             tokens: TokensCache::new(),
+            clock,
         }
     }
 
-    pub fn get_bank_wrapper(&self, bank_pk: &Pubkey) -> Option<BankWrapperT<T>> {
-        let bank = self.banks.get_bank(bank_pk)?;
-        let oracle = self.oracles.get_wrapper_from_bank(bank_pk)?;
-        Some(BankWrapperT::new(*bank_pk, bank, oracle))
-    }
-
-    pub fn try_get_bank_wrapper(&self, bank_pk: &Pubkey) -> Result<BankWrapperT<T>> {
+    pub fn try_get_bank_wrapper<T: OracleWrapperTrait + Clone>(
+        &self,
+        bank_pk: &Pubkey,
+    ) -> Result<BankWrapperT<T>> {
         let bank = self.banks.try_get_bank(bank_pk)?;
-        let oracle = self.oracles.try_get_wrapper_from_bank(bank_pk)?;
+        let oracle = try_build_oracle_wrapper(self, bank_pk)?;
         Ok(BankWrapperT::new(*bank_pk, bank, oracle))
     }
 
@@ -70,7 +70,10 @@ impl<T: OracleWrapperTrait + Clone> CacheT<T> {
         self.tokens.get_account(&token)
     }
 
-    pub fn try_get_token_wrapper(&self, token_address: &Pubkey) -> Result<TokenAccountWrapperT<T>> {
+    pub fn try_get_token_wrapper<T: OracleWrapperTrait + Clone>(
+        &self,
+        token_address: &Pubkey,
+    ) -> Result<TokenAccountWrapperT<T>> {
         let token_account = self.tokens.try_get_account(token_address)?;
         let mint_address = self.mints.try_get_mint_for_token(token_address)?;
         let bank_address = self.banks.try_get_account_for_mint(&mint_address)?;
@@ -85,7 +88,9 @@ impl<T: OracleWrapperTrait + Clone> CacheT<T> {
 
 #[cfg(test)]
 pub mod test_utils {
-    use solana_sdk::{account::Account, pubkey::Pubkey};
+    use std::sync::{Arc, Mutex};
+
+    use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
 
     use crate::wrappers::{
         bank::test_utils::TestBankWrapper, oracle::test_utils::TestOracleWrapper,
@@ -98,6 +103,7 @@ pub mod test_utils {
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Pubkey::new_unique(),
+            Arc::new(Mutex::new(Clock::default())),
         );
 
         for bank_wrapper in bank_wrappers {
@@ -146,8 +152,12 @@ mod tests {
         let signer_pk = Pubkey::new_unique();
         let marginfi_program_id = Pubkey::new_unique();
         let marginfi_group_address = Pubkey::new_unique();
-        let cache: CacheT<TestOracleWrapper> =
-            CacheT::new(signer_pk, marginfi_program_id, marginfi_group_address);
+        let cache: CacheT<TestOracleWrapper> = CacheT::new(
+            signer_pk,
+            marginfi_program_id,
+            marginfi_group_address,
+            Arc::new(Mutex::new(Clock::default())),
+        );
         assert_eq!(cache.signer_pk, signer_pk);
         assert_eq!(cache.marginfi_program_id, marginfi_program_id);
         assert_eq!(cache.marginfi_group_address, marginfi_group_address);

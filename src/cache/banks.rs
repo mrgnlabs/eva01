@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use log::error;
 use marginfi::state::marginfi_group::Bank;
 use solana_sdk::pubkey::Pubkey;
 
@@ -32,16 +31,7 @@ impl BanksCache {
     }
 
     pub fn get_bank(&self, address: &Pubkey) -> Option<Bank> {
-        self.try_get_bank(address)
-            .map_err(|err| error!("{}", err))
-            .ok()
-    }
-
-    pub fn get_banks(&self) -> Vec<(Pubkey, Bank)> {
-        self.banks
-            .iter()
-            .map(|(address, bank)| (*address, *bank))
-            .collect()
+        self.try_get_bank(address).ok()
     }
 
     pub fn get_oracles(&self) -> Vec<Pubkey> {

@@ -35,7 +35,7 @@ impl MarginfiAccountsCache {
                 )
             })?
             .get(address)
-            .ok_or(anyhow!("Failed to find the Marginfi account {}!", &address))
+            .ok_or(anyhow!("Failed to find the Marginfi account: {}", &address))
             .cloned()
     }
 
@@ -44,14 +44,14 @@ impl MarginfiAccountsCache {
             .read()
             .map_err(|e| {
                 anyhow!(
-                    "Failed to lock the Marginfi accounts map for for search by index! {}",
+                    "Failed to lock the Marginfi accounts map for for search by index: {}",
                     e
                 )
             })?
             .get_index(index)
             .map(|(_, account)| account.clone())
             .ok_or(anyhow!(
-                "Failed to find the Marginfi account with index {}!",
+                "Failed to find the Marginfi account with index: {}",
                 index
             ))
     }
@@ -62,7 +62,7 @@ impl MarginfiAccountsCache {
             .read()
             .map_err(|e| {
                 anyhow!(
-                    "Failed to lock the marginfi accounts  map for getting it's size! {}",
+                    "Failed to lock the marginfi accounts  map for getting it's size: {}",
                     e
                 )
             })?
