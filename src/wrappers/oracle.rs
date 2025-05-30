@@ -10,7 +10,7 @@ use switchboard_on_demand_client::PullFeedAccountData;
 
 use crate::{
     cache::Cache,
-    clock_manager, thread_debug,
+    clock_manager, thread_debug, thread_error,
     utils::{find_oracle_keys, load_swb_pull_account_from_bytes},
 };
 
@@ -68,7 +68,7 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
     let bank = cache.banks.try_get_bank(bank_address)?;
     let oracle_addresses = find_oracle_keys(&bank.config);
 
-    let mut wrappers: Vec<T> = vec![];
+    let mut result: Option<T> = None;
     match bank.config.oracle_setup {
         OracleSetup::SwitchboardPull => {
             for (oracle_address, oracle_account) in cache.oracles.get_accounts(&oracle_addresses)? {
@@ -83,7 +83,8 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
                         feed: Box::new((&swb_feed).into()),
                     });
                 let oracle_wrapper = T::new(oracle_address, price_adapter.clone());
-                wrappers.push(oracle_wrapper);
+                result = Some(oracle_wrapper);
+                break;
             }
         }
         OracleSetup::PythPushOracle => {
@@ -96,7 +97,8 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
                     &clock_manager::get_clock(&cache.clock)?,
                 )?;
                 let oracle_wrapper = T::new(oracle_address, price_adapter.clone());
-                wrappers.push(oracle_wrapper);
+                result = Some(oracle_wrapper);
+                break;
             }
         }
         OracleSetup::StakedWithPythPush => {
@@ -133,24 +135,24 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
             )?;
 
             let oracle_wrapper = T::new(bank_oracle_address, adapter.clone());
-            wrappers.push(oracle_wrapper);
+            result = Some(oracle_wrapper);
         }
         _ => {
-            return Err(anyhow!(
+            thread_error!(
                 "Unsupported Oracle setup for the Bank {:?} : {:?}",
                 bank_address,
                 bank.config.oracle_setup
-            ))
+            )
         }
     }
 
-    // TODO: return the wrapper with latest price timestamp
-    wrappers.first().cloned().ok_or_else(|| {
-        anyhow!(
-            "Failed to build Oracle wrapper forthe Bank {:?}",
+    match result {
+        Some(wrapper) => Ok(wrapper),
+        None => Err(anyhow!(
+            "No valid oracle wrapper found for the Bank {:?}",
             bank_address
-        )
-    })
+        )),
+    }
 }
 
 #[cfg(test)]
