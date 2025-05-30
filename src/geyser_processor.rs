@@ -1,7 +1,7 @@
 use crate::{
     cache::Cache,
     geyser::{AccountType, GeyserUpdate},
-    thread_debug, thread_error, thread_info,
+    thread_debug, thread_error, thread_info, thread_trace,
     utils::log_genuine_error,
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
@@ -58,7 +58,7 @@ impl GeyserProcessor {
 
     fn process_update(&self, msg: GeyserUpdate) -> Result<()> {
         let msg_account = msg.account.clone();
-        thread_debug!(
+        thread_trace!(
             "Processing the {:?} {:?} update.",
             msg.account_type,
             msg.address
@@ -66,7 +66,7 @@ impl GeyserProcessor {
 
         match msg.account_type {
             AccountType::Oracle => {
-                thread_debug!("Received Oracle account {:?} update", msg.address);
+                thread_trace!("Received Oracle account {:?} update", msg.address);
                 self.cache.oracles.try_update(&msg.address, msg_account)?;
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
@@ -84,7 +84,7 @@ impl GeyserProcessor {
                 self.run_rebalance.store(true, Ordering::Relaxed);
             }
             AccountType::Token => {
-                thread_debug!("Received Token account update for {:?}", &msg.address);
+                thread_trace!("Received Token account update for {:?}", &msg.address);
                 self.cache
                     .tokens
                     .try_update_account(msg.address, msg.account)?;

@@ -2,7 +2,7 @@ use crate::{
     cache::Cache,
     config::{GeneralConfig, RebalancerCfg},
     sender::{SenderCfg, TransactionSender},
-    thread_debug, thread_error, thread_info, thread_warn,
+    thread_debug, thread_error, thread_info, thread_trace,
     transaction_manager::{RawTransaction, TransactionData},
     utils::{
         self, build_emode_config, calc_total_weighted_assets_liabs, calc_weighted_bank_assets,
@@ -144,9 +144,7 @@ impl Rebalancer {
 
         self.should_stop_liquidator(&lq_account)?;
 
-        Ok(self.has_tokens_in_token_accounts()?
-            || self.has_non_preferred_deposits(&lq_account)?
-            || lq_account.has_liabs())
+        Ok(self.has_non_preferred_deposits(&lq_account)? || lq_account.has_liabs())
     }
 
     // TODO: move to SwbCranker
@@ -470,6 +468,7 @@ impl Rebalancer {
     }
 
     // FIXME: broken, it supposed to be checking if the liquidator has any tokens in it's token accounts
+    #[allow(dead_code)]
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
         for token_address in self.cache.tokens.get_addresses() {
             match self
@@ -488,7 +487,7 @@ impl Rebalancer {
                         error
                     ),
                 },
-                Err(error) => thread_warn!(
+                Err(error) => thread_trace!(
                     "Skipping evaluation of the Liquidator's Token {}. Cause: {}",
                     token_address,
                     error
@@ -517,6 +516,7 @@ impl Rebalancer {
     }
 
     fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<()> {
+        // FIXME: is it only evaluating the Liquidator's token accounts?
         for token_address in self.cache.tokens.get_addresses() {
             match self
                 .cache
@@ -544,8 +544,8 @@ impl Rebalancer {
                             );
                     }
                 }
-                Err(error) => thread_error!(
-                    "Failed to drain the Liquidator's Token {}! {}",
+                Err(error) => thread_trace!(
+                    "Not draining the Liquidator's token {} because failed to obtain the token wrapper: {}",
                     token_address,
                     error
                 ),

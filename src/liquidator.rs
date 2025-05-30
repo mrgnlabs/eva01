@@ -2,7 +2,7 @@ use crate::{
     cache::Cache,
     config::{GeneralConfig, LiquidatorCfg},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
-    thread_debug, thread_error, thread_info,
+    thread_debug, thread_error, thread_info, thread_trace,
     transaction_manager::TransactionData,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
     wrappers::{
@@ -140,7 +140,7 @@ impl Liquidator {
                         }
                     }
                     Err(e) => {
-                        thread_error!("Failed to process account {:?}: {:?}", account.address, e);
+                        thread_trace!("Failed to process account {:?}: {:?}", account.address, e);
                         ERROR_COUNT.inc();
                     }
                 },

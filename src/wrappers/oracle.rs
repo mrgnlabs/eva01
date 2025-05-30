@@ -10,7 +10,7 @@ use switchboard_on_demand_client::PullFeedAccountData;
 
 use crate::{
     cache::Cache,
-    clock_manager, thread_debug, thread_error, thread_warn,
+    clock_manager, thread_debug, thread_error, thread_trace, thread_warn,
     utils::{find_oracle_keys, load_swb_pull_account_from_bytes},
 };
 
@@ -116,7 +116,7 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
                         break;
                     }
                     Err(e) => {
-                        thread_warn!(
+                        thread_trace!(
                             "Failed to build Pyth Push price adapter for Bank {:?} and Oracle {:?} : {}",
                             bank_address,
                             oracle_address,
