@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use marginfi::state::marginfi_group::Bank;
 use solana_sdk::pubkey::Pubkey;
@@ -34,11 +34,11 @@ impl BanksCache {
         self.try_get_bank(address).ok()
     }
 
-    pub fn get_oracles(&self) -> Vec<Pubkey> {
+    pub fn get_oracles(&self) -> HashSet<Pubkey> {
         self.banks
             .iter()
             .flat_map(|(_, bank)| find_oracle_keys(&bank.config))
-            .collect::<Vec<_>>()
+            .collect()
     }
 
     pub fn try_get_account_for_mint(&self, mint_address: &Pubkey) -> Result<Pubkey> {

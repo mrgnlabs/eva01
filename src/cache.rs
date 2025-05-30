@@ -60,8 +60,16 @@ impl Cache {
         bank_pk: &Pubkey,
     ) -> Result<BankWrapperT<T>> {
         let bank = self.banks.try_get_bank(bank_pk)?;
-        let oracle = try_build_oracle_wrapper(self, bank_pk)?;
-        Ok(BankWrapperT::new(*bank_pk, bank, oracle))
+        match try_build_oracle_wrapper(self, bank_pk) {
+            Ok(oracle) => Ok(BankWrapperT::new(*bank_pk, bank, oracle)),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to build oracle wrapper for bank {}: {}",
+                    bank_pk,
+                    e
+                ));
+            }
+        }
     }
 
     pub fn get_token_account_for_bank(&self, bank_pk: &Pubkey) -> Option<Account> {

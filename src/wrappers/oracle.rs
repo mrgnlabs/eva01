@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Ok, Result};
+use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use marginfi::state::price::{
     OraclePriceFeedAdapter, OraclePriceType, OracleSetup, PriceAdapter, PriceBias,
@@ -10,7 +10,7 @@ use switchboard_on_demand_client::PullFeedAccountData;
 
 use crate::{
     cache::Cache,
-    clock_manager, thread_debug, thread_error,
+    clock_manager, thread_debug, thread_error, thread_warn,
     utils::{find_oracle_keys, load_swb_pull_account_from_bytes},
 };
 
@@ -78,15 +78,25 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
                 offsets_data.copy_from_slice(
                     &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
                 );
-                let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
-
-                let price_adapter =
-                    OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
-                        feed: Box::new((&swb_feed).into()),
-                    });
-                let oracle_wrapper = T::new(oracle_address, price_adapter.clone());
-                result = Some(oracle_wrapper);
-                break;
+                match load_swb_pull_account_from_bytes(&offsets_data) {
+                    Result::Ok(swb_feed) => {
+                        let price_adapter =
+                            OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
+                                feed: Box::new((&swb_feed).into()),
+                            });
+                        let oracle_wrapper = T::new(oracle_address, price_adapter.clone());
+                        result = Some(oracle_wrapper);
+                        break;
+                    }
+                    Err(e) => {
+                        thread_warn!(
+                            "Failed to deserialize Switchboard Pull account data for Oracle {:?} : {}",
+                            oracle_address,
+                            e
+                        );
+                        continue;
+                    }
+                }
             }
         }
         OracleSetup::PythPushOracle => {
@@ -95,14 +105,26 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
             {
                 let mut oracle_tuple = (oracle_address, oracle_account);
                 let oracle_account_info = oracle_tuple.into_account_info();
-                let price_adapter = OraclePriceFeedAdapter::try_from_bank_config(
+                match OraclePriceFeedAdapter::try_from_bank_config(
                     &bank.config,
                     &[oracle_account_info],
                     &clock_manager::get_clock(&cache.clock)?,
-                )?;
-                let oracle_wrapper = T::new(oracle_address, price_adapter.clone());
-                result = Some(oracle_wrapper);
-                break;
+                ) {
+                    Result::Ok(price_adapter) => {
+                        let oracle_wrapper = T::new(oracle_address, price_adapter.clone());
+                        result = Some(oracle_wrapper);
+                        break;
+                    }
+                    Err(e) => {
+                        thread_warn!(
+                            "Failed to build Pyth Push price adapter for Bank {:?} and Oracle {:?} : {}",
+                            bank_address,
+                            oracle_address,
+                            e
+                        );
+                        continue;
+                    }
+                }
             }
         }
         OracleSetup::StakedWithPythPush => {

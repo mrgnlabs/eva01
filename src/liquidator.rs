@@ -163,10 +163,6 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
     ) -> Result<Option<PreparedLiquidatableAccount>> {
-        if account.address.to_string() == "A2cNgW5o66rquaiWjnAKkbdimU3x82exrqCvKzzrP1Wy" {
-            println!("Got A2cNgW5o66rquaiWjnAKkbdimU3x82exrqCvKzzrP1Wy");
-        }
-
         if self
             .liquidator_account
             .pending_liquidations

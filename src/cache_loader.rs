@@ -79,8 +79,6 @@ impl CacheLoader {
             },
         )?;
 
-        thread_info!("Loaded {} marginfi accounts", marginfi_accounts.len());
-
         for (address, account_opt) in marginfi_accounts_pubkeys
             .iter()
             .zip(marginfi_accounts.iter())
@@ -95,7 +93,11 @@ impl CacheLoader {
             }
         }
 
-        thread_info!("Loaded pubkeys in {:?}", start.elapsed());
+        thread_info!(
+            "Loaded {} marginfi accounts in {:?}",
+            marginfi_accounts.len(),
+            start.elapsed()
+        );
 
         Ok(())
     }
@@ -174,7 +176,7 @@ impl CacheLoader {
     fn load_oracles(&self, cache: &mut Cache) -> anyhow::Result<()> {
         thread_info!("Loading Oracles...");
 
-        let oracle_addresses = cache.banks.get_oracles();
+        let oracle_addresses = cache.banks.get_oracles().into_iter().collect::<Vec<_>>();
         let oracle_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
             &oracle_addresses,
@@ -187,7 +189,7 @@ impl CacheLoader {
             .collect();
 
         for (oracle_address, oracle_account) in oracle_map.iter() {
-            thread_debug!("Loaded the Oracle at address {:?} .", oracle_address);
+            thread_debug!("Loaded the Oracle {:?} .", oracle_address);
             cache
                 .oracles
                 .try_insert(*oracle_address, oracle_account.clone())?;
