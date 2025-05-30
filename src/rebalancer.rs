@@ -266,8 +266,8 @@ impl Rebalancer {
             .marginfi_accounts
             .try_get_account(&self.liquidator_account.liquidator_address)?;
 
-        let non_preferred_deposits = lq_account
-            .get_deposits::<OracleWrapper>(&self.config.preferred_mints, self.cache.clone());
+        let non_preferred_deposits =
+            lq_account.get_deposits(&self.config.preferred_mints, self.cache.clone());
 
         if !non_preferred_deposits.is_empty() {
             thread_debug!("Selling non-preferred deposits.");

@@ -104,8 +104,8 @@ mod tests {
 
     use super::*;
     use crossbeam::channel::unbounded;
-    use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
-    use std::sync::{atomic::AtomicBool, Arc, Mutex};
+    use solana_sdk::{account::Account, pubkey::Pubkey};
+    use std::sync::{atomic::AtomicBool, Arc};
 
     #[test]
     fn test_geyser_processor_new() {
@@ -113,7 +113,6 @@ mod tests {
         let run_liquidation = Arc::new(AtomicBool::new(false));
         let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let clock = Arc::new(Mutex::new(Clock::default()));
         let cache = Arc::new(create_test_cache(&Vec::new()));
 
         let processor = GeyserProcessor::new(
@@ -133,7 +132,6 @@ mod tests {
         let run_liquidation = Arc::new(AtomicBool::new(false));
         let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let clock = Arc::new(Mutex::new(Clock::default()));
         let cache = Arc::new(create_test_cache(&Vec::new()));
 
         let processor = GeyserProcessor::new(
@@ -157,7 +155,6 @@ mod tests {
         let run_liquidation = Arc::new(AtomicBool::new(false));
         let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let clock = Arc::new(Mutex::new(Clock::default()));
 
         let sol_bank = TestBankWrapper::test_sol();
         let usdc_bank = TestBankWrapper::test_usdc();

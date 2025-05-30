@@ -71,7 +71,9 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
     let mut result: Option<T> = None;
     match bank.config.oracle_setup {
         OracleSetup::SwitchboardPull => {
-            for (oracle_address, oracle_account) in cache.oracles.get_accounts(&oracle_addresses)? {
+            for (oracle_address, oracle_account) in
+                cache.oracles.try_get_accounts(&oracle_addresses)?
+            {
                 let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
                 offsets_data.copy_from_slice(
                     &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
@@ -88,7 +90,9 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
             }
         }
         OracleSetup::PythPushOracle => {
-            for (oracle_address, oracle_account) in cache.oracles.get_accounts(&oracle_addresses)? {
+            for (oracle_address, oracle_account) in
+                cache.oracles.try_get_accounts(&oracle_addresses)?
+            {
                 let mut oracle_tuple = (oracle_address, oracle_account);
                 let oracle_account_info = oracle_tuple.into_account_info();
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank_config(
@@ -209,11 +213,11 @@ pub mod test_utils {
     }
 
     impl OracleWrapperTrait for TestOracleWrapper {
-        fn new(_: Pubkey, _: OraclePriceFeedAdapter) -> Self {
+        fn new(address: Pubkey, _: OraclePriceFeedAdapter) -> Self {
             TestOracleWrapper {
                 price: 42.0,
                 bias: 5.0,
-                address: Pubkey::new_unique(),
+                address: address,
             }
         }
 
@@ -233,10 +237,21 @@ pub mod test_utils {
             self.address
         }
     }
+
+    pub fn create_pull_feed_account_data() -> PullFeedAccountData {
+        let buffer = vec![0u8; std::mem::size_of::<PullFeedAccountData>()];
+        let result = bytemuck::try_from_bytes::<PullFeedAccountData>(&buffer);
+        *result.unwrap()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use solana_sdk::account::Account;
+
+    use crate::cache::test_utils::create_test_cache;
+    use crate::wrappers::bank::test_utils::TestBankWrapper;
+
     use super::test_utils::*;
     use super::*;
 
@@ -262,5 +277,42 @@ mod tests {
                 .unwrap(),
             I80F48::from_num(47.0)
         );
+    }
+
+    /// Create test for try_build_oracle_wrapper
+    #[test]
+    fn test_try_build_oracle_wrapper() {
+        let oracle_key = Pubkey::new_unique();
+
+        let mut usdc_bank_wrapper = TestBankWrapper::test_usdc();
+        usdc_bank_wrapper.bank.config.oracle_setup = OracleSetup::SwitchboardPull;
+        usdc_bank_wrapper.bank.config.oracle_keys[0] = oracle_key.clone();
+
+        let mut cache = create_test_cache(&vec![usdc_bank_wrapper.clone()]);
+        //        let cache = Arc::new(cache);
+
+        cache
+            .banks
+            .insert(usdc_bank_wrapper.address, usdc_bank_wrapper.bank);
+
+        let pull_feed_data = create_pull_feed_account_data();
+        let bytes: &[u8] = bytemuck::bytes_of(&pull_feed_data);
+
+        let mut oracle_account = Account::default();
+        oracle_account
+            .data
+            .resize(std::mem::size_of::<PullFeedAccountData>() + 8, 0);
+        oracle_account.data[8..].copy_from_slice(bytes);
+
+        // Mock oracles in the cache
+        cache
+            .oracles
+            .try_insert(oracle_key, oracle_account)
+            .unwrap();
+
+        let oracle_wrapper: TestOracleWrapper =
+            try_build_oracle_wrapper(&cache, &usdc_bank_wrapper.address).unwrap();
+
+        assert_eq!(oracle_wrapper.get_address(), oracle_key);
     }
 }

@@ -338,7 +338,7 @@ impl CacheLoader {
 pub fn get_accounts_to_track(cache: &Cache) -> Result<HashMap<Pubkey, AccountType>> {
     let mut accounts: HashMap<Pubkey, AccountType> = HashMap::new();
 
-    for oracle_pk in cache.oracles.get_addresses()? {
+    for oracle_pk in cache.oracles.try_get_addresses()? {
         accounts.insert(oracle_pk, AccountType::Oracle);
     }
 

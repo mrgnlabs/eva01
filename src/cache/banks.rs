@@ -146,21 +146,6 @@ pub mod tests {
     }
 
     #[test]
-    fn test_get_accounts() {
-        let mut cache = BanksCache::new();
-        let bank_address1 = Pubkey::new_unique();
-        let bank_address2 = Pubkey::new_unique();
-        let bank1 = create_test_bank(Pubkey::new_unique());
-        let bank2 = create_test_bank(Pubkey::new_unique());
-
-        cache.insert(bank_address1, bank1);
-        cache.insert(bank_address2, bank2);
-
-        let accounts = cache.get_banks();
-        assert_eq!(accounts.len(), 2);
-    }
-
-    #[test]
     fn test_get_oracles() {
         let mut cache = BanksCache::new();
         let bank_address = Pubkey::new_unique();

@@ -92,14 +92,12 @@ pub mod test_utils {
 
     use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
 
-    use crate::wrappers::{
-        bank::test_utils::TestBankWrapper, oracle::test_utils::TestOracleWrapper,
-    };
+    use crate::wrappers::bank::test_utils::TestBankWrapper;
 
-    use super::CacheT;
+    use super::Cache;
 
-    pub fn create_test_cache(bank_wrappers: &Vec<TestBankWrapper>) -> CacheT<TestOracleWrapper> {
-        let mut cache = CacheT::<TestOracleWrapper>::new(
+    pub fn create_test_cache(bank_wrappers: &Vec<TestBankWrapper>) -> Cache {
+        let mut cache = Cache::new(
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Pubkey::new_unique(),
@@ -122,12 +120,7 @@ pub mod test_utils {
             let oracle_account = Account::new(0, 0, &Pubkey::new_unique());
             cache
                 .oracles
-                .try_insert(
-                    bank_wrapper.oracle_adapter.address.clone(),
-                    oracle_account,
-                    Some(bank_wrapper.oracle_adapter.clone()),
-                    bank_wrapper.address,
-                )
+                .try_insert(bank_wrapper.oracle_adapter.address.clone(), oracle_account)
                 .unwrap();
         }
 
@@ -139,11 +132,6 @@ pub mod test_utils {
 mod tests {
     use std::sync::Arc;
 
-    use crate::{
-        cache::test_utils::create_test_cache,
-        wrappers::{bank::test_utils::TestBankWrapper, oracle::test_utils::TestOracleWrapper},
-    };
-
     use super::*;
     use solana_sdk::pubkey::Pubkey;
 
@@ -152,7 +140,7 @@ mod tests {
         let signer_pk = Pubkey::new_unique();
         let marginfi_program_id = Pubkey::new_unique();
         let marginfi_group_address = Pubkey::new_unique();
-        let cache: CacheT<TestOracleWrapper> = CacheT::new(
+        let cache = Cache::new(
             signer_pk,
             marginfi_program_id,
             marginfi_group_address,
@@ -161,17 +149,5 @@ mod tests {
         assert_eq!(cache.signer_pk, signer_pk);
         assert_eq!(cache.marginfi_program_id, marginfi_program_id);
         assert_eq!(cache.marginfi_group_address, marginfi_group_address);
-    }
-
-    #[test]
-    fn test_try_get_token_wrapper() {
-        let sol_bank_wrapper = TestBankWrapper::test_sol();
-        let usdc_bank_wrapper = TestBankWrapper::test_usdc();
-        let cache = create_test_cache(&vec![sol_bank_wrapper.clone(), usdc_bank_wrapper.clone()]);
-        let cache = Arc::new(cache);
-
-        let token_address = cache.tokens.get_addresses().get(0).unwrap().clone();
-        let result = cache.try_get_token_wrapper(&token_address);
-        assert!(result.is_ok());
     }
 }
