@@ -468,6 +468,7 @@ impl Rebalancer {
     }
 
     // FIXME: broken, it supposed to be checking if the liquidator has any tokens in it's token accounts
+    // https://linear.app/marginfi/issue/LIQ-20/the-token-balances-check-is-broken
     #[allow(dead_code)]
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
         for token_address in self.cache.tokens.get_addresses() {
