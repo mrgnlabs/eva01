@@ -1,6 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use log::error;
 use marginfi::state::marginfi_group::Bank;
 use solana_sdk::pubkey::Pubkey;
 
@@ -32,23 +31,14 @@ impl BanksCache {
     }
 
     pub fn get_bank(&self, address: &Pubkey) -> Option<Bank> {
-        self.try_get_bank(address)
-            .map_err(|err| error!("{}", err))
-            .ok()
+        self.try_get_bank(address).ok()
     }
 
-    pub fn get_banks(&self) -> Vec<(Pubkey, Bank)> {
-        self.banks
-            .iter()
-            .map(|(address, bank)| (*address, *bank))
-            .collect()
-    }
-
-    pub fn get_oracles(&self) -> Vec<Pubkey> {
+    pub fn get_oracles(&self) -> HashSet<Pubkey> {
         self.banks
             .iter()
             .flat_map(|(_, bank)| find_oracle_keys(&bank.config))
-            .collect::<Vec<_>>()
+            .collect()
     }
 
     pub fn try_get_account_for_mint(&self, mint_address: &Pubkey) -> Result<Pubkey> {
@@ -153,21 +143,6 @@ pub mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap().mint, bank.mint);
-    }
-
-    #[test]
-    fn test_get_accounts() {
-        let mut cache = BanksCache::new();
-        let bank_address1 = Pubkey::new_unique();
-        let bank_address2 = Pubkey::new_unique();
-        let bank1 = create_test_bank(Pubkey::new_unique());
-        let bank2 = create_test_bank(Pubkey::new_unique());
-
-        cache.insert(bank_address1, bank1);
-        cache.insert(bank_address2, bank2);
-
-        let accounts = cache.get_banks();
-        assert_eq!(accounts.len(), 2);
     }
 
     #[test]

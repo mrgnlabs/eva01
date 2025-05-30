@@ -2,16 +2,17 @@ use crate::{
     cache::Cache,
     config::{GeneralConfig, RebalancerCfg},
     sender::{SenderCfg, TransactionSender},
-    thread_debug, thread_error, thread_info, thread_warn,
+    thread_debug, thread_error, thread_info, thread_trace,
     transaction_manager::{RawTransaction, TransactionData},
     utils::{
         self, build_emode_config, calc_total_weighted_assets_liabs, calc_weighted_bank_assets,
-        calc_weighted_bank_liabs, get_free_collateral, swb_cranker::SwbCranker,
+        calc_weighted_bank_liabs, find_oracle_keys, get_free_collateral, swb_cranker::SwbCranker,
         BankAccountWithPriceFeedEva,
     },
     wrappers::{
-        liquidator_account::LiquidatorAccount, marginfi_account::MarginfiAccountWrapper,
-        oracle::OracleWrapperTrait,
+        liquidator_account::LiquidatorAccount,
+        marginfi_account::MarginfiAccountWrapper,
+        oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
 use anyhow::{anyhow, Result};
@@ -143,9 +144,7 @@ impl Rebalancer {
 
         self.should_stop_liquidator(&lq_account)?;
 
-        Ok(self.has_tokens_in_token_accounts()?
-            || self.has_non_preferred_deposits(&lq_account)?
-            || lq_account.has_liabs())
+        Ok(self.has_non_preferred_deposits(&lq_account)? || lq_account.has_liabs())
     }
 
     // TODO: move to SwbCranker
@@ -161,17 +160,19 @@ impl Rebalancer {
         let active_swb_oracles: Vec<Pubkey> = active_banks
             .iter()
             .filter_map(|&bank_pk| {
-                self.cache.get_bank_wrapper(&bank_pk).and_then(|bank| {
-                    if matches!(bank.bank.config.oracle_setup, OracleSetup::SwitchboardPull) {
-                        Some(bank.oracle_adapter.address)
+                self.cache.banks.get_bank(&bank_pk).and_then(|bank| {
+                    if matches!(bank.config.oracle_setup, OracleSetup::SwitchboardPull) {
+                        Some(bank.config)
                     } else {
                         None
                     }
                 })
             })
+            .map(|swb_bank_config| find_oracle_keys(&swb_bank_config))
+            .flatten()
             .collect();
 
-        // TODO: moved to utils/swb_cranker.rs
+        // TODO: move to utils/swb_cranker.rs
         if !active_swb_oracles.is_empty() {
             thread_debug!("Fetching SWB prices...");
             let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
@@ -320,7 +321,7 @@ impl Rebalancer {
         bank_pk: Pubkey,
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<()> {
-        let bank = self.cache.try_get_bank_wrapper(&bank_pk)?;
+        let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(&bank_pk)?;
 
         thread_debug!(
             "Evaluating the {:?} Bank liability for the Liquidator account {:?}.",
@@ -467,9 +468,14 @@ impl Rebalancer {
     }
 
     // FIXME: broken, it supposed to be checking if the liquidator has any tokens in it's token accounts
+    // https://linear.app/marginfi/issue/LIQ-20/the-token-balances-check-is-broken
+    #[allow(dead_code)]
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
         for token_address in self.cache.tokens.get_addresses() {
-            match self.cache.try_get_token_wrapper(&token_address) {
+            match self
+                .cache
+                .try_get_token_wrapper::<OracleWrapper>(&token_address)
+            {
                 Ok(wrapper) => match wrapper.get_value() {
                     Ok(value) => {
                         if value > self.config.token_account_dust_threshold {
@@ -482,7 +488,7 @@ impl Rebalancer {
                         error
                     ),
                 },
-                Err(error) => thread_warn!(
+                Err(error) => thread_trace!(
                     "Skipping evaluation of the Liquidator's Token {}. Cause: {}",
                     token_address,
                     error
@@ -511,8 +517,12 @@ impl Rebalancer {
     }
 
     fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<()> {
+        // FIXME: is it only evaluating the Liquidator's token accounts?
         for token_address in self.cache.tokens.get_addresses() {
-            match self.cache.try_get_token_wrapper(&token_address) {
+            match self
+                .cache
+                .try_get_token_wrapper::<OracleWrapper>(&token_address)
+            {
                 Ok(wrapper) => {
                     // Ignore the swap token, usually USDC
                     if wrapper.bank.bank.mint == self.config.swap_mint {
@@ -535,8 +545,8 @@ impl Rebalancer {
                             );
                     }
                 }
-                Err(error) => thread_error!(
-                    "Failed to drain the Liquidator's Token {}! {}",
+                Err(error) => thread_trace!(
+                    "Not draining the Liquidator's token {} because failed to obtain the token wrapper: {}",
                     token_address,
                     error
                 ),
@@ -643,7 +653,8 @@ impl Rebalancer {
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<(I80F48, bool)> {
         let free_collateral = get_free_collateral(&self.cache, lq_account)?;
-        let balance = lq_account.get_balance_for_bank(&self.cache.try_get_bank_wrapper(bank_pk)?);
+        let balance = lq_account
+            .get_balance_for_bank(&self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?);
         Ok(match balance {
             Some((balance, BalanceSide::Assets)) => {
                 let value = self.get_value(
@@ -701,7 +712,7 @@ impl Rebalancer {
         bank_pk: &Pubkey,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48> {
-        let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
+        let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?;
         let price = bank.oracle_adapter.get_price_of_type(
             marginfi::state::price::OraclePriceType::RealTime,
             price_bias,

@@ -1,5 +1,5 @@
 use crate::{
-    cache::CacheT,
+    cache::Cache,
     cache_loader::{get_accounts_to_track, CacheLoader},
     clock_manager::{self, ClockManager},
     config::Eva01Config,
@@ -54,20 +54,20 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
     )?;
 
     info!("Loading Cache...");
-    let mut cache = CacheT::new(
+    let mut cache = Cache::new(
         config.general_config.signer_pubkey,
         config.general_config.marginfi_program_id,
         marginfi_group_id,
+        clock.clone(),
     );
 
     let cache_loader = CacheLoader::new(
         config.general_config.keypair_path.clone(),
         config.general_config.rpc_url.clone(),
-        clock.clone(),
     )?;
     cache_loader.load_cache(&mut cache)?;
 
-    let accounts_to_track = get_accounts_to_track(&cache);
+    let accounts_to_track = get_accounts_to_track(&cache)?;
 
     let cache = Arc::new(cache);
 
@@ -127,7 +127,6 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
         run_liquidation.clone(),
         run_rebalance.clone(),
         stop_liquidator.clone(),
-        clock.clone(),
         cache.clone(),
     )?;
 

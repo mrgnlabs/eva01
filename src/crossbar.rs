@@ -4,10 +4,12 @@ use std::collections::HashMap;
 use switchboard_on_demand::prelude::rust_decimal::Decimal;
 use switchboard_on_demand_client::CrossbarClient;
 
+#[allow(dead_code)]
 const CHUNK_SIZE: usize = 20;
 
 /// CrossbarMaintainer will maintain the feeds prices
 /// with simulated prices from the crossbar service
+#[allow(dead_code)]
 pub(crate) struct CrossbarMaintainer {
     crossbar_client: CrossbarClient,
 }
@@ -19,6 +21,7 @@ impl CrossbarMaintainer {
         Self { crossbar_client }
     }
 
+    #[allow(dead_code)]
     pub async fn simulate(&self, feeds: Vec<(Pubkey, String)>) -> Vec<(Pubkey, Decimal)> {
         if feeds.is_empty() {
             return Vec::new();
@@ -61,6 +64,7 @@ impl CrossbarMaintainer {
     }
 }
 
+#[allow(dead_code)]
 fn calculate_price(mut numbers: Vec<Decimal>) -> Option<Decimal> {
     if numbers.is_empty() {
         return None;

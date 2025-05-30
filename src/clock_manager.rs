@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::{thread_debug, thread_error, thread_info};
 
+// TODO: merge into Cache
 pub struct ClockManager {
     rpc_client: RpcClient,
     clock: Arc<Mutex<Clock>>,
