@@ -356,7 +356,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     fn calc_weighted_liabs(&self, requirement_type: RequirementType) -> Result<I80F48> {
         let bank = &self.bank.bank;
         let liability_amount = bank
-            .get_liability_amount(self.balance.asset_shares.into())
+            .get_liability_amount(self.balance.liability_shares.into())
             .map_err(|err| anyhow!("Failed to calculate liability amount: {}", err))?;
         calc_weighted_bank_liabs(&self.bank, liability_amount, requirement_type)
     }

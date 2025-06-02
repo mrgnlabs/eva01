@@ -98,7 +98,11 @@ impl TransactionManager {
         // Get JITO tip account
         let jito_block_engine_url = config.block_engine_url;
         debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
-        let jito_sdk: JitoJsonRpcSDK = JitoJsonRpcSDK::new(&jito_block_engine_url, None);
+        //TODO: parameterize UUID
+        let jito_sdk: JitoJsonRpcSDK = JitoJsonRpcSDK::new(
+            &jito_block_engine_url,
+            Some("b8b2eb8e-8b20-4ee5-b8a1-225f863802d0".to_string()),
+        );
         let random_tip_account = tokio_rt.block_on(jito_sdk.get_random_tip_account())?;
         let jito_tip_account = Pubkey::from_str(&random_tip_account)?;
 
