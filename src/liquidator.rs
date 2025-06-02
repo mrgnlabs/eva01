@@ -178,12 +178,6 @@ impl Liquidator {
         }
 
         let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
-        thread_debug!(
-            "Account {:?} has {} deposit shares and {} liability shares.",
-            account.address,
-            deposit_shares.len(),
-            liabs_shares.len()
-        );
         if liabs_shares.is_empty() {
             return Ok(None);
         }
