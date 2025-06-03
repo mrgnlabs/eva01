@@ -25,6 +25,7 @@ use tokio::runtime::{Builder, Runtime};
 pub struct TransactionManager {
     keypair: Keypair,
     jito_sdk: JitoJsonRpcSDK,
+    jito_block_engine_uuid: String,
     jito_tip_account: Pubkey,
     rpc_client: RpcClient,
     lookup_tables: Vec<AddressLookupTableAccount>,
@@ -97,16 +98,18 @@ impl TransactionManager {
 
         // Get JITO tip account
         let jito_block_engine_url = config.block_engine_url;
+        let jito_block_engine_uuid = config.block_engine_uuid;
         debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
         //TODO: parameterize UUID
         let jito_sdk: JitoJsonRpcSDK =
-            JitoJsonRpcSDK::new(&jito_block_engine_url, Some(config.block_engine_uuid));
+            JitoJsonRpcSDK::new(&jito_block_engine_url, Some(jito_block_engine_uuid.clone()));
         let random_tip_account = tokio_rt.block_on(jito_sdk.get_random_tip_account())?;
         let jito_tip_account = Pubkey::from_str(&random_tip_account)?;
 
         Ok(Self {
             keypair,
             jito_sdk,
+            jito_block_engine_uuid,
             rpc_client,
             jito_tip_account,
             lookup_tables,
@@ -141,10 +144,10 @@ impl TransactionManager {
             };
 
             let bundle = json!(serialized_txs);
-            let response = match self
-                .tokio_rt
-                .block_on(self.jito_sdk.send_bundle(Some(bundle), None))
-            {
+            let response = match self.tokio_rt.block_on(
+                self.jito_sdk
+                    .send_bundle(Some(bundle), Some(&self.jito_block_engine_uuid)),
+            ) {
                 Ok(response) => response,
                 Err(e) => {
                     ERROR_COUNT.inc();
