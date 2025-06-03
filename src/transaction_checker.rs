@@ -26,13 +26,13 @@ pub struct TransactionChecker {
 }
 
 impl TransactionChecker {
-    pub fn new(jito_block_engine_url: &str) -> anyhow::Result<Self> {
+    pub fn new(
+        jito_block_engine_url: &str,
+        jito_block_engine_uuid: String,
+    ) -> anyhow::Result<Self> {
         debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
         //TODO: parameterize UUID
-        let jito_sdk = JitoJsonRpcSDK::new(
-            jito_block_engine_url,
-            Some("b8b2eb8e-8b20-4ee5-b8a1-225f863802d0".to_string()),
-        );
+        let jito_sdk = JitoJsonRpcSDK::new(jito_block_engine_url, Some(jito_block_engine_uuid));
 
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("transaction-checker")
