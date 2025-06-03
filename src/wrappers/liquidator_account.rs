@@ -215,7 +215,7 @@ impl LiquidatorAccount {
                 },
             )) {
                 Ok((ix, luts)) => {
-                    thread_debug!("Cranked Swb Oracles: {:#?}", ix);
+                    thread_debug!("Cranked Swb Oracles.");
                     Some((ix, luts))
                 }
                 Err(err) => {
