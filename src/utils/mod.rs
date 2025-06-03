@@ -385,7 +385,7 @@ pub fn calc_total_weighted_assets_liabs(
 pub fn build_emode_config(baws: &Vec<BankAccountWithPriceFeedEva>) -> Result<EmodeConfig> {
     let configs = baws
         .iter()
-        .filter(|baw| baw.balance.is_empty(BalanceSide::Liabilities))
+        .filter(|baw| !baw.balance.is_empty(BalanceSide::Liabilities))
         .map(|baw| baw.bank.bank.emode.emode_config)
         .collect();
     Ok(reconcile_emode_configs(configs))
