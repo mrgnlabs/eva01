@@ -135,7 +135,7 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
                     ));
             }
 
-            let bank_oracle_address = *oracle_addresses.get(0).unwrap();
+            let bank_oracle_address = *oracle_addresses.first().unwrap();
             let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
             let bank_oracle_account_info =
                 (&bank_oracle_address, &mut bank_oracle).into_account_info();
