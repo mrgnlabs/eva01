@@ -7,11 +7,11 @@ use crate::{
         initialize_marginfi_account, make_deposit_ix, make_liquidate_ix, make_repay_ix,
         make_withdraw_ix,
     },
-    thread_debug, thread_info,
+    thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
     utils::check_asset_tags_matching,
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use crossbeam::channel::Sender;
 use log::{debug, info};
 use solana_client::{
@@ -201,11 +201,8 @@ impl LiquidatorAccount {
 
         // TODO: move to utils/swb_cranker.rs
         let crank_data = if !swb_oracles.is_empty() {
-            thread_debug!(
-                "Cranking Swb Oracles for observation accounts {:#?}",
-                swb_oracles
-            );
-            if let Ok((ix, luts)) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
+            thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+            match self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
                 FetchUpdateManyParams {
@@ -217,9 +214,14 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             )) {
-                Some((ix, luts))
-            } else {
-                return Err(anyhow!("Failed to crank/fetch Swb Oracles data."));
+                Ok((ix, luts)) => {
+                    thread_debug!("Cranked Swb Oracles: {:#?}", ix);
+                    Some((ix, luts))
+                }
+                Err(err) => {
+                    thread_error!("Failed to crank/fetch Swb Oracles: {}", err);
+                    None
+                }
             }
         } else {
             None
