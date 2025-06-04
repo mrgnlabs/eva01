@@ -168,8 +168,7 @@ impl Rebalancer {
                     }
                 })
             })
-            .map(|swb_bank_config| find_oracle_keys(&swb_bank_config))
-            .flatten()
+            .flat_map(|swb_bank_config| find_oracle_keys(&swb_bank_config))
             .collect();
 
         // TODO: move to utils/swb_cranker.rs

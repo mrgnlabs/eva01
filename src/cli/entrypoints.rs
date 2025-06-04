@@ -83,8 +83,10 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
     let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
 
     let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
-    let transaction_checker =
-        TransactionChecker::new(config.general_config.block_engine_url.as_str())?;
+    let transaction_checker = TransactionChecker::new(
+        config.general_config.block_engine_url.as_str(),
+        config.general_config.block_engine_uuid.clone(),
+    )?;
 
     let swb_price_simulator = Arc::new(SwbCranker::new(cache.clone())?);
 

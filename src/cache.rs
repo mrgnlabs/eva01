@@ -62,13 +62,11 @@ impl Cache {
         let bank = self.banks.try_get_bank(bank_pk)?;
         match try_build_oracle_wrapper(self, bank_pk) {
             Ok(oracle) => Ok(BankWrapperT::new(*bank_pk, bank, oracle)),
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to build oracle wrapper for bank {}: {}",
-                    bank_pk,
-                    e
-                ));
-            }
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to build oracle wrapper for bank {}: {}",
+                bank_pk,
+                e
+            )),
         }
     }
 

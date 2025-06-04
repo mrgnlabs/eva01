@@ -141,7 +141,7 @@ impl MarginfiAccountWrapper {
         // Add bank oracles
         let observation_accounts = bank_pks.iter().flat_map(|bank_pk| {
             let bank = cache.banks.try_get_bank(bank_pk)?;
-            let bank_oracle_wrapper = try_build_oracle_wrapper::<OracleWrapper>(&cache, &bank_pk)?;
+            let bank_oracle_wrapper = try_build_oracle_wrapper::<OracleWrapper>(&cache, bank_pk)?;
             debug!(
                 "Observation account Bank: {:?}, asset tag type: {:?}.",
                 bank_pk, bank.config.asset_tag
