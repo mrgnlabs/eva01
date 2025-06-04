@@ -1,7 +1,6 @@
-use crate::{config::GeneralConfig, metrics::ERROR_COUNT, thread_debug};
+use crate::{config::GeneralConfig, metrics::ERROR_COUNT, thread_debug, thread_error, thread_info};
 use crossbeam::channel::{Receiver, Sender};
 use jito_sdk_rust::JitoJsonRpcSDK;
-use log::{debug, error, info};
 use serde_json::json;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -67,14 +66,15 @@ impl TransactionManager {
     pub fn new(config: GeneralConfig) -> anyhow::Result<Self> {
         let keypair = read_keypair_file(&config.keypair_path)
             .map_err(|e| {
-                error!(
+                thread_error!(
                     "Failed to read keypair file ({:?}): {:?}",
-                    &config.keypair_path, e
+                    &config.keypair_path,
+                    e
                 );
             })
             .unwrap();
 
-        debug!("Initializing RPC client with URL: {}", config.rpc_url);
+        thread_debug!("Initializing RPC client with URL: {}", config.rpc_url);
         let rpc_client =
             RpcClient::new_with_commitment(config.rpc_url, CommitmentConfig::confirmed());
 
@@ -99,7 +99,7 @@ impl TransactionManager {
         // Get JITO tip account
         let jito_block_engine_url = config.block_engine_url;
         let jito_block_engine_uuid = config.block_engine_uuid;
-        debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
+        thread_debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
         let jito_sdk: JitoJsonRpcSDK =
             JitoJsonRpcSDK::new(&jito_block_engine_url, Some(jito_block_engine_uuid.clone()));
         let random_tip_account = tokio_rt.block_on(jito_sdk.get_random_tip_account())?;
@@ -122,7 +122,7 @@ impl TransactionManager {
         jito_tx: Sender<(Pubkey, String)>,
         txn_rx: Receiver<TransactionData>,
     ) -> anyhow::Result<()> {
-        info!("Starting the Transaction manager loop.");
+        thread_info!("Starting the Transaction manager loop.");
         while let Ok(TransactionData {
             transactions,
             bundle_id,
@@ -137,7 +137,7 @@ impl TransactionManager {
                 Ok(txs) => txs,
                 Err(e) => {
                     ERROR_COUNT.inc();
-                    error!("Failed to configure instructions: {:?}", e);
+                    thread_error!("Failed to configure instructions: {:?}", e);
                     continue;
                 }
             };
@@ -150,7 +150,7 @@ impl TransactionManager {
                 Ok(response) => response,
                 Err(e) => {
                     ERROR_COUNT.inc();
-                    error!("Failed to send JITO bundle: {:?}! {:?}", serialized_txs, e);
+                    thread_error!("Failed to send JITO bundle: {:?}! {:?}", serialized_txs, e);
                     continue;
                 }
             };
@@ -160,7 +160,7 @@ impl TransactionManager {
                 Some(uuid) => uuid,
                 None => {
                     ERROR_COUNT.inc();
-                    error!(
+                    thread_error!(
                         "Failed to obtain bundle UUID from JITO response: {:?}",
                         response
                     );
@@ -170,15 +170,16 @@ impl TransactionManager {
 
             if let Err(error) = jito_tx.send((bundle_id, bundle_uuid.to_string())) {
                 ERROR_COUNT.inc();
-                error!(
+                thread_error!(
                     "Failed to submit UUID JITO bundle id {:?} to JITO channel! {:?}",
-                    bundle_id, error
+                    bundle_id,
+                    error
                 );
                 break;
             }
         }
 
-        info!("The Transaction manager loop is stopped.");
+        thread_info!("The Transaction manager loop is stopped.");
         Ok(())
     }
 
