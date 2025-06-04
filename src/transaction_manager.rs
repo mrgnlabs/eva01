@@ -1,6 +1,7 @@
 use crate::{
     config::GeneralConfig, metrics::FAILED_LIQUIDATIONS, thread_debug, thread_error, thread_info,
 };
+use base64::{engine::general_purpose, Engine as _};
 use crossbeam::channel::{Receiver, Sender};
 use jito_sdk_rust::JitoJsonRpcSDK;
 use serde_json::json;
@@ -8,7 +9,6 @@ use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     address_lookup_table::state::AddressLookupTable,
     address_lookup_table::AddressLookupTableAccount,
-    bs58,
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
@@ -144,7 +144,13 @@ impl TransactionManager {
                 }
             };
 
-            let bundle = json!(serialized_txs);
+            let bundle = json!([
+                serialized_txs,
+                {
+                    "encoding": "base64"
+                }
+            ]);
+
             let response = match self.tokio_rt.block_on(
                 self.jito_sdk
                     .send_bundle(Some(bundle), Some(&self.jito_block_engine_uuid)),
@@ -225,7 +231,7 @@ impl TransactionManager {
                 )?),
                 &[&self.keypair],
             )?;
-            let transaction = bs58::encode(bincode::serialize(&transaction)?).into_string();
+            let transaction = general_purpose::STANDARD.encode(bincode::serialize(&transaction)?);
             txs.push(transaction);
         }
         Ok(txs)
