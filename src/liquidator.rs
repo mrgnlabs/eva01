@@ -94,7 +94,6 @@ impl Liquidator {
                     accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                     accounts.reverse();
                     for account in accounts {
-                        LIQUIDATION_ATTEMPTS.inc();
                         let start = Instant::now();
                         if let Err(e) = self.liquidator_account.liquidate(
                             &account.liquidatee_account,

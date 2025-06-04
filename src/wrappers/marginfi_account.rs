@@ -1,12 +1,12 @@
 use crate::{
     cache::Cache,
+    thread_debug,
     wrappers::oracle::{try_build_oracle_wrapper, OracleWrapper},
 };
 
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use anyhow::{Error, Result};
 use fixed::types::I80F48;
-use log::debug;
 use marginfi::state::{
     marginfi_account::{BalanceSide, LendingAccount},
     price::OracleSetup,
@@ -142,9 +142,10 @@ impl MarginfiAccountWrapper {
         let observation_accounts = bank_pks.iter().flat_map(|bank_pk| {
             let bank = cache.banks.try_get_bank(bank_pk)?;
             let bank_oracle_wrapper = try_build_oracle_wrapper::<OracleWrapper>(&cache, bank_pk)?;
-            debug!(
+            thread_debug!(
                 "Observation account Bank: {:?}, asset tag type: {:?}.",
-                bank_pk, bank.config.asset_tag
+                bank_pk,
+                bank.config.asset_tag
             );
             if matches!(bank.config.oracle_setup, OracleSetup::SwitchboardPull) {
                 swb_oracles.push(bank_oracle_wrapper.get_address());
@@ -153,7 +154,7 @@ impl MarginfiAccountWrapper {
             if bank.config.oracle_keys[1] != Pubkey::default()
                 && bank.config.oracle_keys[2] != Pubkey::default()
             {
-                debug!(
+                thread_debug!(
                     "Observation accounts for the bank {:?} will contain Oracle keys!",
                     bank_pk
                 );
