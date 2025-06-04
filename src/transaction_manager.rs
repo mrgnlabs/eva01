@@ -182,6 +182,12 @@ impl TransactionManager {
                 }
             };
 
+            thread_debug!(
+                "Received the JITO bundle UUID {} for the submitted Account {} bundle.",
+                bundle_uuid,
+                account
+            );
+
             // Send the bundle UUID to the JITO channel for status checking
             if let Err(error) = jito_tx.send((account, bundle_uuid.to_string())) {
                 FAILED_LIQUIDATIONS.inc();
