@@ -1,4 +1,6 @@
-use crate::{config::GeneralConfig, metrics::ERROR_COUNT, thread_debug, thread_error, thread_info};
+use crate::{
+    config::GeneralConfig, metrics::FAILED_LIQUIDATIONS, thread_debug, thread_error, thread_info,
+};
 use crossbeam::channel::{Receiver, Sender};
 use jito_sdk_rust::JitoJsonRpcSDK;
 use serde_json::json;
@@ -136,7 +138,7 @@ impl TransactionManager {
             let serialized_txs = match self.configure_instructions(transactions) {
                 Ok(txs) => txs,
                 Err(e) => {
-                    ERROR_COUNT.inc();
+                    FAILED_LIQUIDATIONS.inc();
                     thread_error!("Failed to configure instructions: {:?}", e);
                     continue;
                 }
@@ -149,7 +151,7 @@ impl TransactionManager {
             ) {
                 Ok(response) => response,
                 Err(e) => {
-                    ERROR_COUNT.inc();
+                    FAILED_LIQUIDATIONS.inc();
                     thread_error!(
                         "Failed to send JITO bundle {:?} for account {} : {:?}",
                         serialized_txs,
@@ -164,7 +166,7 @@ impl TransactionManager {
             let bundle_uuid = match response["result"].as_str() {
                 Some(uuid) => uuid,
                 None => {
-                    ERROR_COUNT.inc();
+                    FAILED_LIQUIDATIONS.inc();
                     thread_error!(
                         "Failed to obtain bundle UUID for Account {} from JITO response: {:?}",
                         account,
@@ -176,7 +178,7 @@ impl TransactionManager {
 
             // Send the bundle UUID to the JITO channel for status checking
             if let Err(error) = jito_tx.send((account, bundle_uuid.to_string())) {
-                ERROR_COUNT.inc();
+                FAILED_LIQUIDATIONS.inc();
                 thread_error!(
                     "Failed to submit msg for Account {} and bundle id {:?} to the JITO channel! {:?}",
                     account,
