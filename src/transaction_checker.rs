@@ -60,10 +60,22 @@ impl TransactionChecker {
                     max_retries
                 );
 
-                let status_response = self.tokio_rt.block_on(
+                let status_response = match self.tokio_rt.block_on(
                     self.jito_sdk
                         .get_bundle_statuses(vec![bundle_id.to_string()]),
-                )?;
+                ) {
+                    Ok(response) => response,
+                    Err(e) => {
+                        thread_error!(
+                            "Failed to get bundle status: bundle_id = {}, account = {}: {:?}",
+                            bundle_id,
+                            account,
+                            e
+                        );
+                        continue;
+                    }
+                };
+
                 let bundle_status = get_bundle_status(&status_response);
                 match bundle_status {
                     Ok(status) => match status.confirmation_status.as_deref() {
@@ -72,14 +84,14 @@ impl TransactionChecker {
                                 "({}) Bundle confirmed on-chain. Waiting for finalization...",
                                 bundle_id
                             );
-                            check_transaction_error(&status)?;
+                            log_transaction_error(&status);
                         }
                         Some("finalized") => {
                             thread_debug!(
                                 "({}) Bundle finalized on-chain successfully!",
                                 bundle_id
                             );
-                            check_transaction_error(&status)?;
+                            log_transaction_error(&status);
                             print_transaction_url(&status);
                             break;
                         }
@@ -171,17 +183,13 @@ fn get_bundle_status(status_response: &serde_json::Value) -> anyhow::Result<Bund
     })
 }
 
-fn check_transaction_error(bundle_status: &BundleStatus) -> anyhow::Result<()> {
+fn log_transaction_error(bundle_status: &BundleStatus) {
     if let Some(err) = &bundle_status.err {
         if err["Ok"].is_null() {
-            println!("Transaction executed without errors.");
-            Ok(())
+            thread_error!("Transaction executed without errors.");
         } else {
-            println!("Transaction encountered an error: {:?}", err);
-            Err(anyhow::anyhow!("Transaction encountered an error"))
+            thread_error!("Transaction encountered an error: {:?}", err);
         }
-    } else {
-        Ok(())
     }
 }
 
