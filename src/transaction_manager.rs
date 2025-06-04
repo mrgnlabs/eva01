@@ -39,7 +39,7 @@ pub type BatchTransactions = Vec<RawTransaction>;
 
 pub struct TransactionData {
     pub transactions: BatchTransactions,
-    pub bundle_id: Pubkey,
+    pub account: Pubkey,
 }
 
 pub struct RawTransaction {
@@ -125,12 +125,12 @@ impl TransactionManager {
         thread_info!("Starting the Transaction manager loop.");
         while let Ok(TransactionData {
             transactions,
-            bundle_id,
+            account,
         }) = txn_rx.recv()
         {
             thread_debug!(
-                "Transaction manager received txn for Bundle ID: {:?}",
-                bundle_id
+                "Received msg for Account {:?} from the Txn channel.",
+                account
             );
 
             let serialized_txs = match self.configure_instructions(transactions) {
@@ -150,7 +150,12 @@ impl TransactionManager {
                 Ok(response) => response,
                 Err(e) => {
                     ERROR_COUNT.inc();
-                    thread_error!("Failed to send JITO bundle: {:?}! {:?}", serialized_txs, e);
+                    thread_error!(
+                        "Failed to send JITO bundle {:?} for account {} : {:?}",
+                        serialized_txs,
+                        account,
+                        e
+                    );
                     continue;
                 }
             };
@@ -161,18 +166,21 @@ impl TransactionManager {
                 None => {
                     ERROR_COUNT.inc();
                     thread_error!(
-                        "Failed to obtain bundle UUID from JITO response: {:?}",
+                        "Failed to obtain bundle UUID for Account {} from JITO response: {:?}",
+                        account,
                         response
                     );
                     continue;
                 }
             };
 
-            if let Err(error) = jito_tx.send((bundle_id, bundle_uuid.to_string())) {
+            // Send the bundle UUID to the JITO channel for status checking
+            if let Err(error) = jito_tx.send((account, bundle_uuid.to_string())) {
                 ERROR_COUNT.inc();
                 thread_error!(
-                    "Failed to submit UUID JITO bundle id {:?} to JITO channel! {:?}",
-                    bundle_id,
+                    "Failed to submit msg for Account {} and bundle id {:?} to the JITO channel! {:?}",
+                    account,
+                    bundle_uuid,
                     error
                 );
                 break;

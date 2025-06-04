@@ -201,7 +201,10 @@ impl LiquidatorAccount {
 
         // TODO: move to utils/swb_cranker.rs
         let crank_data = if !swb_oracles.is_empty() {
-            thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+            thread_debug!(
+                "Obtaining cranking instructions for Swb Oracles {:#?}",
+                swb_oracles
+            );
             match self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
@@ -215,11 +218,14 @@ impl LiquidatorAccount {
                 },
             )) {
                 Ok((ix, luts)) => {
-                    thread_debug!("Cranked Swb Oracles.");
+                    thread_debug!("Successfully obtained cranking instructions for Swb Oracles.");
                     Some((ix, luts))
                 }
                 Err(err) => {
-                    thread_error!("Failed to crank/fetch Swb Oracles: {}", err);
+                    thread_error!(
+                        "Failed obtained cranking instructions for Swb Swb Oracles: {}",
+                        err
+                    );
                     None
                 }
             }
@@ -256,7 +262,7 @@ impl LiquidatorAccount {
                 .insert(liquidatee_account_address);
             Ok(self.transaction_tx.send(TransactionData {
                 transactions,
-                bundle_id: liquidatee_account_address,
+                account: liquidatee_account_address,
             })?)
         } else {
             let tx: solana_sdk::transaction::Transaction =

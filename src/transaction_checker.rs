@@ -8,10 +8,9 @@ use crossbeam::channel::Receiver;
 use jito_sdk_rust::JitoJsonRpcSDK;
 use solana_sdk::pubkey::Pubkey;
 
-use log::{debug, error, info};
 use tokio::runtime::{Builder, Runtime};
 
-use crate::metrics::ERROR_COUNT;
+use crate::{metrics::ERROR_COUNT, thread_debug, thread_error, thread_info};
 
 #[derive(Debug)]
 struct BundleStatus {
@@ -30,7 +29,7 @@ impl TransactionChecker {
         jito_block_engine_url: &str,
         jito_block_engine_uuid: String,
     ) -> anyhow::Result<Self> {
-        debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
+        thread_debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
         let jito_sdk = JitoJsonRpcSDK::new(jito_block_engine_url, Some(jito_block_engine_uuid));
 
         let tokio_rt = Builder::new_multi_thread()
@@ -50,76 +49,88 @@ impl TransactionChecker {
         let max_retries = 20;
         let retry_delay = std::time::Duration::from_secs(2);
 
-        info!("Starting the Transaction checker loop.");
-        while let Ok((bundle_id, uuid)) = jito_rx.recv() {
+        thread_info!("Starting the Transaction checker loop.");
+        while let Ok((account, bundle_id)) = jito_rx.recv() {
             for attempt in 1..=max_retries {
-                debug!(
-                    "({}) Checking bundle status (attempt {}/{})",
-                    uuid, attempt, max_retries
+                thread_debug!(
+                    "({}) Checking bundle status for Account {}: (attempt {}/{})",
+                    bundle_id,
+                    account,
+                    attempt,
+                    max_retries
                 );
 
-                let status_response = self
-                    .tokio_rt
-                    .block_on(self.jito_sdk.get_bundle_statuses(vec![uuid.to_string()]))?;
+                let status_response = self.tokio_rt.block_on(
+                    self.jito_sdk
+                        .get_bundle_statuses(vec![bundle_id.to_string()]),
+                )?;
                 let bundle_status = get_bundle_status(&status_response);
                 match bundle_status {
                     Ok(status) => match status.confirmation_status.as_deref() {
                         Some("confirmed") => {
-                            debug!(
+                            thread_debug!(
                                 "({}) Bundle confirmed on-chain. Waiting for finalization...",
-                                uuid
+                                bundle_id
                             );
                             check_transaction_error(&status)?;
                         }
                         Some("finalized") => {
-                            debug!("({}) Bundle finalized on-chain successfully!", uuid);
+                            thread_debug!(
+                                "({}) Bundle finalized on-chain successfully!",
+                                bundle_id
+                            );
                             check_transaction_error(&status)?;
                             print_transaction_url(&status);
                             break;
                         }
                         Some(status) => {
-                            debug!(
+                            thread_debug!(
                                 "({}) Unexpected final bundle status: {}. Continuing to poll...",
-                                uuid, status
+                                bundle_id,
+                                status
                             );
                         }
                         None => {
-                            debug!(
+                            thread_debug!(
                                 "({}) Unable to parse final bundle status. Continuing to poll...",
-                                uuid
+                                bundle_id
                             );
                         }
                     },
                     Err(e) => {
-                        debug!(
-                            "Failed to get bundle status: uuid = {}, bundle_id = {}: {:?}",
-                            uuid, bundle_id, e
+                        thread_debug!(
+                            "Failed to get bundle status: bundle_id = {}, account = {}: {:?}",
+                            bundle_id,
+                            account,
+                            e
                         );
                     }
                 }
 
                 if attempt <= max_retries {
-                    debug!(
+                    thread_debug!(
                         "Sleeping for {} ms before retrying...",
                         retry_delay.as_millis()
                     );
                     thread::sleep(retry_delay);
                 } else {
                     ERROR_COUNT.inc();
-                    error!(
-                        "Failed to confirm bundle status: uuid = {}, bundle_id = {}",
-                        uuid, bundle_id
+                    thread_error!(
+                        "Failed to confirm bundle status: bundle_id = {}, account = {}",
+                        bundle_id,
+                        account
                     );
                 }
             }
 
-            debug!(
-                "Removing bundle {} (uuid: {}) from pending",
-                bundle_id, uuid
+            thread_debug!(
+                "Removing Account {} (bundle_id: {}) from pending",
+                account,
+                bundle_id
             );
-            pending_bundles.write().unwrap().remove(&bundle_id);
+            pending_bundles.write().unwrap().remove(&account);
         }
-        info!("The Transaction checker loop stopped.");
+        thread_info!("The Transaction checker loop stopped.");
         Ok(())
     }
 }
@@ -177,12 +188,12 @@ fn check_transaction_error(bundle_status: &BundleStatus) -> anyhow::Result<()> {
 fn print_transaction_url(bundle_status: &BundleStatus) {
     if let Some(transactions) = &bundle_status.transactions {
         if let Some(tx_id) = transactions.first() {
-            debug!("Transaction URL: https://solscan.io/tx/{}", tx_id);
+            thread_debug!("Transaction URL: https://solscan.io/tx/{}", tx_id);
         } else {
-            debug!("Unable to extract transaction ID.");
+            thread_debug!("Unable to extract transaction ID.");
         }
     } else {
-        debug!("No transactions found in the bundle status.");
+        thread_debug!("No transactions found in the bundle status.");
     }
 }
 
