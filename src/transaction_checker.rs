@@ -31,7 +31,6 @@ impl TransactionChecker {
         jito_block_engine_uuid: String,
     ) -> anyhow::Result<Self> {
         debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
-        //TODO: parameterize UUID
         let jito_sdk = JitoJsonRpcSDK::new(jito_block_engine_url, Some(jito_block_engine_uuid));
 
         let tokio_rt = Builder::new_multi_thread()

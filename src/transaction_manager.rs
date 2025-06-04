@@ -100,7 +100,6 @@ impl TransactionManager {
         let jito_block_engine_url = config.block_engine_url;
         let jito_block_engine_uuid = config.block_engine_uuid;
         debug!("Initializing JITO SDK with URL: {}", jito_block_engine_url);
-        //TODO: parameterize UUID
         let jito_sdk: JitoJsonRpcSDK =
             JitoJsonRpcSDK::new(&jito_block_engine_url, Some(jito_block_engine_uuid.clone()));
         let random_tip_account = tokio_rt.block_on(jito_sdk.get_random_tip_account())?;
