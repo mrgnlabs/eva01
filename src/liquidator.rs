@@ -81,28 +81,43 @@ impl Liquidator {
                 thread_debug!("Running the Liquidation process...");
                 self.run_liquidation.store(false, Ordering::Relaxed);
 
-                if let Ok(mut accounts) = self.process_all_accounts() {
+                if let Ok(mut accounts) = self.evaluate_all_accounts() {
                     // Accounts are sorted from the highest profit to the lowest
                     accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                     accounts.reverse();
-                    for account in accounts {
-                        let start = Instant::now();
-                        if let Err(e) = self.liquidator_account.liquidate(
-                            &account.liquidatee_account,
-                            &account.asset_bank,
-                            &account.liab_bank,
-                            account.asset_amount,
-                        ) {
-                            thread_error!(
-                                "Failed to liquidate account {:?}, error: {:?}",
-                                account.liquidatee_account.address,
-                                e
-                            );
-                            FAILED_LIQUIDATIONS.inc();
-                            ERROR_COUNT.inc();
+
+                    for candidate in accounts {
+                        match self.process_account(&candidate.liquidatee_account) {
+                            Ok(acc_opt) => {
+                                if let Some(acc) = acc_opt {
+                                    let start = Instant::now();
+                                    if let Err(e) = self.liquidator_account.liquidate(
+                                        &acc.liquidatee_account,
+                                        &acc.asset_bank,
+                                        &acc.liab_bank,
+                                        acc.asset_amount,
+                                    ) {
+                                        thread_error!(
+                                            "Failed to liquidate account {:?}, error: {:?}",
+                                            candidate.liquidatee_account.address,
+                                            e
+                                        );
+                                        FAILED_LIQUIDATIONS.inc();
+                                        ERROR_COUNT.inc();
+                                    }
+                                    let duration = start.elapsed().as_secs_f64();
+                                    LIQUIDATION_LATENCY.observe(duration);
+                                }
+                            }
+                            Err(e) => {
+                                thread_trace!(
+                                    "The account {:?} has failed the liquidation evaluation: {:?}",
+                                    candidate.liquidatee_account.address,
+                                    e
+                                );
+                                ERROR_COUNT.inc();
+                            }
                         }
-                        let duration = start.elapsed().as_secs_f64();
-                        LIQUIDATION_LATENCY.observe(duration);
                     }
                 }
 
@@ -117,7 +132,7 @@ impl Liquidator {
     }
 
     /// Checks if liquidation is needed, for each account one by one
-    fn process_all_accounts(&mut self) -> Result<Vec<PreparedLiquidatableAccount>> {
+    fn evaluate_all_accounts(&mut self) -> Result<Vec<PreparedLiquidatableAccount>> {
         //        self.swb_price_simulator.simulate_swb_prices()?;
 
         let mut index: usize = 0;
@@ -404,7 +419,7 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        thread_debug!("Account {:?}\nTotal weighted Assets {:?}\nTotal weighted Liabilities {:?}\nMaintenance health {:?}\n\
+        thread_debug!("Account {:?} liquidability evaluation:\nTotal weighted Assets {:?}\nTotal weighted Liabilities {:?}\nMaintenance health {:?}\n\
             Asset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
             Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
             Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", 
