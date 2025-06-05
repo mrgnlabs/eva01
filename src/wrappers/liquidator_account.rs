@@ -12,7 +12,9 @@ use crate::{
     utils::{check_asset_tags_matching, swb_cranker::SwbCranker},
 };
 use anyhow::{anyhow, Result};
-use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
+use solana_client::{
+    client_error::ClientErrorKind, rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig,
+};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -211,25 +213,27 @@ impl LiquidatorAccount {
                 Ok(())
             }
             Err(err) => {
-                let mut swb_oracles = liquidator_swb_oracles;
-                for swb_oracle in liquidatee_swb_oracles.into_iter() {
-                    if !swb_oracles.contains(&swb_oracle) {
-                        swb_oracles.push(swb_oracle);
+                if matches!(err.kind(), ClientErrorKind::Custom { .. }) {
+                    let mut swb_oracles = liquidator_swb_oracles;
+                    for swb_oracle in liquidatee_swb_oracles.into_iter() {
+                        if !swb_oracles.contains(&swb_oracle) {
+                            swb_oracles.push(swb_oracle);
+                        }
                     }
+                    if !swb_oracles.is_empty() {
+                        thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+                        if let Err(err) = self.swb_cranker.crank_oracles(swb_oracles) {
+                            thread_error!(
+                                "The Swb Oracles cranking for the Account {} failed: {}",
+                                liquidatee_account_address,
+                                err
+                            )
+                        }
+                    };
                 }
-                if !swb_oracles.is_empty() {
-                    thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
-                    if let Err(err) = self.swb_cranker.crank_oracles(swb_oracles) {
-                        thread_error!(
-                            "The Swb Oracles cranking for the Account {} failed: {}",
-                            liquidatee_account_address,
-                            err
-                        )
-                    }
-                };
 
                 Err(anyhow!(
-                    "The liquidation txn for the Account {} failed {} ",
+                    "The liquidation txn for the Account {} failed: {} ",
                     liquidatee_account_address,
                     err
                 ))
