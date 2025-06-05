@@ -1,7 +1,7 @@
 use crate::{
     cache::Cache,
     config::{GeneralConfig, LiquidatorCfg},
-    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
+    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     thread_debug, thread_error, thread_info, thread_trace,
     transaction_manager::TransactionData,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
@@ -94,7 +94,6 @@ impl Liquidator {
                     accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                     accounts.reverse();
                     for account in accounts {
-                        LIQUIDATION_ATTEMPTS.inc();
                         let start = Instant::now();
                         if let Err(e) = self.liquidator_account.liquidate(
                             &account.liquidatee_account,

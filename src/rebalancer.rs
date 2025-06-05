@@ -189,7 +189,7 @@ impl Rebalancer {
                 .transaction_tx
                 .send(TransactionData {
                     transactions: vec![RawTransaction::new(ix).with_lookup_tables(lut)],
-                    bundle_id: self.liquidator_account.liquidator_address,
+                    account: self.liquidator_account.liquidator_address,
                 })?;
             thread_debug!("SWB prices fetching is completed.");
         }

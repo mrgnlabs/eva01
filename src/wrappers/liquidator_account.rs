@@ -7,6 +7,7 @@ use crate::{
         initialize_marginfi_account, make_deposit_ix, make_liquidate_ix, make_repay_ix,
         make_withdraw_ix,
     },
+    metrics::LIQUIDATION_ATTEMPTS,
     thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
     utils::check_asset_tags_matching,
@@ -154,9 +155,9 @@ impl LiquidatorAccount {
             }
         }
 
+        LIQUIDATION_ATTEMPTS.inc();
+
         let banks_to_exclude: Vec<Pubkey> = vec![];
-        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
-        &self.liquidator_address, &banks_to_include, &banks_to_exclude);
         let (liquidator_observation_accounts, liquidator_swb_oracles) =
             MarginfiAccountWrapper::get_observation_accounts(
                 lending_account,
@@ -165,14 +166,13 @@ impl LiquidatorAccount {
                 self.cache.clone(),
             )?;
         thread_debug!(
-            "Liquidator observation accounts: {:?}",
+            "The Liquidator {} observation accounts: {:?}",
+            &self.liquidator_address,
             liquidator_observation_accounts
         );
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];
-        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
-        &self.liquidator_address, &banks_to_include, &banks_to_exclude);
         let (liquidatee_observation_accounts, liquidatee_swb_oracles) =
             MarginfiAccountWrapper::get_observation_accounts(
                 &liquidatee_account.lending_account,
@@ -181,7 +181,7 @@ impl LiquidatorAccount {
                 self.cache.clone(),
             )?;
         thread_debug!(
-            "Liquidatee {:?} observation accounts: {:?}",
+            "The Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address,
             liquidatee_observation_accounts
         );
@@ -201,7 +201,10 @@ impl LiquidatorAccount {
 
         // TODO: move to utils/swb_cranker.rs
         let crank_data = if !swb_oracles.is_empty() {
-            thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+            thread_debug!(
+                "Obtaining cranking instructions for Swb Oracles {:#?}",
+                swb_oracles
+            );
             match self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
                 SbContext::new(),
                 &self.non_blocking_rpc_client,
@@ -215,11 +218,14 @@ impl LiquidatorAccount {
                 },
             )) {
                 Ok((ix, luts)) => {
-                    thread_debug!("Cranked Swb Oracles.");
+                    thread_debug!("Successfully obtained cranking instructions for Swb Oracles.");
                     Some((ix, luts))
                 }
                 Err(err) => {
-                    thread_error!("Failed to crank/fetch Swb Oracles: {}", err);
+                    thread_error!(
+                        "Failed obtained cranking instructions for Swb Oracles: {}",
+                        err
+                    );
                     None
                 }
             }
@@ -256,7 +262,7 @@ impl LiquidatorAccount {
                 .insert(liquidatee_account_address);
             Ok(self.transaction_tx.send(TransactionData {
                 transactions,
-                bundle_id: liquidatee_account_address,
+                account: liquidatee_account_address,
             })?)
         } else {
             let tx: solana_sdk::transaction::Transaction =
