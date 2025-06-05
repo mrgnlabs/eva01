@@ -166,14 +166,14 @@ impl LiquidatorAccount {
                 swb_oracles.push(swb_oracle);
             }
         }
-
-        if !swb_oracles.is_empty() {
-            thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
-            if let Err(err) = self.swb_cranker.crank_oracles(swb_oracles) {
-                thread_error!("The Swb Oracles cranking failed: {}", err)
-            }
-        }
-
+        /*
+                if !swb_oracles.is_empty() {
+                    thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+                    if let Err(err) = self.swb_cranker.crank_oracles(swb_oracles) {
+                        thread_error!("The Swb Oracles cranking failed: {}", err)
+                    }
+                }
+        */
         let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
 
         let liquidate_ix = make_liquidate_ix(
