@@ -60,7 +60,7 @@ impl LiquidatorAccount {
         marginfi_group_id: Pubkey,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
-        should_fund: &mut bool,
+        newly_created: &mut bool,
     ) -> Result<Self> {
         let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
         let rpc_client = RpcClient::new(config.rpc_url.clone());
@@ -93,11 +93,13 @@ impl LiquidatorAccount {
                 &signer_keypair,
             )?;
 
-            *should_fund = true;
+            *newly_created = true;
 
             liquidator_marginfi_account
         } else {
-            accounts[0]
+            //pubkey!("BTJh4MSjVnY9f9o2NXXKoxVVy7VimAUzKo4V2y6XQKZq")
+            pubkey!("H1swPW9RK34VKPLJjgRCSEorry46u4EQseXZQqFbCSoL")
+            //accounts[0]
         };
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
@@ -122,6 +124,39 @@ impl LiquidatorAccount {
             compute_unit_limit: config.compute_unit_limit,
             tokio_rt,
             cache,
+        })
+    }
+
+    pub fn clone(&self) -> Result<Self> {
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("liquidator-account")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+
+        let rpc_url = self.rpc_client.url();
+        let rpc_client = RpcClient::new(rpc_url.clone());
+        let non_blocking_rpc_client = NonBlockingRpcClient::new(rpc_url);
+        let queue = tokio_rt.block_on(QueueAccountData::load(
+            &non_blocking_rpc_client,
+            &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
+        ))?;
+        let swb_gateway =
+            tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
+
+        Ok(Self {
+            liquidator_address: self.liquidator_address,
+            signer_keypair: Arc::clone(&self.signer_keypair),
+            program_id: self.program_id,
+            group: self.group,
+            transaction_tx: self.transaction_tx.clone(),
+            swb_gateway,
+            rpc_client,
+            non_blocking_rpc_client,
+            pending_liquidations: Arc::clone(&self.pending_liquidations),
+            compute_unit_limit: self.compute_unit_limit,
+            tokio_rt,
+            cache: Arc::clone(&self.cache),
         })
     }
 

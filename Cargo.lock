@@ -1898,6 +1898,7 @@ dependencies = [
  "anchor-spl",
  "anyhow",
  "backoff",
+ "base64 0.21.7",
  "bincode",
  "bytemuck",
  "bytes",

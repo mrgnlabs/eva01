@@ -6,6 +6,7 @@ use crate::{
 use anchor_lang::Discriminator;
 use anyhow::bail;
 use lazy_static::lazy_static;
+use log::debug;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
     rpc_client::RpcClient,
@@ -178,37 +179,42 @@ pub fn marginfi_groups_by_program(
     arena_only: bool,
 ) -> anyhow::Result<Vec<Pubkey>> {
     let discriminator_bytes = marginfi::state::marginfi_group::MarginfiGroup::DISCRIMINATOR;
-
-    let mut filters = vec![RpcFilterType::Memcmp(Memcmp::new(
-        0,
-        MemcmpEncodedBytes::Base58(bs58::encode(discriminator_bytes).into_string()),
-    ))];
-
-    if arena_only {
-        filters.push(RpcFilterType::Memcmp(Memcmp::new(
-            8 + 32,
-            MemcmpEncodedBytes::Base58(bs58::encode(2u64.to_le_bytes()).into_string()), // 2 - is the mask for ARENA_GROUP flag
-        )));
-    }
-
     let accounts = rpc_client.get_program_accounts_with_config(
         &marginfi_program_id,
         RpcProgramAccountsConfig {
             account_config: RpcAccountInfoConfig {
                 encoding: Some(UiAccountEncoding::Base64),
                 data_slice: Some(UiDataSliceConfig {
-                    offset: 0,
-                    length: 0,
+                    offset: 8 + 32,
+                    length: 8,
                 }),
                 ..Default::default()
             },
-            filters: Some(filters),
+            filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new(
+                0,
+                MemcmpEncodedBytes::Base58(bs58::encode(discriminator_bytes).into_string()),
+            ))]),
             with_context: Some(false),
             sort_results: None,
         },
     )?;
 
-    let pubkeys: Vec<Pubkey> = accounts.iter().map(|(pubkey, _)| *pubkey).collect();
+    let pubkeys: Vec<Pubkey> = accounts
+        .into_iter()
+        .filter_map(|(pubkey, account)| {
+            if arena_only {
+                let flags_bytes: [u8; 8] = account.data[..].try_into().unwrap();
+                let group_flags = u64::from_le_bytes(flags_bytes);
+                debug!("Group flags for {}: {}", pubkey, group_flags);
+                let is_arena = (group_flags & (1 << 1)) != 0; // second bit stands for ARENA_GROUP
+                if !is_arena {
+                    return None;
+                }
+            }
+
+            Some(pubkey)
+        })
+        .collect();
 
     Ok(pubkeys)
 }

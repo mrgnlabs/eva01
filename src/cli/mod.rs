@@ -58,8 +58,14 @@ pub fn main_entry() -> anyhow::Result<()> {
                     true,
                 )?;
 
+                info!(
+                    "Found {} MarginFi groups: {:?}",
+                    marginfi_groups.len(),
+                    marginfi_groups
+                );
+
                 for group in marginfi_groups {
-                    if active_groups.contains(&group) || active_groups.len() == 2 {
+                    if active_groups.contains(&group) || active_groups.len() == 5 {
                         continue;
                     }
 

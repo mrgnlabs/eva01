@@ -133,9 +133,6 @@ impl MarginfiAccountWrapper {
         // Sort all bank_pks in descending order
         bank_pks.sort_by(|a, b| b.cmp(a));
 
-        // Sort all bank_pks in descending order
-        bank_pks.sort_by(|a, b| b.cmp(a));
-
         let mut swb_oracles = vec![];
         // Add bank oracles
         let observation_accounts = bank_pks.iter().flat_map(|bank_pk| {

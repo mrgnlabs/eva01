@@ -118,7 +118,7 @@ impl Rebalancer {
             solana_sdk::native_token::sol_to_lamports(sol_amount),
             spl_token::native_mint::ID,
             self.config.swap_mint,
-        )?;
+        )? / 10;
 
         thread_info!(
             "Funding the newly created liquidator account with {} tokens ({} in SOL).",
@@ -296,7 +296,7 @@ impl Rebalancer {
         thread_debug!("Selling non-preferred deposits.");
 
         for bank_pk in non_preferred_deposits {
-            if let Err(error) = self.withdraw_and_sell_deposit(&bank_pk) {
+            if let Err(error) = self.withdraw_and_sell_deposit(&bank_pk, &liquidator_account) {
                 thread_error!(
                     "Failed to withdraw and sell deposit for the Bank ({}): {:?}",
                     bank_pk,
@@ -367,7 +367,7 @@ impl Rebalancer {
         }
 
         let liab_usd_value = self.get_value(
-            liab_to_purchase,
+            liab_balance,
             &bank_pk,
             lq_account,
             RequirementType::Initial,
@@ -433,7 +433,7 @@ impl Rebalancer {
 
         let repay_all = token_balance >= liab_balance;
 
-        let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
+        let bank = self.cache.try_get_bank_wrapper(&bank_pk)?;
 
         self.liquidator_account
             .repay(&bank, token_balance.to_num(), Some(repay_all))?;
@@ -506,17 +506,9 @@ impl Rebalancer {
                     .get_bank(&balance.bank_pk)
                     .is_some_and(|bank| {
                         matches!(balance.get_side(), Some(BalanceSide::Assets))
-                            && !preferred_mints.contains(&bank.mint)
+                            && bank.mint != self.config.swap_mint
                     })
             }))
-    }
-
-    fn has_liabilities(&self) -> Result<bool> {
-        Ok(self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?
-            .has_liabs())
     }
 
     fn drain_tokens_from_token_accounts(
@@ -690,41 +682,6 @@ impl Rebalancer {
             }
         };
         Ok(value)
-    }
-
-    fn get_free_collateral(&self) -> anyhow::Result<I80F48> {
-        let (assets, liabs) = self.calc_health(
-            &self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&self.liquidator_account.liquidator_address)?,
-            RequirementType::Initial,
-        );
-        if assets > liabs {
-            Ok(assets - liabs)
-        } else {
-            Ok(I80F48::ZERO)
-        }
-    }
-
-    /// Calculates the health of a given account
-    fn calc_health(
-        &self,
-        account: &MarginfiAccountWrapper,
-        requirement_type: RequirementType,
-    ) -> (I80F48, I80F48) {
-        let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, self.cache.clone())
-            .unwrap();
-
-        baws.iter().fold(
-            (I80F48::ZERO, I80F48::ZERO),
-            |(total_assets, total_liabs), baw| {
-                let (assets, liabs) = baw
-                    .calc_weighted_assets_and_liabilities_values(requirement_type, true)
-                    .unwrap();
-                (total_assets + assets, total_liabs + liabs)
-            },
-        )
     }
 
     fn get_token_balance_for_mint(&self, mint_address: &Pubkey) -> Option<I80F48> {

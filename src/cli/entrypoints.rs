@@ -106,15 +106,16 @@ pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> any
     let swb_price_simulator = Arc::new(SwbCranker::new(cache.clone())?);
     let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
 
-    let mut should_fund = false;
+    let mut newly_created = false;
     let liquidator_account = LiquidatorAccount::new(
         transaction_tx.clone(),
         &config.general_config,
         marginfi_group_id,
         Arc::clone(&pending_bundles),
         cache.clone(),
-        &mut should_fund,
+        &mut newly_created,
     )?;
+    let liquidator_account_clone = liquidator_account.clone()?;
 
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
@@ -126,27 +127,17 @@ pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> any
         swb_price_simulator.clone(),
     )?;
 
-    // TODO: make it clonable
-    let liquidator_account_copy = LiquidatorAccount::new(
-        transaction_tx.clone(),
-        &config.general_config,
-        marginfi_group_id,
-        Arc::clone(&pending_bundles),
-        cache.clone(),
-        &mut should_fund,
-    )?;
-
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
         config.rebalancer_config.clone(),
-        liquidator_account_copy,
+        liquidator_account_clone,
         run_rebalance.clone(),
         stop_liquidator.clone(),
         cache.clone(),
         swb_price_simulator.clone(),
     )?;
 
-    if should_fund {
+    if newly_created {
         rebalancer.fund_liquidator_account()?;
     }
 
