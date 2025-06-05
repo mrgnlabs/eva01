@@ -208,7 +208,7 @@ impl LiquidatorAccount {
                 &tx,
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
-                    skip_preflight: true,
+                    skip_preflight: false,
                     ..Default::default()
                 },
             )?;
