@@ -3,8 +3,7 @@ use crate::{
     config::{GeneralConfig, LiquidatorCfg},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     thread_debug, thread_error, thread_info, thread_trace,
-    transaction_manager::TransactionData,
-    utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
+    utils::{calc_total_weighted_assets_liabs, get_free_collateral},
     wrappers::{
         bank::BankWrapper,
         liquidator_account::LiquidatorAccount,
@@ -13,7 +12,6 @@ use crate::{
     },
 };
 use anyhow::{anyhow, Result};
-use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use marginfi::{
@@ -40,7 +38,6 @@ pub struct Liquidator {
     run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
-    swb_price_simulator: Arc<SwbCranker>,
 }
 
 pub struct PreparedLiquidatableAccount {
@@ -58,14 +55,11 @@ impl Liquidator {
         marginfi_group_id: Pubkey,
         liquidator_config: LiquidatorCfg,
         run_liquidation: Arc<AtomicBool>,
-        transaction_sender: Sender<TransactionData>,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
-        swb_price_simulator: Arc<SwbCranker>,
     ) -> Result<Self> {
         let liquidator_account = LiquidatorAccount::new(
-            transaction_sender,
             &general_config,
             marginfi_group_id,
             pending_liquidations,
@@ -78,7 +72,6 @@ impl Liquidator {
             liquidator_account,
             stop_liquidator,
             cache,
-            swb_price_simulator,
         })
     }
 

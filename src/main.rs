@@ -33,9 +33,6 @@ mod cli;
 /// Configuration strectures for Eva01
 mod config;
 
-mod transaction_checker;
-mod transaction_manager;
-
 /// Crossbar client
 mod crossbar;
 

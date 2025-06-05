@@ -47,9 +47,6 @@ pub struct GeneralConfig {
     pub rpc_url: String,
     pub yellowstone_endpoint: String,
     pub yellowstone_x_token: Option<String>,
-    #[serde(default = "GeneralConfig::default_block_engine_url")]
-    pub block_engine_url: String,
-    pub block_engine_uuid: String,
     #[serde(
         deserialize_with = "from_pubkey_string",
         serialize_with = "pubkey_to_str"
@@ -180,14 +177,6 @@ impl GeneralConfig {
 
     pub fn default_compute_unit_limit() -> u32 {
         200_000
-    }
-
-    pub fn default_block_engine_url() -> String {
-        String::from("https://ny.mainnet.block-engine.jito.wtf/api/v1")
-    }
-
-    pub fn default_block_engine_uuid() -> String {
-        String::from("00000000-0000-0000-0000-000000000000")
     }
 
     pub fn default_address_lookup_tables() -> Vec<Pubkey> {

@@ -9,16 +9,10 @@ use crate::{
     },
     metrics::LIQUIDATION_ATTEMPTS,
     thread_debug, thread_error, thread_info,
-    transaction_manager::{RawTransaction, TransactionData},
-    utils::check_asset_tags_matching,
+    utils::{check_asset_tags_matching, swb_cranker::SwbCranker},
 };
 use anyhow::Result;
-use crossbeam::channel::Sender;
-use log::{debug, info};
-use solana_client::{
-    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
-    rpc_config::RpcSendTransactionConfig,
-};
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -31,38 +25,29 @@ use solana_sdk::{
 };
 use std::{
     collections::HashSet,
-    str::FromStr,
     sync::{Arc, RwLock},
 };
-use switchboard_on_demand_client::{
-    FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
-};
-use tokio::runtime::{Builder, Runtime};
 
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
-    pub signer_keypair: Arc<Keypair>,
+    pub signer_keypair: Keypair,
     program_id: Pubkey,
     group: Pubkey,
-    pub transaction_tx: Sender<TransactionData>,
-    pub swb_gateway: Gateway,
+    swb_cranker: SwbCranker,
     rpc_client: RpcClient,
-    pub non_blocking_rpc_client: NonBlockingRpcClient,
     pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     compute_unit_limit: u32,
-    tokio_rt: Runtime,
     cache: Arc<Cache>,
 }
 
 impl LiquidatorAccount {
     pub fn new(
-        transaction_tx: Sender<TransactionData>,
         config: &GeneralConfig,
         marginfi_group_id: Pubkey,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
-        let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
+        let signer_keypair = read_keypair_file(&config.keypair_path).unwrap();
         let rpc_client = RpcClient::new(config.rpc_url.clone());
         let accounts = marginfi_account_by_authority(
             signer_keypair.pubkey(),
@@ -71,7 +56,7 @@ impl LiquidatorAccount {
             marginfi_group_id,
         )?;
         let liquidator_address = if accounts.is_empty() {
-            info!("No MarginFi account found for the provided signer. Creating it...");
+            thread_info!("No MarginFi account found for the provided signer. Creating it...");
 
             let liquidator_marginfi_account = initialize_marginfi_account(
                 &rpc_client,
@@ -79,7 +64,7 @@ impl LiquidatorAccount {
                 marginfi_group_id,
                 &signer_keypair,
             )?;
-            info!(
+            thread_info!(
                 "Initialized new MarginFi account for this liquidator {:?}!",
                 liquidator_marginfi_account
             );
@@ -88,34 +73,17 @@ impl LiquidatorAccount {
             accounts[0]
         };
 
-        let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
-
-        let tokio_rt = Builder::new_multi_thread()
-            .thread_name("liquidator-account")
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
-
-        //TODO: parametrize the Swb feed key.
-        let queue = tokio_rt.block_on(QueueAccountData::load(
-            &non_blocking_rpc_client,
-            &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
-        ))?;
-        let swb_gateway =
-            tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
+        let swb_cranker = SwbCranker::new(config)?;
 
         Ok(Self {
             liquidator_address,
             signer_keypair,
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
-            transaction_tx,
-            swb_gateway,
+            swb_cranker,
             rpc_client,
-            non_blocking_rpc_client,
             pending_liquidations,
             compute_unit_limit: config.compute_unit_limit,
-            tokio_rt,
             cache,
         })
     }
@@ -150,7 +118,7 @@ impl LiquidatorAccount {
             if !check_asset_tags_matching(&bank_to_validate_against, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
-                debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
+                thread_debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
                 return Ok(());
             }
         }
@@ -199,39 +167,12 @@ impl LiquidatorAccount {
             }
         }
 
-        // TODO: move to utils/swb_cranker.rs
-        let crank_data = if !swb_oracles.is_empty() {
-            thread_debug!(
-                "Obtaining cranking instructions for Swb Oracles {:#?}",
-                swb_oracles
-            );
-            match self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
-                SbContext::new(),
-                &self.non_blocking_rpc_client,
-                FetchUpdateManyParams {
-                    feeds: swb_oracles,
-                    payer: self.signer_keypair.pubkey(),
-                    gateway: self.swb_gateway.clone(),
-                    num_signatures: Some(1),
-                    //                    debug: Some(true),
-                    ..Default::default()
-                },
-            )) {
-                Ok((ix, luts)) => {
-                    thread_debug!("Successfully obtained cranking instructions for Swb Oracles.");
-                    Some((ix, luts))
-                }
-                Err(err) => {
-                    thread_error!(
-                        "Failed obtained cranking instructions for Swb Oracles: {}",
-                        err
-                    );
-                    None
-                }
+        if !swb_oracles.is_empty() {
+            thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+            if let Err(err) = self.swb_cranker.crank_oracles(swb_oracles) {
+                thread_error!("The Swb Oracles cranking failed: {}", err)
             }
-        } else {
-            None
-        };
+        }
 
         let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
 
@@ -250,40 +191,29 @@ impl LiquidatorAccount {
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
 
-        if let Some((crank_ix, crank_lut)) = crank_data {
-            let mut transactions =
-                vec![RawTransaction::new(crank_ix).with_lookup_tables(crank_lut)];
+        let tx: solana_sdk::transaction::Transaction =
+            solana_sdk::transaction::Transaction::new_signed_with_payer(
+                &[cu_limit_ix.clone(), liquidate_ix.clone()],
+                Some(&signer_pk),
+                &[&self.signer_keypair],
+                recent_blockhash,
+            );
 
-            transactions.push(RawTransaction::new(vec![liquidate_ix]));
+        thread_debug!(
+            "Sending liquidation txn for the Account {} .",
+            liquidatee_account_address
+        );
+        self.rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: true,
+                    ..Default::default()
+                },
+            )?;
 
-            self.pending_liquidations
-                .write()
-                .unwrap()
-                .insert(liquidatee_account_address);
-            Ok(self.transaction_tx.send(TransactionData {
-                transactions,
-                account: liquidatee_account_address,
-            })?)
-        } else {
-            let tx: solana_sdk::transaction::Transaction =
-                solana_sdk::transaction::Transaction::new_signed_with_payer(
-                    &[cu_limit_ix.clone(), liquidate_ix.clone()],
-                    Some(&signer_pk),
-                    &[&self.signer_keypair],
-                    recent_blockhash,
-                );
-
-            self.rpc_client
-                .send_and_confirm_transaction_with_spinner_and_config(
-                    &tx,
-                    CommitmentConfig::confirmed(),
-                    RpcSendTransactionConfig {
-                        skip_preflight: true,
-                        ..Default::default()
-                    },
-                )?;
-            Ok(())
-        }
+        Ok(())
     }
 
     pub fn withdraw(

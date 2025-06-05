@@ -3,7 +3,6 @@ use crate::{
     config::{GeneralConfig, RebalancerCfg},
     sender::{SenderCfg, TransactionSender},
     thread_debug, thread_error, thread_info, thread_trace,
-    transaction_manager::{RawTransaction, TransactionData},
     utils::{
         self, build_emode_config, calc_total_weighted_assets_liabs, calc_weighted_bank_assets,
         calc_weighted_bank_liabs, find_oracle_keys, get_free_collateral, swb_cranker::SwbCranker,
@@ -16,7 +15,6 @@ use crate::{
     },
 };
 use anyhow::{anyhow, Result};
-use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use jupiter_swap_api_client::{
@@ -32,9 +30,7 @@ use marginfi::{
         price::{OracleSetup, PriceBias},
     },
 };
-use solana_client::{
-    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
-};
+use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::ReadableAccount, signature::read_keypair_file, transaction::VersionedTransaction,
@@ -49,7 +45,6 @@ use std::{
     thread,
     time::Duration,
 };
-use switchboard_on_demand_client::{FetchUpdateManyParams, PullFeed, SbContext};
 use tokio::runtime::{Builder, Runtime};
 
 /// The rebalancer is responsible to keep the liquidator account
@@ -59,15 +54,14 @@ pub struct Rebalancer {
     config: RebalancerCfg,
     general_config: GeneralConfig,
     liquidator_account: LiquidatorAccount,
-    non_blocking_rpc_client: NonBlockingRpcClient,
-    txn_client: Arc<RpcClient>,
+    swb_cranker: SwbCranker,
+    rpc_client: RpcClient,
     preferred_mints: HashSet<Pubkey>,
     swap_mint_bank_pk: Pubkey,
     run_rebalance: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
     tokio_rt: Runtime,
     cache: Arc<Cache>,
-    swb_price_simulator: Arc<SwbCranker>,
 }
 
 impl Rebalancer {
@@ -76,18 +70,14 @@ impl Rebalancer {
         general_config: GeneralConfig,
         marginfi_group_id: Pubkey,
         config: RebalancerCfg,
-        transaction_tx: Sender<TransactionData>,
         pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
         run_rebalance: Arc<AtomicBool>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
-        swb_price_simulator: Arc<SwbCranker>,
     ) -> anyhow::Result<Self> {
-        let txn_client = Arc::new(RpcClient::new(general_config.rpc_url.clone()));
-        let non_blocking_rpc_client = NonBlockingRpcClient::new(general_config.rpc_url.clone());
+        let rpc_client = RpcClient::new(general_config.rpc_url.clone());
 
         let liquidator_account = LiquidatorAccount::new(
-            transaction_tx.clone(),
             &general_config,
             marginfi_group_id,
             pending_bundles,
@@ -104,19 +94,20 @@ impl Rebalancer {
             .enable_all()
             .build()?;
 
+        let swb_cranker = SwbCranker::new(&general_config)?;
+
         Ok(Self {
             config,
             general_config,
             liquidator_account,
-            non_blocking_rpc_client,
-            txn_client,
+            swb_cranker,
+            rpc_client,
             preferred_mints,
             swap_mint_bank_pk,
             run_rebalance,
             stop_liquidator,
             tokio_rt,
             cache,
-            swb_price_simulator,
         })
     }
 
@@ -147,8 +138,7 @@ impl Rebalancer {
         Ok(self.has_non_preferred_deposits(&lq_account)? || lq_account.has_liabs())
     }
 
-    // TODO: move to SwbCranker
-    fn fetch_swb_prices(&self) -> anyhow::Result<()> {
+    fn crank_active_swb_oracles(&self) -> anyhow::Result<()> {
         let active_banks = MarginfiAccountWrapper::get_active_banks(
             &self
                 .cache
@@ -171,27 +161,11 @@ impl Rebalancer {
             .flat_map(|swb_bank_config| find_oracle_keys(&swb_bank_config))
             .collect();
 
-        // TODO: move to utils/swb_cranker.rs
         if !active_swb_oracles.is_empty() {
-            thread_debug!("Fetching SWB prices...");
-            let (ix, lut) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
-                SbContext::new(),
-                &self.non_blocking_rpc_client,
-                FetchUpdateManyParams {
-                    feeds: active_swb_oracles,
-                    payer: self.general_config.signer_pubkey,
-                    gateway: self.liquidator_account.swb_gateway.clone(),
-                    num_signatures: Some(1),
-                    ..Default::default()
-                },
-            ))?;
-            self.liquidator_account
-                .transaction_tx
-                .send(TransactionData {
-                    transactions: vec![RawTransaction::new(ix).with_lookup_tables(lut)],
-                    account: self.liquidator_account.liquidator_address,
-                })?;
-            thread_debug!("SWB prices fetching is completed.");
+            thread_debug!("Cranking Swb Oracles {:#?}", active_swb_oracles);
+            if let Err(err) = self.swb_cranker.crank_oracles(active_swb_oracles) {
+                thread_error!("The active Swb Oracles cranking failed: {}", err)
+            }
         }
 
         Ok(())
@@ -204,7 +178,7 @@ impl Rebalancer {
                 }
         */
         //TODO: It is called right after simulation. Confirm that it is really needed.
-        if let Err(error) = self.fetch_swb_prices() {
+        if let Err(error) = self.crank_active_swb_oracles() {
             thread_error!("Failed to fetch Swb prices! {}", error)
         }
 
@@ -640,7 +614,7 @@ impl Rebalancer {
             &[&read_keypair_file(&self.general_config.keypair_path).unwrap()],
         )?;
 
-        TransactionSender::aggressive_send_tx(&self.txn_client, &tx, SenderCfg::DEFAULT)
+        TransactionSender::aggressive_send_tx(&self.rpc_client, &tx, SenderCfg::DEFAULT)
             .map_err(|_| anyhow!("Failed to send swap transaction"))?;
 
         Ok(())
