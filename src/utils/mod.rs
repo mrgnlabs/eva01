@@ -356,7 +356,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
     fn calc_weighted_liabs(&self, requirement_type: RequirementType) -> Result<I80F48> {
         let bank = &self.bank.bank;
         let liability_amount = bank
-            .get_liability_amount(self.balance.asset_shares.into())
+            .get_liability_amount(self.balance.liability_shares.into())
             .map_err(|err| anyhow!("Failed to calculate liability amount: {}", err))?;
         calc_weighted_bank_liabs(&self.bank, liability_amount, requirement_type)
     }
@@ -385,7 +385,7 @@ pub fn calc_total_weighted_assets_liabs(
 pub fn build_emode_config(baws: &Vec<BankAccountWithPriceFeedEva>) -> Result<EmodeConfig> {
     let configs = baws
         .iter()
-        .filter(|baw| baw.balance.is_empty(BalanceSide::Liabilities))
+        .filter(|baw| !baw.balance.is_empty(BalanceSide::Liabilities))
         .map(|baw| baw.bank.bank.emode.emode_config)
         .collect();
     Ok(reconcile_emode_configs(configs))

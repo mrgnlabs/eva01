@@ -1,5 +1,5 @@
 use crate::{
-    cache::CacheT,
+    cache::Cache,
     cache_loader::{get_accounts_to_track, CacheLoader},
     clock_manager::{self, ClockManager},
     config::Eva01Config,
@@ -55,16 +55,16 @@ pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> any
     )?;
 
     info!("Loading Cache...");
-    let mut cache = CacheT::new(
+    let mut cache = Cache::new(
         config.general_config.signer_pubkey,
         config.general_config.marginfi_program_id,
         marginfi_group_id,
+        clock.clone(),
     );
 
     let cache_loader = CacheLoader::new(
         config.general_config.keypair_path.clone(),
         config.general_config.rpc_url.clone(),
-        clock.clone(),
     )?;
     cache_loader.load_cache(&mut cache)?;
 
@@ -100,8 +100,10 @@ pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> any
     let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
 
     let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
-    let transaction_checker =
-        TransactionChecker::new(config.general_config.block_engine_url.as_str())?;
+    let transaction_checker = TransactionChecker::new(
+        config.general_config.block_engine_url.as_str(),
+        config.general_config.block_engine_uuid.clone(),
+    )?;
 
     let swb_price_simulator = Arc::new(SwbCranker::new(cache.clone())?);
     let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
@@ -155,7 +157,6 @@ pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> any
         run_liquidation.clone(),
         run_rebalance.clone(),
         stop_liquidator.clone(),
-        clock.clone(),
         cache.clone(),
     )?;
 

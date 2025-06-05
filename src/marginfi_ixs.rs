@@ -1,7 +1,6 @@
 use anchor_lang::{InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
-use log::{debug, info, trace};
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -11,7 +10,10 @@ use solana_sdk::{
     signer::Signer,
 };
 
-use crate::{utils::find_bank_liquidity_vault_authority, wrappers::bank::BankWrapper};
+use crate::{
+    thread_debug, thread_info, thread_trace, utils::find_bank_liquidity_vault_authority,
+    wrappers::bank::BankWrapper,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub fn make_deposit_ix(
@@ -110,7 +112,7 @@ pub fn make_withdraw_ix(
 
     maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
 
-    trace!(
+    thread_trace!(
         "make_withdraw_ix: observation_accounts: {:?}",
         observation_accounts
     );
@@ -162,8 +164,8 @@ pub fn make_liquidate_ix(
     };
     let mut accounts = accounts_raw.to_account_metas(Some(true));
 
-    info!(
-        "LendingAccountLiquidate {{ group: {:?}, liquidator_marginfi_account: {:?}, signer: {:?}, liquidatee_marginfi_account: {:?}, bank_liquidity_vault_authority: {:?}, bank_liquidity_vault: {:?}, bank_insurance_vault: {:?}, token_program: {:?}, asset_bank: {:?}, liab_bank: {:?} }}",
+    thread_info!(
+        "LendingAccountLiquidate: ( group: {:?}, liquidator_marginfi_account: {:?}, signer: {:?}, liquidatee_marginfi_account: {:?}, bank_liquidity_vault_authority: {:?}, bank_liquidity_vault: {:?}, bank_insurance_vault: {:?}, token_program: {:?}, asset_bank: {:?}, liab_bank: {:?} )",
         accounts_raw.group,
         accounts_raw.liquidator_marginfi_account,
         accounts_raw.authority,
@@ -197,7 +199,7 @@ pub fn make_liquidate_ix(
 
 fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_program: &Pubkey) {
     if token_program == &token_2022::ID {
-        debug!("!!!Adding mint account to accounts!!!");
+        thread_debug!("!!!Adding mint account to accounts!!!");
         accounts.push(AccountMeta::new_readonly(mint, false));
     }
 }
@@ -253,7 +255,7 @@ pub fn initialize_marginfi_account(
             ..Default::default()
         },
     );
-    info!(
+    thread_info!(
         "Initialized new Marginfi account {:?} (without preflight check): {:?} ",
         marginfi_account_key.pubkey(),
         res

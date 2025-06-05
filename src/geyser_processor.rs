@@ -1,48 +1,39 @@
 use crate::{
-    cache::CacheT,
-    clock_manager,
+    cache::Cache,
     geyser::{AccountType, GeyserUpdate},
     thread_debug, thread_error, thread_info,
-    utils::{load_swb_pull_account_from_bytes, log_genuine_error},
-    wrappers::{marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait},
+    utils::log_genuine_error,
+    wrappers::marginfi_account::MarginfiAccountWrapper,
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
-use marginfi::state::{
-    marginfi_account::MarginfiAccount,
-    price::{OraclePriceFeedAdapter, OracleSetup, SwitchboardPullPriceFeed},
-};
-use solana_sdk::{account_info::IntoAccountInfo, clock::Clock};
+use marginfi::state::marginfi_account::MarginfiAccount;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc,
 };
-use switchboard_on_demand_client::PullFeedAccountData;
 
-pub struct GeyserProcessor<T: OracleWrapperTrait + Clone> {
+pub struct GeyserProcessor {
     geyser_rx: Receiver<GeyserUpdate>,
     run_liquidation: Arc<AtomicBool>,
     run_rebalance: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
-    clock: Arc<Mutex<Clock>>,
-    cache: Arc<CacheT<T>>,
+    cache: Arc<Cache>,
 }
 
-impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
+impl GeyserProcessor {
     pub fn new(
         geyser_rx: Receiver<GeyserUpdate>,
         run_liquidation: Arc<AtomicBool>,
         run_rebalance: Arc<AtomicBool>,
         stop: Arc<AtomicBool>,
-        clock: Arc<Mutex<Clock>>,
-        cache: Arc<CacheT<T>>,
+        cache: Arc<Cache>,
     ) -> Result<Self> {
         Ok(Self {
             geyser_rx,
             run_liquidation,
             run_rebalance,
             stop,
-            clock,
             cache,
         })
     }
@@ -66,7 +57,7 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
     }
 
     fn process_update(&self, msg: GeyserUpdate) -> Result<()> {
-        let mut msg_account = msg.account.clone();
+        let msg_account = msg.account.clone();
         thread_debug!(
             "Processing the {:?} {:?} update.",
             msg.account_type,
@@ -75,63 +66,7 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
 
         match msg.account_type {
             AccountType::Oracle => {
-                let bank_addresses = self.cache.oracles.try_get_banks_from_oracle(&msg.address)?;
-                for bank_address in bank_addresses {
-                    let bank = self.cache.banks.try_get_bank(&bank_address)?;
-
-                    let oracle_price_adapter =
-                        match bank.config.oracle_setup {
-                            OracleSetup::SwitchboardPull => {
-                                let mut offsets_data =
-                                    [0u8; std::mem::size_of::<PullFeedAccountData>()];
-                                offsets_data.copy_from_slice(
-                                    &msg.account.data
-                                        [8..std::mem::size_of::<PullFeedAccountData>() + 8],
-                                );
-                                let swb_feed = load_swb_pull_account_from_bytes(&offsets_data)?;
-
-                                OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
-                                    feed: Box::new((&swb_feed).into()),
-                                })
-                            }
-                            OracleSetup::StakedWithPythPush => {
-                                let mut accounts_info =
-                                    vec![(&msg.address, &mut msg_account).into_account_info()];
-
-                                let keys = &bank.config.oracle_keys[1..3];
-                                let mut owned_accounts = self.cache.oracles.get_accounts(keys);
-                                accounts_info.extend(
-                                    keys.iter().zip(owned_accounts.iter_mut()).map(
-                                        |(key, account)| (key, &mut account.1).into_account_info(),
-                                    ),
-                                );
-
-                                let clock = clock_manager::get_clock(&self.clock)?;
-                                OraclePriceFeedAdapter::try_from_bank_config(
-                                    &bank.config,
-                                    &accounts_info,
-                                    &clock,
-                                )?
-                            }
-                            _ => {
-                                let clock = clock_manager::get_clock(&self.clock)?;
-                                let oracle_account_info =
-                                    (&msg.address, &mut msg_account).into_account_info();
-
-                                OraclePriceFeedAdapter::try_from_bank_config(
-                                    &bank.config,
-                                    &[oracle_account_info],
-                                    &clock,
-                                )?
-                            }
-                        };
-
-                    self.cache.oracles.try_update_account_wrapper(
-                        &msg.address,
-                        &bank_address,
-                        oracle_price_adapter,
-                    )?;
-                }
+                self.cache.oracles.try_update(&msg.address, msg_account)?;
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
                 self.run_rebalance.store(true, Ordering::Relaxed);
@@ -139,8 +74,6 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
             AccountType::Marginfi => {
                 let marginfi_account =
                     bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
-
-                thread_debug!("Received Marginfi account {:?} update", msg.address);
                 self.cache.marginfi_accounts.try_insert({
                     MarginfiAccountWrapper::new(msg.address, marginfi_account.lending_account)
                 })?;
@@ -149,7 +82,6 @@ impl<T: OracleWrapperTrait + Clone> GeyserProcessor<T> {
                 self.run_rebalance.store(true, Ordering::Relaxed);
             }
             AccountType::Token => {
-                thread_debug!("Received Token account update for {:?}", &msg.address);
                 self.cache
                     .tokens
                     .try_update_account(msg.address, msg.account)?;
@@ -169,8 +101,8 @@ mod tests {
 
     use super::*;
     use crossbeam::channel::unbounded;
-    use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
-    use std::sync::{atomic::AtomicBool, Arc, Mutex};
+    use solana_sdk::{account::Account, pubkey::Pubkey};
+    use std::sync::{atomic::AtomicBool, Arc};
 
     #[test]
     fn test_geyser_processor_new() {
@@ -178,7 +110,6 @@ mod tests {
         let run_liquidation = Arc::new(AtomicBool::new(false));
         let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let clock = Arc::new(Mutex::new(Clock::default()));
         let cache = Arc::new(create_test_cache(&Vec::new()));
 
         let processor = GeyserProcessor::new(
@@ -186,7 +117,6 @@ mod tests {
             run_liquidation.clone(),
             run_rebalance.clone(),
             stop.clone(),
-            clock.clone(),
             cache.clone(),
         );
 
@@ -199,7 +129,6 @@ mod tests {
         let run_liquidation = Arc::new(AtomicBool::new(false));
         let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let clock = Arc::new(Mutex::new(Clock::default()));
         let cache = Arc::new(create_test_cache(&Vec::new()));
 
         let processor = GeyserProcessor::new(
@@ -207,7 +136,6 @@ mod tests {
             run_liquidation.clone(),
             run_rebalance.clone(),
             stop.clone(),
-            clock.clone(),
             cache.clone(),
         )
         .unwrap();
@@ -224,7 +152,6 @@ mod tests {
         let run_liquidation = Arc::new(AtomicBool::new(false));
         let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let clock = Arc::new(Mutex::new(Clock::default()));
 
         let sol_bank = TestBankWrapper::test_sol();
         let usdc_bank = TestBankWrapper::test_usdc();
@@ -243,7 +170,6 @@ mod tests {
             run_liquidation.clone(),
             run_rebalance.clone(),
             stop.clone(),
-            clock.clone(),
             cache.clone(),
         )
         .unwrap();
