@@ -5,7 +5,6 @@ use crate::{
     thread_debug, thread_error, thread_info, thread_trace,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral},
     wrappers::{
-        bank::BankWrapper,
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
         oracle::{OracleWrapper, OracleWrapperTrait},
@@ -42,8 +41,8 @@ pub struct Liquidator {
 
 pub struct PreparedLiquidatableAccount {
     liquidatee_account: MarginfiAccountWrapper,
-    asset_bank: BankWrapper,
-    liab_bank: BankWrapper,
+    asset_bank: Pubkey,
+    liab_bank: Pubkey,
     asset_amount: u64,
     profit: u64,
 }
@@ -204,12 +203,12 @@ impl Liquidator {
             return Ok(None);
         }
 
-        // Liability
         let max_liab_coverage_value = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
-        let liab_bank_wrapper = self.cache.try_get_bank_wrapper(&liab_bank_pk)?;
 
         // Asset
-        let asset_bank_wrapper = self.cache.try_get_bank_wrapper(&asset_bank_pk)?;
+        let asset_bank_wrapper = self
+            .cache
+            .try_get_bank_wrapper::<OracleWrapper>(&asset_bank_pk)?;
 
         let liquidation_asset_amount_capacity = asset_bank_wrapper.calc_amount(
             max_liab_coverage_value,
@@ -229,8 +228,8 @@ impl Liquidator {
 
         Ok(Some(PreparedLiquidatableAccount {
             liquidatee_account: account.clone(),
-            asset_bank: asset_bank_wrapper,
-            liab_bank: liab_bank_wrapper,
+            asset_bank: asset_bank_pk,
+            liab_bank: liab_bank_pk,
             asset_amount: slippage_adjusted_asset_amount.to_num(),
             profit: profit.to_num(),
         }))
