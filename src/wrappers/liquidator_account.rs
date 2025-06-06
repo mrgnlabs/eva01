@@ -9,7 +9,7 @@ use crate::{
     },
     metrics::LIQUIDATION_ATTEMPTS,
     thread_debug, thread_info,
-    utils::{check_asset_tags_matching, swb_cranker::is_stale_swb_price},
+    utils::{check_asset_tags_matching, swb_cranker::is_stale_swb_price_error},
 };
 use anyhow::{anyhow, Result};
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
@@ -249,7 +249,7 @@ impl LiquidatorAccount {
             }
             Err(err) => {
                 let mut swb_oracles: Vec<Pubkey> = vec![];
-                if is_stale_swb_price(&err) {
+                if is_stale_swb_price_error(&err) {
                     swb_oracles = liquidator_swb_oracles;
                     for swb_oracle in liquidatee_swb_oracles.into_iter() {
                         if !swb_oracles.contains(&swb_oracle) {
@@ -259,7 +259,7 @@ impl LiquidatorAccount {
                 }
                 Err(LiquidationError::with_keys(
                     anyhow!(
-                        "The liquidation txn for the Account {} failed: {} ",
+                        "Liquidation txn for the Account {} failed: {} ",
                         liquidatee_account_address,
                         err
                     ),

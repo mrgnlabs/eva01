@@ -23,14 +23,12 @@ use switchboard_on_demand_client::{
 };
 use tokio::runtime::{Builder, Runtime};
 
-use marginfi::errors::MarginfiError;
 use solana_client::client_error::ClientError;
 use solana_client::client_error::ClientErrorKind;
 
-use solana_client::rpc_request::RpcError;
-
 //TODO: parametrize the Swb Program ID.
 pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
+pub const STALE_SWB_PRICE_ERROR_CODE_HEX: &str = "0x17a1"; //6049
 
 struct ResetFlag {
     flag: Arc<AtomicBool>,
@@ -169,49 +167,38 @@ impl SwbCranker {
     */
 }
 
-pub fn is_stale_swb_price(err: &ClientError) -> bool {
-    if let ClientErrorKind::RpcError(RpcError::RpcResponseError { code, .. }) = err.kind() {
-        if *code == MarginfiError::SwitchboardStalePrice as i64 {
-            return true;
-        }
+pub fn is_stale_swb_price_error(err: &ClientError) -> bool {
+    if let ClientErrorKind::Custom(msg) = err.kind() {
+        msg.contains(STALE_SWB_PRICE_ERROR_CODE_HEX)
+    } else {
+        false
     }
-    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marginfi::errors::MarginfiError;
     use solana_client::client_error::ClientError;
     use solana_client::client_error::ClientErrorKind;
-
-    use solana_client::rpc_request::RpcError;
-    use solana_client::rpc_request::RpcResponseErrorData;
 
     #[test]
     fn test_is_stale_swb_price_true() {
         let err = ClientError {
             request: None,
-            kind: ClientErrorKind::RpcError(RpcError::RpcResponseError {
-                code: MarginfiError::SwitchboardStalePrice as i64,
-                message: "Stale price".to_string(),
-                data: RpcResponseErrorData::Empty,
-            }),
+            kind: ClientErrorKind::Custom(
+                "Error processing Instruction 1: custom program error: 0x17a1".to_string(),
+            ),
         };
-        assert!(is_stale_swb_price(&err));
+        assert!(is_stale_swb_price_error(&err));
     }
 
     #[test]
     fn test_is_stale_swb_price_false_wrong_code() {
         let err = ClientError {
             request: None,
-            kind: ClientErrorKind::RpcError(RpcError::RpcResponseError {
-                code: 12345,
-                message: "Some other error".to_string(),
-                data: RpcResponseErrorData::Empty,
-            }),
+            kind: ClientErrorKind::Custom("Some other error".to_string()),
         };
-        assert!(!is_stale_swb_price(&err));
+        assert!(!is_stale_swb_price_error(&err));
     }
 
     #[test]
@@ -220,6 +207,6 @@ mod tests {
             request: None,
             kind: ClientErrorKind::Io(std::io::Error::new(std::io::ErrorKind::Other, "io error")),
         };
-        assert!(!is_stale_swb_price(&err));
+        assert!(!is_stale_swb_price_error(&err));
     }
 }
