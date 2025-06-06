@@ -81,8 +81,6 @@ pub fn setup() -> anyhow::Result<()> {
         rpc_url,
         yellowstone_endpoint,
         yellowstone_x_token,
-        block_engine_url: GeneralConfig::default_block_engine_url(),
-        block_engine_uuid: GeneralConfig::default_block_engine_uuid(),
         signer_pubkey: signer_keypair.pubkey(),
         keypair_path,
         compute_unit_price_micro_lamports: GeneralConfig::default_compute_unit_price_micro_lamports(

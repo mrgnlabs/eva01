@@ -9,9 +9,6 @@ use crate::{
     metrics::{FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS},
     rebalancer::Rebalancer,
     thread_error, thread_info,
-    transaction_checker::TransactionChecker,
-    transaction_manager::{TransactionData, TransactionManager},
-    utils::swb_cranker::SwbCranker,
 };
 use log::info;
 use solana_client::rpc_client::RpcClient;
@@ -24,6 +21,7 @@ use std::{
 
 pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow::Result<()> {
     info!("Starting liquidator for group: {:?}", marginfi_group_id);
+    // TODO: re-enable. https://linear.app/marginfi/issue/LIQ-13/reenable-grafana-metrics-reporting
     // register_metrics();
 
     // let metrics_route = warp::path("metrics").map(move || {
@@ -79,16 +77,6 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
     let (geyser_tx, geyser_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let run_liquidation = Arc::new(AtomicBool::new(false));
     let run_rebalance = Arc::new(AtomicBool::new(false));
-    let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
-    let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
-
-    let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
-    let transaction_checker = TransactionChecker::new(
-        config.general_config.block_engine_url.as_str(),
-        config.general_config.block_engine_uuid.clone(),
-    )?;
-
-    let swb_price_simulator = Arc::new(SwbCranker::new(cache.clone())?);
 
     let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
     let mut liquidator = Liquidator::new(
@@ -96,23 +84,19 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
         marginfi_group_id,
         config.liquidator_config.clone(),
         run_liquidation.clone(),
-        transaction_tx.clone(),
         Arc::clone(&pending_bundles),
         stop_liquidator.clone(),
         cache.clone(),
-        swb_price_simulator.clone(),
     )?;
 
     let mut rebalancer = Rebalancer::new(
         config.general_config.clone(),
         marginfi_group_id,
         config.rebalancer_config.clone(),
-        transaction_tx,
         Arc::clone(&pending_bundles),
         run_rebalance.clone(),
         stop_liquidator.clone(),
         cache.clone(),
-        swb_price_simulator.clone(),
     )?;
 
     let geyser_service = GeyserService::new(
@@ -135,21 +119,6 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
     info!("Starting services...");
 
     thread::spawn(move || clock_manager.start());
-
-    let tm_txn_rx = transaction_rx.clone();
-    thread::spawn(move || {
-        if let Err(e) = transaction_manager.start(jito_tx, tm_txn_rx) {
-            thread_error!("TransactionManager failed! {:?}", e);
-            panic!("Fatal error in TransactionManager!");
-        }
-    });
-    let tc_jito_rx = jito_rx.clone();
-    thread::spawn(move || {
-        if let Err(e) = transaction_checker.start(tc_jito_rx, pending_bundles) {
-            thread_error!("TransactionChecker failed! {:?}", e);
-            panic!("Fatal error in TransactionChecker!");
-        }
-    });
 
     thread::spawn(move || {
         if let Err(e) = rebalancer.start() {
@@ -180,15 +149,8 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
 
     thread_info!("Entering the Main loop.");
     let monitor_geyser_rx = geyser_rx.clone();
-    let monitor_jito_rx = jito_rx.clone();
-    let monitor_transaction_rx = transaction_rx.clone();
     while !stop_liquidator.load(std::sync::atomic::Ordering::SeqCst) {
-        thread_info!(
-            "Stats: Channel depth [Geyser, Txn, Jito] -> [{}, {}, {}]",
-            monitor_geyser_rx.len(),
-            monitor_transaction_rx.len(),
-            monitor_jito_rx.len()
-        );
+        thread_info!("Stats: Geyser Channel depth [{}]", monitor_geyser_rx.len(),);
         thread_info!(
             "Stats: Liqudations [attempts, failed] -> [{},{}]",
             LIQUIDATION_ATTEMPTS.get(),
