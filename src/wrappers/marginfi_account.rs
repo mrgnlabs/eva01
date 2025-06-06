@@ -168,10 +168,15 @@ impl MarginfiAccountWrapper {
             }
         });
 
-        Ok((
-            observation_accounts.into_iter().flatten().collect(),
+        let res = (
+            observation_accounts
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>(),
             swb_oracles,
-        ))
+        );
+
+        Ok(res)
     }
 }
 
@@ -379,7 +384,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_get_healthy_observation_accounts() {
         let sol_bank = TestBankWrapper::test_sol();
         let sol_oracle_address = sol_bank.oracle_adapter.get_address();
@@ -428,7 +432,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_get_observation_accounts_with_banks_to_include() {
         let sol_bank_wrapper = TestBankWrapper::test_sol();
         let usdc_bank_wrapper = TestBankWrapper::test_usdc();
@@ -445,6 +448,7 @@ mod tests {
 
         let banks_to_include = vec![bonk_bank_wrapper.address, sol_bank_wrapper.address];
         let banks_to_exclude = vec![];
+
         assert_eq!(
             MarginfiAccountWrapper::get_observation_accounts(
                 &healthy_wrapper.lending_account,
@@ -468,7 +472,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_get_observation_accounts_with_banks_to_exclude_and_gaps() {
         let sol_bank_wrapper = TestBankWrapper::test_sol();
         let usdc_bank_wrapper = TestBankWrapper::test_usdc();

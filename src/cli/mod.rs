@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    sync::{Arc, RwLock},
     thread::{self, sleep},
     time::Duration,
 };
@@ -27,15 +28,20 @@ pub fn main_entry() -> anyhow::Result<()> {
     match args.cmd {
         app::Commands::Run { path } => {
             let mut config = Eva01Config::try_load_from_file(path)?;
+            let preferred_mints = Arc::new(RwLock::new(HashSet::new()));
             info!("Starting eva01 liquidator! {:#?}", &config);
 
             if let Some(mut whitelist) = config.general_config.marginfi_groups_whitelist.take() {
                 // The last group will be started in the main thread to decrease total thread count
                 let last_group = whitelist.pop().unwrap();
                 whitelist.into_iter().for_each(|group| {
-                    start_liquidator_in_separate_thread(&config, group);
+                    start_liquidator_in_separate_thread(
+                        &config,
+                        group,
+                        Arc::clone(&preferred_mints),
+                    );
                 });
-                return entrypoints::run_liquidator(config, last_group);
+                return entrypoints::run_liquidator(config, last_group, preferred_mints);
             }
 
             // Now this is a multi-threaded liquidator logic which will monitor new groups creation
@@ -69,7 +75,11 @@ pub fn main_entry() -> anyhow::Result<()> {
                         continue;
                     }
 
-                    start_liquidator_in_separate_thread(&config, group);
+                    start_liquidator_in_separate_thread(
+                        &config,
+                        group,
+                        Arc::clone(&preferred_mints),
+                    );
                     active_groups.insert(group);
                 }
 
@@ -84,10 +94,14 @@ pub fn main_entry() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_liquidator_in_separate_thread(config: &Eva01Config, group: Pubkey) {
+fn start_liquidator_in_separate_thread(
+    config: &Eva01Config,
+    group: Pubkey,
+    preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
+) {
     let config = config.clone();
     thread::spawn(move || {
-        if let Err(e) = entrypoints::run_liquidator(config, group) {
+        if let Err(e) = entrypoints::run_liquidator(config, group, preferred_mints) {
             error!("Liquidator for group {:?} failed: {:?}", group, e);
             panic!("Fatal error in Liquidator!");
         }

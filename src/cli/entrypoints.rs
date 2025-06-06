@@ -23,7 +23,11 @@ use std::{
     thread,
 };
 
-pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow::Result<()> {
+pub fn run_liquidator(
+    mut config: Eva01Config,
+    marginfi_group_id: Pubkey,
+    preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
+) -> anyhow::Result<()> {
     info!("Starting liquidator for group: {:?}", marginfi_group_id);
     // register_metrics();
 
@@ -60,6 +64,7 @@ pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> any
         config.general_config.marginfi_program_id,
         marginfi_group_id,
         clock.clone(),
+        preferred_mints,
     );
 
     let cache_loader = CacheLoader::new(
@@ -70,21 +75,17 @@ pub fn run_liquidator(mut config: Eva01Config, marginfi_group_id: Pubkey) -> any
 
     // Check if the preferred asset is in the cache. If not, make the first one the preferred asset.
     let mints = cache.mints.get_mints();
-    let addresses = cache.mints.get_tokens();
-    info!("Token addresses: {:?}", addresses);
     if !mints
         .iter()
         .any(|&mint| mint == &config.rebalancer_config.swap_mint)
     {
         config.rebalancer_config.swap_mint = *mints[0]; // TODO: come up with a smarter logic for choosing the preferred asset
-        info!("Configured preferred asset not found in cache, using the first one from cache as preferred: {}", *mints[0]);
+        info!("Configured preferred asset not found in cache, using the first one from cache as preferred: {}", config.rebalancer_config.swap_mint);
     }
 
-    cache
-        .mints
-        .insert_preferred(config.rebalancer_config.swap_mint);
+    cache.insert_preferred_mint(config.rebalancer_config.swap_mint);
 
-    let accounts_to_track = get_accounts_to_track(&cache);
+    let accounts_to_track = get_accounts_to_track(&cache)?;
 
     let cache = Arc::new(cache);
 

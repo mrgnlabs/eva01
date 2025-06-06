@@ -16,7 +16,7 @@ use crate::{
         oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use jupiter_swap_api_client::{
@@ -158,7 +158,9 @@ impl Rebalancer {
 
         self.should_stop_liquidator(&lq_account)?;
 
-        Ok(self.has_non_preferred_deposits(&lq_account)? || lq_account.has_liabs())
+        Ok(self.has_tokens_in_token_accounts()?
+            || self.has_non_preferred_deposits(&lq_account)?
+            || lq_account.has_liabs())
     }
 
     // TODO: move to SwbCranker
@@ -280,7 +282,7 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn sell_non_preferred_deposits(&mut self) -> Result<Vec<Pubkey>> {
+    fn sell_non_preferred_deposits(&mut self) -> Result<Vec<(Pubkey, Pubkey)>> {
         let liquidator_account = self
             .cache
             .marginfi_accounts
@@ -296,14 +298,17 @@ impl Rebalancer {
         thread_debug!("Selling non-preferred deposits.");
 
         for bank_pk in non_preferred_deposits {
-            if let Err(error) = self.withdraw_and_sell_deposit(&bank_pk, &liquidator_account) {
-                thread_error!(
-                    "Failed to withdraw and sell deposit for the Bank ({}): {:?}",
-                    bank_pk,
-                    error
-                );
-            } else {
-                sold_deposits.push(bank_pk);
+            match self.withdraw_and_sell_deposit(&bank_pk, &liquidator_account) {
+                Err(error) => {
+                    thread_error!(
+                        "Failed to withdraw and sell deposit for the Bank ({}): {:?}",
+                        bank_pk,
+                        error
+                    );
+                }
+                Ok(mint_pk) => {
+                    sold_deposits.push((mint_pk, bank_pk));
+                }
             }
         }
 
@@ -463,16 +468,16 @@ impl Rebalancer {
         Ok(())
     }
 
-    // FIXME: broken, it supposed to be checking if the liquidator has any tokens in it's token accounts
-    // https://linear.app/marginfi/issue/LIQ-20/the-token-balances-check-is-broken
-    #[allow(dead_code)]
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
-        for token_address in self
+        for (mint_address, token_address) in self
             .cache
             .tokens
-            .get_non_preferred_addresses(self.cache.mints.get_preferred_mints())
+            .get_non_preferred_addresses(self.cache.get_preferred_mints())
         {
-            match self.cache.try_get_token_wrapper(&token_address) {
+            match self
+                .cache
+                .try_get_token_wrapper::<OracleWrapper>(&mint_address, &token_address)
+            {
                 Ok(wrapper) => match wrapper.get_value() {
                     Ok(value) => {
                         if value > self.config.token_account_dust_threshold {
@@ -515,11 +520,11 @@ impl Rebalancer {
 
     fn drain_tokens_from_token_accounts(
         &mut self,
-        token_addresses: Vec<Pubkey>,
+        mint_token_addresses: Vec<(Pubkey, Pubkey)>,
     ) -> anyhow::Result<u64> {
         let mut drained_amount = 0;
-        for token_address in token_addresses {
-            match self.cache.try_get_token_wrapper(&token_address) {
+        for (mint_address, token_address) in mint_token_addresses {
+            match self.cache.try_get_token_wrapper::<OracleWrapper>(&mint_address, &token_address) {
                 Ok(wrapper) => {
                     // Ignore the swap token, usually USDC
                     if wrapper.bank.bank.mint == self.config.swap_mint {
@@ -558,12 +563,12 @@ impl Rebalancer {
         &mut self,
         bank_pk: &Pubkey,
         lq_account: &MarginfiAccountWrapper,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Pubkey> {
         let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
         let balance = lq_account.get_balance_for_bank(&bank);
 
         if !matches!(&balance, Some((_, BalanceSide::Assets))) {
-            return Ok(());
+            return Err(anyhow!("No assets to withdraw from the bank"));
         }
 
         let (withdraw_amount, withdrawl_all) =
@@ -583,7 +588,7 @@ impl Rebalancer {
 
         self.swap(amount, bank.bank.mint, self.config.swap_mint)?;
 
-        Ok(())
+        Ok(bank.bank.mint)
     }
 
     fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {

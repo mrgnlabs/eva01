@@ -1,17 +1,20 @@
 mod accounts;
 mod banks;
-mod mints;
+pub mod mints;
 mod oracles;
 mod tokens;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex, RwLock},
+};
 
 use accounts::MarginfiAccountsCache;
 use anyhow::Result;
 use banks::BanksCache;
 use mints::MintsCache;
 use oracles::OraclesCache;
-use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
+use solana_sdk::{clock::Clock, pubkey::Pubkey};
 use tokens::TokensCache;
 
 use crate::{
@@ -33,6 +36,7 @@ pub struct Cache {
     pub oracles: OraclesCache,
     pub tokens: TokensCache,
     pub clock: Arc<Mutex<Clock>>,
+    preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
 }
 
 impl Cache {
@@ -41,17 +45,19 @@ impl Cache {
         marginfi_program_id: Pubkey,
         marginfi_group_address: Pubkey,
         clock: Arc<Mutex<Clock>>,
+        preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
     ) -> Self {
         Self {
             signer_pk,
             marginfi_program_id,
             marginfi_group_address,
             marginfi_accounts: MarginfiAccountsCache::new(),
-            banks: BanksCache::new(),
-            mints: MintsCache::new(),
-            oracles: OraclesCache::new(),
-            tokens: TokensCache::new(),
+            banks: BanksCache::default(),
+            mints: MintsCache::default(),
+            oracles: OraclesCache::default(),
+            tokens: TokensCache::default(),
             clock,
+            preferred_mints,
         }
     }
 
@@ -70,19 +76,13 @@ impl Cache {
         }
     }
 
-    pub fn get_token_account_for_bank(&self, bank_pk: &Pubkey) -> Option<Account> {
-        let mint = self.banks.get_bank(bank_pk)?.mint;
-        let token = self.tokens.get_token_for_mint(&mint)?;
-        self.tokens.get_account(&token)
-    }
-
     pub fn try_get_token_wrapper<T: OracleWrapperTrait + Clone>(
         &self,
+        mint_address: &Pubkey,
         token_address: &Pubkey,
     ) -> Result<TokenAccountWrapperT<T>> {
         let token_account = self.tokens.try_get_account(token_address)?;
-        let mint_address = self.mints.try_get_mint_for_token(token_address)?;
-        let bank_address = self.banks.try_get_account_for_mint(&mint_address)?;
+        let bank_address = self.banks.try_get_account_for_mint(mint_address)?;
         let bank_wrapper = self.try_get_bank_wrapper(&bank_address)?;
 
         Ok(TokenAccountWrapperT {
@@ -90,11 +90,27 @@ impl Cache {
             bank: bank_wrapper,
         })
     }
+
+    pub fn insert_preferred_mint(&mut self, mint_address: Pubkey) {
+        self.preferred_mints.write().unwrap().insert(mint_address);
+    }
+
+    pub fn get_preferred_mints(&self) -> Vec<Pubkey> {
+        self.preferred_mints
+            .read()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
 pub mod test_utils {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex, RwLock},
+    };
 
     use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
 
@@ -108,6 +124,7 @@ pub mod test_utils {
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Arc::new(Mutex::new(Clock::default())),
+            Arc::new(RwLock::new(HashSet::new())),
         );
 
         for bank_wrapper in bank_wrappers {
@@ -151,6 +168,7 @@ mod tests {
             marginfi_program_id,
             marginfi_group_address,
             Arc::new(Mutex::new(Clock::default())),
+            Arc::new(RwLock::new(HashSet::new())),
         );
         assert_eq!(cache.signer_pk, signer_pk);
         assert_eq!(cache.marginfi_program_id, marginfi_program_id);

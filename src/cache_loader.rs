@@ -23,7 +23,7 @@ use crate::{
     cache::Cache,
     geyser::AccountType,
     sender::{SenderCfg, TransactionSender},
-    thread_debug, thread_info,
+    thread_debug, thread_error, thread_info,
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
@@ -221,6 +221,8 @@ impl CacheLoader {
                     .mints
                     .insert(*mint_address, mint_account.clone(), token_address);
                 thread_debug!("Loaded the Mint {:?}.", mint_address);
+            } else {
+                thread_error!("Mint account {:?} not found.", mint_address);
             }
         }
 
