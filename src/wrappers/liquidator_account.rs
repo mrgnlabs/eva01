@@ -8,13 +8,12 @@ use crate::{
         make_withdraw_ix,
     },
     metrics::LIQUIDATION_ATTEMPTS,
-    thread_debug, thread_error, thread_info,
-    utils::{check_asset_tags_matching, swb_cranker::SwbCranker},
+    thread_debug, thread_info,
+    utils::{check_asset_tags_matching, swb_cranker::is_stale_swb_price},
 };
 use anyhow::{anyhow, Result};
-use solana_client::{
-    client_error::ClientErrorKind, rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig,
-};
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
+
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -30,12 +29,30 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+#[derive(Debug)]
+pub struct LiquidationError {
+    pub error: anyhow::Error,
+    pub keys: Vec<Pubkey>,
+}
+
+impl LiquidationError {
+    pub fn new(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            keys: vec![],
+        }
+    }
+
+    pub fn with_keys(error: anyhow::Error, keys: Vec<Pubkey>) -> Self {
+        Self { error, keys }
+    }
+}
+
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
     pub signer_keypair: Keypair,
     program_id: Pubkey,
     group: Pubkey,
-    swb_cranker: SwbCranker,
     rpc_client: RpcClient,
     pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     compute_unit_limit: u32,
@@ -75,14 +92,11 @@ impl LiquidatorAccount {
             accounts[0]
         };
 
-        let swb_cranker = SwbCranker::new(config)?;
-
         Ok(Self {
             liquidator_address,
             signer_keypair,
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
-            swb_cranker,
             rpc_client,
             pending_liquidations,
             compute_unit_limit: config.compute_unit_limit,
@@ -96,7 +110,7 @@ impl LiquidatorAccount {
         asset_bank: &Pubkey,
         liab_bank: &Pubkey,
         asset_amount: u64,
-    ) -> Result<()> {
+    ) -> Result<(), LiquidationError> {
         let liquidatee_account_address = liquidatee_account.address;
         thread_info!(
             "Liquidating account {:?} with liquidator account {:?}",
@@ -104,8 +118,14 @@ impl LiquidatorAccount {
             self.liquidator_address
         );
 
-        let asset_bank_wrapper = self.cache.try_get_bank_wrapper(asset_bank)?;
-        let liab_bank_wrapper = self.cache.try_get_bank_wrapper(liab_bank)?;
+        let asset_bank_wrapper = self
+            .cache
+            .try_get_bank_wrapper(asset_bank)
+            .map_err(LiquidationError::new)?;
+        let liab_bank_wrapper = self
+            .cache
+            .try_get_bank_wrapper(liab_bank)
+            .map_err(LiquidationError::new)?;
 
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank_wrapper.bank.mint;
@@ -113,13 +133,18 @@ impl LiquidatorAccount {
         let lending_account = &self
             .cache
             .marginfi_accounts
-            .try_get_account(&self.liquidator_address)?
+            .try_get_account(&self.liquidator_address)
+            .map_err(LiquidationError::new)?
             .lending_account;
 
         let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
 
         for bank_pk in banks_to_include.iter() {
-            let bank_to_validate_against = self.cache.banks.try_get_bank(bank_pk)?;
+            let bank_to_validate_against = self
+                .cache
+                .banks
+                .try_get_bank(bank_pk)
+                .map_err(LiquidationError::new)?;
             if !check_asset_tags_matching(&bank_to_validate_against, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
@@ -137,7 +162,8 @@ impl LiquidatorAccount {
                 &banks_to_include,
                 &banks_to_exclude,
                 self.cache.clone(),
-            )?;
+            )
+            .map_err(LiquidationError::new)?;
         thread_debug!(
             "The Liquidator {} observation accounts: {:?}",
             &self.liquidator_address,
@@ -152,7 +178,8 @@ impl LiquidatorAccount {
                 &banks_to_include,
                 &banks_to_exclude,
                 self.cache.clone(),
-            )?;
+            )
+            .map_err(LiquidationError::new)?;
         thread_debug!(
             "The Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address,
@@ -175,12 +202,20 @@ impl LiquidatorAccount {
             &liab_bank_wrapper,
             signer_pk,
             liquidatee_account_address,
-            self.cache.mints.try_get_account(&liab_mint)?.account.owner,
+            self.cache
+                .mints
+                .try_get_account(&liab_mint)
+                .map_err(LiquidationError::new)?
+                .account
+                .owner,
             joined_observation_accounts,
             asset_amount,
         );
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let recent_blockhash = self
+            .rpc_client
+            .get_latest_blockhash()
+            .map_err(|e| LiquidationError::new(anyhow!(e)))?;
 
         let tx: solana_sdk::transaction::Transaction =
             solana_sdk::transaction::Transaction::new_signed_with_payer(
@@ -213,29 +248,22 @@ impl LiquidatorAccount {
                 Ok(())
             }
             Err(err) => {
-                if matches!(err.kind(), ClientErrorKind::Custom { .. }) {
-                    let mut swb_oracles = liquidator_swb_oracles;
+                let mut swb_oracles: Vec<Pubkey> = vec![];
+                if is_stale_swb_price(&err) {
+                    swb_oracles = liquidator_swb_oracles;
                     for swb_oracle in liquidatee_swb_oracles.into_iter() {
                         if !swb_oracles.contains(&swb_oracle) {
                             swb_oracles.push(swb_oracle);
                         }
                     }
-                    if !swb_oracles.is_empty() {
-                        thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
-                        if let Err(err) = self.swb_cranker.crank_oracles(swb_oracles) {
-                            thread_error!(
-                                "The Swb Oracles cranking for the Account {} failed: {}",
-                                liquidatee_account_address,
-                                err
-                            )
-                        }
-                    };
                 }
-
-                Err(anyhow!(
-                    "The liquidation txn for the Account {} failed: {} ",
-                    liquidatee_account_address,
-                    err
+                Err(LiquidationError::with_keys(
+                    anyhow!(
+                        "The liquidation txn for the Account {} failed: {} ",
+                        liquidatee_account_address,
+                        err
+                    ),
+                    swb_oracles,
                 ))
             }
         }

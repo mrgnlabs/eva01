@@ -3,7 +3,7 @@ use crate::{
     config::{GeneralConfig, LiquidatorCfg},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     thread_debug, thread_error, thread_info, thread_trace,
-    utils::{calc_total_weighted_assets_liabs, get_free_collateral},
+    utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
     wrappers::{
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
@@ -37,6 +37,7 @@ pub struct Liquidator {
     run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
+    swb_cranker: SwbCranker,
 }
 
 pub struct PreparedLiquidatableAccount {
@@ -65,12 +66,15 @@ impl Liquidator {
             cache.clone(),
         )?;
 
+        let swb_cranker = SwbCranker::new(&general_config)?;
+
         Ok(Liquidator {
             config: liquidator_config,
             run_liquidation,
             liquidator_account,
             stop_liquidator,
             cache,
+            swb_cranker,
         })
     }
 
@@ -86,6 +90,7 @@ impl Liquidator {
                     accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                     accounts.reverse();
 
+                    let mut swb_oracles: HashSet<Pubkey> = HashSet::new();
                     for candidate in accounts {
                         match self.process_account(&candidate.liquidatee_account) {
                             Ok(acc_opt) => {
@@ -100,10 +105,11 @@ impl Liquidator {
                                         thread_error!(
                                             "Failed to liquidate account {:?}, error: {:?}",
                                             candidate.liquidatee_account.address,
-                                            e
+                                            e.error
                                         );
                                         FAILED_LIQUIDATIONS.inc();
                                         ERROR_COUNT.inc();
+                                        swb_oracles.extend(e.keys);
                                     }
                                     let duration = start.elapsed().as_secs_f64();
                                     LIQUIDATION_LATENCY.observe(duration);
@@ -119,6 +125,15 @@ impl Liquidator {
                             }
                         }
                     }
+                    if !swb_oracles.is_empty() {
+                        thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+                        if let Err(err) = self
+                            .swb_cranker
+                            .crank_oracles(swb_oracles.into_iter().collect())
+                        {
+                            thread_error!("Failed to crank Swb Oracles: {}", err)
+                        }
+                    };
                 }
 
                 thread_debug!("The Liquidation process is complete.");

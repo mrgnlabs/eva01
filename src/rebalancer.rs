@@ -162,10 +162,7 @@ impl Rebalancer {
             .collect();
 
         if !active_swb_oracles.is_empty() {
-            thread_debug!("Cranking Swb Oracles {:#?}", active_swb_oracles);
-            if let Err(err) = self.swb_cranker.crank_oracles(active_swb_oracles) {
-                thread_error!("The active Swb Oracles cranking failed: {}", err)
-            }
+            self.swb_cranker.crank_oracles(active_swb_oracles)?
         }
 
         Ok(())
@@ -179,7 +176,10 @@ impl Rebalancer {
         */
         //TODO: It is called right after simulation. Confirm that it is really needed.
         if let Err(error) = self.crank_active_swb_oracles() {
-            thread_error!("Failed to fetch Swb prices! {}", error)
+            thread_error!(
+                "Failed to crank Swb Oracles for the Liquidator banks: {}",
+                error
+            )
         }
 
         if let Err(error) = self.sell_non_preferred_deposits() {
