@@ -7,6 +7,7 @@ use solana_client::{
     rpc_config::RpcSendTransactionConfig,
 };
 use solana_sdk::{
+    commitment_config::CommitmentConfig,
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair},
@@ -106,13 +107,15 @@ impl SwbCranker {
             &[&self.payer],
         )?;
 
-        self.rpc_client.send_transaction_with_config(
-            &txn,
-            RpcSendTransactionConfig {
-                skip_preflight: true,
-                ..Default::default()
-            },
-        )?;
+        self.rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &txn,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: false,
+                    ..Default::default()
+                },
+            )?;
 
         Ok(())
     }
