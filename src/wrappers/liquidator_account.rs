@@ -11,6 +11,7 @@ use crate::{
     thread_debug, thread_error, thread_info,
     transaction_manager::{RawTransaction, TransactionData},
     utils::check_asset_tags_matching,
+    wrappers::oracle::OracleWrapper,
 };
 use anyhow::Result;
 use crossbeam::channel::Sender;
@@ -200,7 +201,7 @@ impl LiquidatorAccount {
 
         let banks_to_exclude: Vec<Pubkey> = vec![];
         let (liquidator_observation_accounts, liquidator_swb_oracles) =
-            MarginfiAccountWrapper::get_observation_accounts(
+            MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 lending_account,
                 &banks_to_include,
                 &banks_to_exclude,
@@ -215,7 +216,7 @@ impl LiquidatorAccount {
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];
         let (liquidatee_observation_accounts, liquidatee_swb_oracles) =
-            MarginfiAccountWrapper::get_observation_accounts(
+            MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &liquidatee_account.lending_account,
                 &banks_to_include,
                 &banks_to_exclude,
@@ -345,16 +346,17 @@ impl LiquidatorAccount {
         };
         thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let (observation_accounts, _) = MarginfiAccountWrapper::get_observation_accounts(
-            &self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&self.liquidator_address)?
-                .lending_account,
-            &banks_to_include,
-            &banks_to_exclude,
-            self.cache.clone(),
-        )?;
+        let (observation_accounts, _) =
+            MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
+                &self
+                    .cache
+                    .marginfi_accounts
+                    .try_get_account(&self.liquidator_address)?
+                    .lending_account,
+                &banks_to_include,
+                &banks_to_exclude,
+                self.cache.clone(),
+            )?;
 
         let mint = bank.bank.mint;
         let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;

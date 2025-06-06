@@ -114,7 +114,9 @@ pub mod test_utils {
 
     use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
 
-    use crate::wrappers::bank::test_utils::TestBankWrapper;
+    use crate::wrappers::{
+        bank::test_utils::TestBankWrapper, oracle::test_utils::create_empty_oracle_account,
+    };
 
     use super::Cache;
 
@@ -140,7 +142,7 @@ pub mod test_utils {
                 .unwrap();
             cache.banks.insert(bank_wrapper.address, bank_wrapper.bank);
 
-            let oracle_account = Account::new(0, 0, &Pubkey::new_unique());
+            let oracle_account = create_empty_oracle_account();
             cache
                 .oracles
                 .try_insert(bank_wrapper.oracle_adapter.address.clone(), oracle_account)

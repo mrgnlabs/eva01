@@ -148,7 +148,8 @@ pub mod tests {
         cache.insert(bank_address, bank);
         let oracles = cache.get_oracles();
 
-        assert_eq!(oracles.len(), 2);
+        assert_eq!(oracles.len(), 1);
+        assert_eq!(oracles.iter().next().unwrap(), &bank.config.oracle_keys[0]);
     }
 
     #[test]
