@@ -232,6 +232,10 @@ impl LiquidatorAccount {
         // Use LUTs only when your transaction involves a large number of observation accounts.
         let luts: &Vec<AddressLookupTableAccount> = {
             if total_observation_accounts > 22 {
+                thread_debug!(
+                    "Using LUT for liquidating the Account {} .",
+                    liquidatee_account_address
+                );
                 &self.cache.luts
             } else {
                 &vec![]
