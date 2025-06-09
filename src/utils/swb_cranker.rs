@@ -192,7 +192,7 @@ mod tests {
             request: None,
             kind: ClientErrorKind::TransactionError(TransactionError::InstructionError(
                 0,
-                InstructionError::Custom(6049),
+                InstructionError::Custom(6049), // The stale Swb price error code
             )),
         };
         assert!(is_stale_swb_price_error(&err));
