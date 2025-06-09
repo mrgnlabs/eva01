@@ -62,6 +62,7 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
     let cache_loader = CacheLoader::new(
         config.general_config.keypair_path.clone(),
         config.general_config.rpc_url.clone(),
+        config.general_config.clone().address_lookup_tables,
     )?;
     cache_loader.load_cache(&mut cache)?;
 
