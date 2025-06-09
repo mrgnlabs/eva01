@@ -14,8 +14,7 @@ use log::info;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::{
-    collections::HashSet,
-    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    sync::{atomic::AtomicBool, Arc, Mutex},
     thread,
 };
 
@@ -79,13 +78,11 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
     let run_liquidation = Arc::new(AtomicBool::new(false));
     let run_rebalance = Arc::new(AtomicBool::new(false));
 
-    let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         marginfi_group_id,
         config.liquidator_config.clone(),
         run_liquidation.clone(),
-        Arc::clone(&pending_bundles),
         stop_liquidator.clone(),
         cache.clone(),
     )?;
@@ -94,7 +91,6 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
         config.general_config.clone(),
         marginfi_group_id,
         config.rebalancer_config.clone(),
-        Arc::clone(&pending_bundles),
         run_rebalance.clone(),
         stop_liquidator.clone(),
         cache.clone(),

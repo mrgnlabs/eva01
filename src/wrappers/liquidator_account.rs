@@ -16,6 +16,7 @@ use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig}
 
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
+    address_lookup_table::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
@@ -26,10 +27,7 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::{
-    collections::HashSet,
-    sync::{Arc, RwLock},
-};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct LiquidationError {
@@ -69,7 +67,6 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     group: Pubkey,
     rpc_client: RpcClient,
-    pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     compute_unit_limit: u32,
     cache: Arc<Cache>,
 }
@@ -78,7 +75,6 @@ impl LiquidatorAccount {
     pub fn new(
         config: &GeneralConfig,
         marginfi_group_id: Pubkey,
-        pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
         let signer_keypair = read_keypair_file(&config.keypair_path).unwrap();
@@ -113,7 +109,6 @@ impl LiquidatorAccount {
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
             rpc_client,
-            pending_liquidations,
             compute_unit_limit: config.compute_unit_limit,
             cache,
         })
@@ -209,6 +204,8 @@ impl LiquidatorAccount {
 
         let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
 
+        let total_observation_accounts = joined_observation_accounts.len();
+
         let liquidate_ix = make_liquidate_ix(
             self.program_id,
             self.group,
@@ -232,10 +229,19 @@ impl LiquidatorAccount {
             .get_latest_blockhash()
             .map_err(|e| LiquidationError::from_anyhow_error(anyhow!(e)))?;
 
+        // Use LUTs only when your transaction involves a large number of observation accounts.
+        let luts: &Vec<AddressLookupTableAccount> = {
+            if total_observation_accounts > 22 {
+                &self.cache.luts
+            } else {
+                &vec![]
+            }
+        };
+
         let msg = Message::try_compile(
             &signer_pk,
             &[cu_limit_ix.clone(), liquidate_ix.clone()],
-            &self.cache.luts,
+            luts,
             recent_blockhash,
         )
         .map_err(LiquidationError::from_compile_error)?;

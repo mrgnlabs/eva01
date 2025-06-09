@@ -40,7 +40,7 @@ use std::{
     collections::HashSet,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
+        Arc,
     },
     thread,
     time::Duration,
@@ -70,19 +70,14 @@ impl Rebalancer {
         general_config: GeneralConfig,
         marginfi_group_id: Pubkey,
         config: RebalancerCfg,
-        pending_bundles: Arc<RwLock<HashSet<Pubkey>>>,
         run_rebalance: Arc<AtomicBool>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> anyhow::Result<Self> {
         let rpc_client = RpcClient::new(general_config.rpc_url.clone());
 
-        let liquidator_account = LiquidatorAccount::new(
-            &general_config,
-            marginfi_group_id,
-            pending_bundles,
-            cache.clone(),
-        )?;
+        let liquidator_account =
+            LiquidatorAccount::new(&general_config, marginfi_group_id, cache.clone())?;
 
         let preferred_mints = config.preferred_mints.iter().copied().collect();
 
