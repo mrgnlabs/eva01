@@ -3,17 +3,14 @@ use crate::{
     config::{GeneralConfig, LiquidatorCfg},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     thread_debug, thread_error, thread_info, thread_trace,
-    transaction_manager::TransactionData,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
     wrappers::{
-        bank::BankWrapper,
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
         oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
 use anyhow::{anyhow, Result};
-use crossbeam::channel::Sender;
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use marginfi::{
@@ -40,13 +37,13 @@ pub struct Liquidator {
     run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
-    swb_price_simulator: Arc<SwbCranker>,
+    swb_cranker: SwbCranker,
 }
 
 pub struct PreparedLiquidatableAccount {
     liquidatee_account: MarginfiAccountWrapper,
-    asset_bank: BankWrapper,
-    liab_bank: BankWrapper,
+    asset_bank: Pubkey,
+    liab_bank: Pubkey,
     asset_amount: u64,
     profit: u64,
 }
@@ -58,19 +55,18 @@ impl Liquidator {
         marginfi_group_id: Pubkey,
         liquidator_config: LiquidatorCfg,
         run_liquidation: Arc<AtomicBool>,
-        transaction_sender: Sender<TransactionData>,
         pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
-        swb_price_simulator: Arc<SwbCranker>,
     ) -> Result<Self> {
         let liquidator_account = LiquidatorAccount::new(
-            transaction_sender,
             &general_config,
             marginfi_group_id,
             pending_liquidations,
             cache.clone(),
         )?;
+
+        let swb_cranker = SwbCranker::new(&general_config)?;
 
         Ok(Liquidator {
             config: liquidator_config,
@@ -78,7 +74,7 @@ impl Liquidator {
             liquidator_account,
             stop_liquidator,
             cache,
-            swb_price_simulator,
+            swb_cranker,
         })
     }
 
@@ -89,29 +85,55 @@ impl Liquidator {
                 thread_debug!("Running the Liquidation process...");
                 self.run_liquidation.store(false, Ordering::Relaxed);
 
-                if let Ok(mut accounts) = self.process_all_accounts() {
+                if let Ok(mut accounts) = self.evaluate_all_accounts() {
                     // Accounts are sorted from the highest profit to the lowest
                     accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                     accounts.reverse();
-                    for account in accounts {
-                        let start = Instant::now();
-                        if let Err(e) = self.liquidator_account.liquidate(
-                            &account.liquidatee_account,
-                            &account.asset_bank,
-                            &account.liab_bank,
-                            account.asset_amount,
-                        ) {
-                            thread_error!(
-                                "Failed to liquidate account {:?}, error: {:?}",
-                                account.liquidatee_account.address,
-                                e
-                            );
-                            FAILED_LIQUIDATIONS.inc();
-                            ERROR_COUNT.inc();
+
+                    let mut swb_oracles: HashSet<Pubkey> = HashSet::new();
+                    for candidate in accounts {
+                        match self.process_account(&candidate.liquidatee_account) {
+                            Ok(acc_opt) => {
+                                if let Some(acc) = acc_opt {
+                                    let start = Instant::now();
+                                    if let Err(e) = self.liquidator_account.liquidate(
+                                        &acc.liquidatee_account,
+                                        &acc.asset_bank,
+                                        &acc.liab_bank,
+                                        acc.asset_amount,
+                                    ) {
+                                        thread_error!(
+                                            "Failed to liquidate account {:?}, error: {:?}",
+                                            candidate.liquidatee_account.address,
+                                            e.error
+                                        );
+                                        FAILED_LIQUIDATIONS.inc();
+                                        ERROR_COUNT.inc();
+                                        swb_oracles.extend(e.keys);
+                                    }
+                                    let duration = start.elapsed().as_secs_f64();
+                                    LIQUIDATION_LATENCY.observe(duration);
+                                }
+                            }
+                            Err(e) => {
+                                thread_trace!(
+                                    "The account {:?} has failed the liquidation evaluation: {:?}",
+                                    candidate.liquidatee_account.address,
+                                    e
+                                );
+                                ERROR_COUNT.inc();
+                            }
                         }
-                        let duration = start.elapsed().as_secs_f64();
-                        LIQUIDATION_LATENCY.observe(duration);
                     }
+                    if !swb_oracles.is_empty() {
+                        thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+                        if let Err(err) = self
+                            .swb_cranker
+                            .crank_oracles(swb_oracles.into_iter().collect())
+                        {
+                            thread_error!("Failed to crank Swb Oracles: {}", err)
+                        }
+                    };
                 }
 
                 thread_debug!("The Liquidation process is complete.");
@@ -125,7 +147,7 @@ impl Liquidator {
     }
 
     /// Checks if liquidation is needed, for each account one by one
-    fn process_all_accounts(&mut self) -> Result<Vec<PreparedLiquidatableAccount>> {
+    fn evaluate_all_accounts(&mut self) -> Result<Vec<PreparedLiquidatableAccount>> {
         //        self.swb_price_simulator.simulate_swb_prices()?;
 
         let mut index: usize = 0;
@@ -211,12 +233,12 @@ impl Liquidator {
             return Ok(None);
         }
 
-        // Liability
         let max_liab_coverage_value = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
-        let liab_bank_wrapper = self.cache.try_get_bank_wrapper(&liab_bank_pk)?;
 
         // Asset
-        let asset_bank_wrapper = self.cache.try_get_bank_wrapper(&asset_bank_pk)?;
+        let asset_bank_wrapper = self
+            .cache
+            .try_get_bank_wrapper::<OracleWrapper>(&asset_bank_pk)?;
 
         let liquidation_asset_amount_capacity = asset_bank_wrapper.calc_amount(
             max_liab_coverage_value,
@@ -236,8 +258,8 @@ impl Liquidator {
 
         Ok(Some(PreparedLiquidatableAccount {
             liquidatee_account: account.clone(),
-            asset_bank: asset_bank_wrapper,
-            liab_bank: liab_bank_wrapper,
+            asset_bank: asset_bank_pk,
+            liab_bank: liab_bank_pk,
             asset_amount: slippage_adjusted_asset_amount.to_num(),
             profit: profit.to_num(),
         }))
@@ -412,10 +434,12 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        thread_debug!("Account {:?}\nAsset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
+        thread_debug!("Account {:?} liquidability evaluation:\nTotal weighted Assets {:?}\nTotal weighted Liabilities {:?}\nMaintenance health {:?}\n\
+            Asset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
             Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
             Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", 
-            account.address, asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_amount, asset_value,
+            account.address, total_weighted_assets, total_weighted_liabilities, maintenance_health,
+            asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_amount, asset_value,
             liab_bank.address, liab_bank.bank.config.liability_weight_maint, liab_amount, liab_value,
             max_liquidatable_value,max_liquidatable_asset_amount, liquidator_profit);
 
