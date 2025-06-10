@@ -30,6 +30,7 @@ use solana_client::client_error::ClientErrorKind;
 
 //TODO: parametrize the Swb Program ID.
 pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
+pub const SWB_STALE_PRICE_ERROR_CODE: u32 = 6049;
 
 struct ResetFlag {
     flag: Arc<AtomicBool>,
@@ -175,7 +176,7 @@ pub fn is_stale_swb_price_error(err: &ClientError) -> bool {
         err.kind(),
         ClientErrorKind::TransactionError(TransactionError::InstructionError(
             _,
-            InstructionError::Custom(6049)
+            InstructionError::Custom(SWB_STALE_PRICE_ERROR_CODE)
         ))
     )
 }
