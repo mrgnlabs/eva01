@@ -11,7 +11,9 @@ use anyhow::Result;
 use banks::BanksCache;
 use mints::MintsCache;
 use oracles::OraclesCache;
-use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
+use solana_sdk::{
+    account::Account, address_lookup_table::AddressLookupTableAccount, clock::Clock, pubkey::Pubkey,
+};
 use tokens::TokensCache;
 
 use crate::{
@@ -33,6 +35,7 @@ pub struct Cache {
     pub oracles: OraclesCache,
     pub tokens: TokensCache,
     pub clock: Arc<Mutex<Clock>>,
+    pub luts: Vec<AddressLookupTableAccount>,
 }
 
 impl Cache {
@@ -52,7 +55,12 @@ impl Cache {
             oracles: OraclesCache::new(),
             tokens: TokensCache::new(),
             clock,
+            luts: vec![],
         }
+    }
+
+    pub fn add_lut(&mut self, lut: AddressLookupTableAccount) {
+        self.luts.push(lut)
     }
 
     pub fn try_get_bank_wrapper<T: OracleWrapperTrait + Clone>(
@@ -155,5 +163,26 @@ mod tests {
         assert_eq!(cache.signer_pk, signer_pk);
         assert_eq!(cache.marginfi_program_id, marginfi_program_id);
         assert_eq!(cache.marginfi_group_address, marginfi_group_address);
+    }
+
+    #[test]
+    fn test_add_lut() {
+        let signer_pk = Pubkey::new_unique();
+        let marginfi_program_id = Pubkey::new_unique();
+        let marginfi_group_address = Pubkey::new_unique();
+        let mut cache = Cache::new(
+            signer_pk,
+            marginfi_program_id,
+            marginfi_group_address,
+            Arc::new(Mutex::new(Clock::default())),
+        );
+        let lut = AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: vec![Pubkey::new_unique()],
+        };
+        assert_eq!(cache.luts.len(), 0);
+        cache.add_lut(lut.clone());
+        assert_eq!(cache.luts.len(), 1);
+        assert_eq!(cache.luts[0].key, lut.key);
     }
 }

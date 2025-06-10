@@ -25,7 +25,7 @@ use solana_program::pubkey::Pubkey;
 use std::{
     cmp::min,
     collections::HashSet,
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 use std::{sync::atomic::Ordering, thread};
@@ -55,16 +55,11 @@ impl Liquidator {
         marginfi_group_id: Pubkey,
         liquidator_config: LiquidatorCfg,
         run_liquidation: Arc<AtomicBool>,
-        pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
-        let liquidator_account = LiquidatorAccount::new(
-            &general_config,
-            marginfi_group_id,
-            pending_liquidations,
-            cache.clone(),
-        )?;
+        let liquidator_account =
+            LiquidatorAccount::new(&general_config, marginfi_group_id, cache.clone())?;
 
         let swb_cranker = SwbCranker::new(&general_config)?;
 
@@ -184,20 +179,6 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
     ) -> Result<Option<PreparedLiquidatableAccount>> {
-        if self
-            .liquidator_account
-            .pending_liquidations
-            .read()
-            .unwrap()
-            .contains(&account.address)
-        {
-            thread_debug!(
-                "Account {:?} is already in the pending liquidations list.",
-                account.address
-            );
-            return Ok(None);
-        }
-
         let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
         if liabs_shares.is_empty() {
             return Ok(None);
@@ -233,7 +214,7 @@ impl Liquidator {
             return Ok(None);
         }
 
-        let max_liab_coverage_value = self.get_max_borrow_for_bank(&liab_bank_pk).unwrap();
+        let max_liab_coverage_value = self.get_max_borrow_for_bank(&liab_bank_pk)?;
 
         // Asset
         let asset_bank_wrapper = self
@@ -510,16 +491,14 @@ impl Liquidator {
                         .bank
                         .get_liability_amount(shares_amount)
                         .map_err(|e| anyhow!("Couldn't calculate liability amount for: {}", e))?;
-                    bank.calc_value(liabilities, BalanceSide::Liabilities, requirement_type)
-                        .unwrap()
+                    bank.calc_value(liabilities, BalanceSide::Liabilities, requirement_type)?
                 }
                 BalanceSide::Assets => {
                     let assets = bank
                         .bank
                         .get_asset_amount(shares_amount)
                         .map_err(|e| anyhow!("Couldn't calculate asset amount for: {}", e))?;
-                    bank.calc_value(assets, BalanceSide::Assets, requirement_type)
-                        .unwrap()
+                    bank.calc_value(assets, BalanceSide::Assets, requirement_type)?
                 }
             };
 

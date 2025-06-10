@@ -8,11 +8,12 @@ use solana_client::{
 };
 use solana_sdk::{
     commitment_config::CommitmentConfig,
+    instruction::InstructionError,
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair},
     signer::Signer,
-    transaction::VersionedTransaction,
+    transaction::{TransactionError, VersionedTransaction},
 };
 use std::str::FromStr;
 use std::sync::{
@@ -29,7 +30,7 @@ use solana_client::client_error::ClientErrorKind;
 
 //TODO: parametrize the Swb Program ID.
 pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
-pub const STALE_SWB_PRICE_ERROR_CODE_HEX: &str = "0x17a1"; //6049
+pub const SWB_STALE_PRICE_ERROR_CODE: u32 = 6049;
 
 struct ResetFlag {
     flag: Arc<AtomicBool>,
@@ -171,11 +172,13 @@ impl SwbCranker {
 }
 
 pub fn is_stale_swb_price_error(err: &ClientError) -> bool {
-    if let ClientErrorKind::Custom(msg) = err.kind() {
-        msg.contains(STALE_SWB_PRICE_ERROR_CODE_HEX)
-    } else {
-        false
-    }
+    matches!(
+        err.kind(),
+        ClientErrorKind::TransactionError(TransactionError::InstructionError(
+            _,
+            InstructionError::Custom(SWB_STALE_PRICE_ERROR_CODE)
+        ))
+    )
 }
 
 #[cfg(test)]
@@ -185,14 +188,48 @@ mod tests {
     use solana_client::client_error::ClientErrorKind;
 
     #[test]
-    fn test_is_stale_swb_price_true() {
+    fn test_is_stale_swb_price_true_transaction_error() {
         let err = ClientError {
             request: None,
-            kind: ClientErrorKind::Custom(
-                "Error processing Instruction 1: custom program error: 0x17a1".to_string(),
-            ),
+            kind: ClientErrorKind::TransactionError(TransactionError::InstructionError(
+                0,
+                InstructionError::Custom(6049), // The stale Swb price error code
+            )),
         };
         assert!(is_stale_swb_price_error(&err));
+    }
+
+    #[test]
+    fn test_is_stale_swb_price_false_wrong_custom_code() {
+        let err = ClientError {
+            request: None,
+            kind: ClientErrorKind::TransactionError(TransactionError::InstructionError(
+                0,
+                InstructionError::Custom(1234),
+            )),
+        };
+        assert!(!is_stale_swb_price_error(&err));
+    }
+
+    #[test]
+    fn test_is_stale_swb_price_false_other_instruction_error() {
+        let err = ClientError {
+            request: None,
+            kind: ClientErrorKind::TransactionError(TransactionError::InstructionError(
+                0,
+                InstructionError::InvalidArgument,
+            )),
+        };
+        assert!(!is_stale_swb_price_error(&err));
+    }
+
+    #[test]
+    fn test_is_stale_swb_price_false_other_transaction_error() {
+        let err = ClientError {
+            request: None,
+            kind: ClientErrorKind::TransactionError(TransactionError::AccountNotFound),
+        };
+        assert!(!is_stale_swb_price_error(&err));
     }
 
     #[test]

@@ -16,18 +16,18 @@ use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig}
 
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
+    address_lookup_table::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
+    message::{v0::Message, CompileError, VersionedMessage},
     pubkey,
     signature::{read_keypair_file, Keypair},
-    signer::Signer,
+    signer::{Signer, SignerError},
     system_instruction::transfer,
+    transaction::VersionedTransaction,
 };
-use std::{
-    collections::HashSet,
-    sync::{Arc, RwLock},
-};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct LiquidationError {
@@ -36,15 +36,28 @@ pub struct LiquidationError {
 }
 
 impl LiquidationError {
-    pub fn new(error: anyhow::Error) -> Self {
+    pub fn from_anyhow_error(error: anyhow::Error) -> Self {
         Self {
             error,
             keys: vec![],
         }
     }
 
-    pub fn with_keys(error: anyhow::Error, keys: Vec<Pubkey>) -> Self {
+    pub fn from_anyhow_error_with_keys(error: anyhow::Error, keys: Vec<Pubkey>) -> Self {
         Self { error, keys }
+    }
+    pub fn from_compile_error(error: CompileError) -> Self {
+        Self {
+            error: anyhow!("{:?}", error),
+            keys: vec![],
+        }
+    }
+
+    pub fn from_signer_error(error: SignerError) -> Self {
+        Self {
+            error: anyhow!("{:?}", error),
+            keys: vec![],
+        }
     }
 }
 
@@ -54,7 +67,6 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     group: Pubkey,
     rpc_client: RpcClient,
-    pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     compute_unit_limit: u32,
     cache: Arc<Cache>,
 }
@@ -63,7 +75,6 @@ impl LiquidatorAccount {
     pub fn new(
         config: &GeneralConfig,
         marginfi_group_id: Pubkey,
-        pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
         let signer_keypair = read_keypair_file(&config.keypair_path).unwrap();
@@ -98,7 +109,6 @@ impl LiquidatorAccount {
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
             rpc_client,
-            pending_liquidations,
             compute_unit_limit: config.compute_unit_limit,
             cache,
         })
@@ -121,11 +131,11 @@ impl LiquidatorAccount {
         let asset_bank_wrapper = self
             .cache
             .try_get_bank_wrapper(asset_bank)
-            .map_err(LiquidationError::new)?;
+            .map_err(LiquidationError::from_anyhow_error)?;
         let liab_bank_wrapper = self
             .cache
             .try_get_bank_wrapper(liab_bank)
-            .map_err(LiquidationError::new)?;
+            .map_err(LiquidationError::from_anyhow_error)?;
 
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank_wrapper.bank.mint;
@@ -134,7 +144,7 @@ impl LiquidatorAccount {
             .cache
             .marginfi_accounts
             .try_get_account(&self.liquidator_address)
-            .map_err(LiquidationError::new)?
+            .map_err(LiquidationError::from_anyhow_error)?
             .lending_account;
 
         let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
@@ -144,7 +154,7 @@ impl LiquidatorAccount {
                 .cache
                 .banks
                 .try_get_bank(bank_pk)
-                .map_err(LiquidationError::new)?;
+                .map_err(LiquidationError::from_anyhow_error)?;
             if !check_asset_tags_matching(&bank_to_validate_against, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
@@ -163,7 +173,7 @@ impl LiquidatorAccount {
                 &banks_to_exclude,
                 self.cache.clone(),
             )
-            .map_err(LiquidationError::new)?;
+            .map_err(LiquidationError::from_anyhow_error)?;
         thread_debug!(
             "The Liquidator {} observation accounts: {:?}",
             &self.liquidator_address,
@@ -179,7 +189,7 @@ impl LiquidatorAccount {
                 &banks_to_exclude,
                 self.cache.clone(),
             )
-            .map_err(LiquidationError::new)?;
+            .map_err(LiquidationError::from_anyhow_error)?;
         thread_debug!(
             "The Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address,
@@ -194,6 +204,8 @@ impl LiquidatorAccount {
 
         let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
 
+        let total_observation_accounts = joined_observation_accounts.len();
+
         let liquidate_ix = make_liquidate_ix(
             self.program_id,
             self.group,
@@ -205,7 +217,7 @@ impl LiquidatorAccount {
             self.cache
                 .mints
                 .try_get_account(&liab_mint)
-                .map_err(LiquidationError::new)?
+                .map_err(LiquidationError::from_anyhow_error)?
                 .account
                 .owner,
             joined_observation_accounts,
@@ -215,15 +227,31 @@ impl LiquidatorAccount {
         let recent_blockhash = self
             .rpc_client
             .get_latest_blockhash()
-            .map_err(|e| LiquidationError::new(anyhow!(e)))?;
+            .map_err(|e| LiquidationError::from_anyhow_error(anyhow!(e)))?;
 
-        let tx: solana_sdk::transaction::Transaction =
-            solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[cu_limit_ix.clone(), liquidate_ix.clone()],
-                Some(&signer_pk),
-                &[&self.signer_keypair],
-                recent_blockhash,
-            );
+        // Use LUTs only when your transaction involves a large number of observation accounts.
+        let luts: &Vec<AddressLookupTableAccount> = {
+            if total_observation_accounts > 22 {
+                thread_debug!(
+                    "Using LUT for liquidating the Account {} .",
+                    liquidatee_account_address
+                );
+                &self.cache.luts
+            } else {
+                &vec![]
+            }
+        };
+
+        let msg = Message::try_compile(
+            &signer_pk,
+            &[cu_limit_ix.clone(), liquidate_ix.clone()],
+            luts,
+            recent_blockhash,
+        )
+        .map_err(LiquidationError::from_compile_error)?;
+
+        let txn = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer_keypair])
+            .map_err(LiquidationError::from_signer_error)?;
 
         thread_info!(
             "Sending liquidation txn for the Account {} .",
@@ -232,7 +260,7 @@ impl LiquidatorAccount {
         match self
             .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
-                &tx,
+                &txn,
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
@@ -257,7 +285,7 @@ impl LiquidatorAccount {
                         }
                     }
                 }
-                Err(LiquidationError::with_keys(
+                Err(LiquidationError::from_anyhow_error_with_keys(
                     anyhow!(
                         "Liquidation txn for the Account {} failed: {} ",
                         liquidatee_account_address,
