@@ -1,4 +1,3 @@
-use log::{debug, error};
 use serde::Deserialize;
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
 use solana_client::rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig};
@@ -6,6 +5,8 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Signature;
 use std::error::Error;
 use std::time::Duration;
+
+use crate::{thread_debug, thread_error};
 
 #[derive(Debug, Deserialize)]
 pub struct SenderCfg {
@@ -47,7 +48,7 @@ impl TransactionSender {
     ) -> Result<Signature, Box<dyn Error>> {
         let signature = *transaction.get_signature();
 
-        debug!("Sending transaction: {}", signature.to_string());
+        thread_debug!("Sending transaction: {}", signature.to_string());
 
         if !cfg.skip_preflight {
             let res = rpc.simulate_transaction_with_config(
@@ -59,7 +60,7 @@ impl TransactionSender {
             )?;
 
             if res.value.err.is_some() {
-                error!("Failed to simulate transaction: {:#?}", res.value);
+                thread_error!("Failed to simulate transaction: {:#?}", res.value);
                 return Err("Transaction simulation failed".into());
             }
         }
@@ -79,7 +80,7 @@ impl TransactionSender {
 
         rpc.confirm_transaction_with_spinner(&signature, blockhash, CommitmentConfig::confirmed())?;
 
-        debug!("Confirmed transaction: {}", signature.to_string());
+        thread_debug!("Confirmed transaction: {}", signature.to_string());
 
         Ok(signature)
     }

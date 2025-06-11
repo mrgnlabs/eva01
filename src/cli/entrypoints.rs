@@ -9,18 +9,13 @@ use crate::{
     metrics::{FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS},
     rebalancer::Rebalancer,
     thread_error, thread_info,
-    transaction_checker::TransactionChecker,
-    transaction_manager::{TransactionData, TransactionManager},
-    utils::swb_cranker::SwbCranker,
-    wrappers::liquidator_account::LiquidatorAccount,
 };
 use log::info;
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use std::{
-    collections::HashSet,
-    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    sync::{atomic::AtomicBool, Arc, Mutex},
     thread,
 };
 
@@ -30,6 +25,7 @@ pub fn run_liquidator(
     preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
 ) -> anyhow::Result<()> {
     info!("Starting liquidator for group: {:?}", marginfi_group_id);
+    // TODO: re-enable. https://linear.app/marginfi/issue/LIQ-13/reenable-grafana-metrics-reporting
     // register_metrics();
 
     // let metrics_route = warp::path("metrics").map(move || {
@@ -92,6 +88,7 @@ pub fn run_liquidator(
     let cache_loader = CacheLoader::new(
         config.general_config.keypair_path.clone(),
         config.general_config.rpc_url.clone(),
+        config.general_config.clone().address_lookup_tables,
     )?;
     cache_loader.load_cache(
         &mut cache,
@@ -124,17 +121,8 @@ pub fn run_liquidator(
     let (geyser_tx, geyser_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let run_liquidation = Arc::new(AtomicBool::new(false));
     let run_rebalance = Arc::new(AtomicBool::new(false));
-    let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
-
-    let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
-    let transaction_checker = TransactionChecker::new(
-        config.general_config.block_engine_url.as_str(),
-        config.general_config.block_engine_uuid.clone(),
-    )?;
 
     let cache = Arc::new(cache);
-    let swb_price_simulator = Arc::new(SwbCranker::new(Arc::clone(&cache))?);
-
     liquidator_account.cache = Arc::clone(&cache);
     let liquidator_account_clone = liquidator_account.clone()?;
     let mut liquidator = Liquidator::new(
@@ -144,7 +132,6 @@ pub fn run_liquidator(
         run_liquidation.clone(),
         stop_liquidator.clone(),
         Arc::clone(&cache),
-        swb_price_simulator.clone(),
     )?;
 
     let mut rebalancer = Rebalancer::new(
@@ -154,7 +141,6 @@ pub fn run_liquidator(
         run_rebalance.clone(),
         stop_liquidator.clone(),
         Arc::clone(&cache),
-        swb_price_simulator.clone(),
     )?;
 
     if newly_created {
@@ -181,21 +167,6 @@ pub fn run_liquidator(
     info!("Starting services...");
 
     thread::spawn(move || clock_manager.start());
-
-    let tm_txn_rx = transaction_rx.clone();
-    thread::spawn(move || {
-        if let Err(e) = transaction_manager.start(jito_tx, tm_txn_rx) {
-            thread_error!("TransactionManager failed! {:?}", e);
-            panic!("Fatal error in TransactionManager!");
-        }
-    });
-    let tc_jito_rx = jito_rx.clone();
-    thread::spawn(move || {
-        if let Err(e) = transaction_checker.start(tc_jito_rx, pending_bundles) {
-            thread_error!("TransactionChecker failed! {:?}", e);
-            panic!("Fatal error in TransactionChecker!");
-        }
-    });
 
     thread::spawn(move || {
         if let Err(e) = rebalancer.start() {
@@ -226,15 +197,8 @@ pub fn run_liquidator(
 
     thread_info!("Entering the Main loop.");
     let monitor_geyser_rx = geyser_rx.clone();
-    let monitor_jito_rx = jito_rx.clone();
-    let monitor_transaction_rx = transaction_rx.clone();
     while !stop_liquidator.load(std::sync::atomic::Ordering::SeqCst) {
-        thread_info!(
-            "Stats: Channel depth [Geyser, Txn, Jito] -> [{}, {}, {}]",
-            monitor_geyser_rx.len(),
-            monitor_transaction_rx.len(),
-            monitor_jito_rx.len()
-        );
+        thread_info!("Stats: Geyser Channel depth [{}]", monitor_geyser_rx.len(),);
         thread_info!(
             "Stats: Liqudations [attempts, failed] -> [{},{}]",
             LIQUIDATION_ATTEMPTS.get(),

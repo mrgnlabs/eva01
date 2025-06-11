@@ -8,50 +8,65 @@ use crate::{
         make_withdraw_ix,
     },
     metrics::LIQUIDATION_ATTEMPTS,
-    thread_debug, thread_error, thread_info,
-    transaction_manager::{RawTransaction, TransactionData},
-    utils::check_asset_tags_matching,
-    wrappers::oracle::OracleWrapper,
+    thread_debug, thread_info,
+    utils::{check_asset_tags_matching, swb_cranker::is_stale_swb_price_error},
 };
-use anyhow::Result;
-use crossbeam::channel::Sender;
-use log::{debug, info};
-use solana_client::{
-    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
-    rpc_config::RpcSendTransactionConfig,
-};
+use anyhow::{anyhow, Result};
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
+
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
+    address_lookup_table::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
+    message::{v0::Message, CompileError, VersionedMessage},
     pubkey,
     signature::{read_keypair_file, Keypair},
-    signer::Signer,
+    signer::{Signer, SignerError},
     system_instruction::transfer,
+    transaction::VersionedTransaction,
 };
-use std::{
-    collections::HashSet,
-    str::FromStr,
-    sync::{Arc, RwLock},
-    thread,
-    time::Duration,
-};
-use switchboard_on_demand_client::{
-    FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
-};
-use tokio::runtime::{Builder, Runtime};
+use std::sync::Arc;
+
+#[derive(Debug)]
+pub struct LiquidationError {
+    pub error: anyhow::Error,
+    pub keys: Vec<Pubkey>,
+}
+
+impl LiquidationError {
+    pub fn from_anyhow_error(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            keys: vec![],
+        }
+    }
+
+    pub fn from_anyhow_error_with_keys(error: anyhow::Error, keys: Vec<Pubkey>) -> Self {
+        Self { error, keys }
+    }
+    pub fn from_compile_error(error: CompileError) -> Self {
+        Self {
+            error: anyhow!("{:?}", error),
+            keys: vec![],
+        }
+    }
+
+    pub fn from_signer_error(error: SignerError) -> Self {
+        Self {
+            error: anyhow!("{:?}", error),
+            keys: vec![],
+        }
+    }
+}
 
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
-    pub signer_keypair: Arc<Keypair>,
+    pub signer_keypair: Keypair,
     program_id: Pubkey,
     group: Pubkey,
-    pub transaction_tx: Sender<TransactionData>,
-    pub swb_gateway: Gateway,
     rpc_client: RpcClient,
-    pub non_blocking_rpc_client: NonBlockingRpcClient,
-    pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     compute_unit_limit: u32,
     tokio_rt: Runtime,
     pub cache: Arc<Cache>,
@@ -59,14 +74,12 @@ pub struct LiquidatorAccount {
 
 impl LiquidatorAccount {
     pub fn new(
-        transaction_tx: Sender<TransactionData>,
         config: &GeneralConfig,
         marginfi_group_id: Pubkey,
-        pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
         cache: Arc<Cache>,
         newly_created: &mut bool,
     ) -> Result<Self> {
-        let signer_keypair = Arc::new(read_keypair_file(&config.keypair_path).unwrap());
+        let signer_keypair = read_keypair_file(&config.keypair_path).unwrap();
         let rpc_client = RpcClient::new(config.rpc_url.clone());
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("liquidator-account")
@@ -89,7 +102,7 @@ impl LiquidatorAccount {
         }
 
         let liquidator_address = if accounts.is_empty() {
-            info!("No MarginFi account found for the provided signer. Creating it...");
+            thread_info!("No MarginFi account found for the provided signer. Creating it...");
 
             let liquidator_marginfi_account = initialize_marginfi_account(
                 &rpc_client,
@@ -107,27 +120,13 @@ impl LiquidatorAccount {
             accounts[0]
         };
 
-        let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
-
-        let queue = tokio_rt.block_on(QueueAccountData::load(
-            &non_blocking_rpc_client,
-            &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
-        ))?;
-        let swb_gateway =
-            tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
-
         Ok(Self {
             liquidator_address,
             signer_keypair,
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
-            transaction_tx,
-            swb_gateway,
             rpc_client,
-            non_blocking_rpc_client,
-            pending_liquidations,
             compute_unit_limit: config.compute_unit_limit,
-            tokio_rt,
             cache,
         })
     }
@@ -168,10 +167,10 @@ impl LiquidatorAccount {
     pub fn liquidate(
         &mut self,
         liquidatee_account: &MarginfiAccountWrapper,
-        asset_bank: &BankWrapper,
-        liab_bank: &BankWrapper,
+        asset_bank: &Pubkey,
+        liab_bank: &Pubkey,
         asset_amount: u64,
-    ) -> Result<()> {
+    ) -> Result<(), LiquidationError> {
         let liquidatee_account_address = liquidatee_account.address;
         thread_info!(
             "Liquidating account {:?} with liquidator account {:?}. Amount: {}",
@@ -180,23 +179,37 @@ impl LiquidatorAccount {
             asset_amount
         );
 
+        let asset_bank_wrapper = self
+            .cache
+            .try_get_bank_wrapper(asset_bank)
+            .map_err(LiquidationError::from_anyhow_error)?;
+        let liab_bank_wrapper = self
+            .cache
+            .try_get_bank_wrapper(liab_bank)
+            .map_err(LiquidationError::from_anyhow_error)?;
+
         let signer_pk = self.signer_keypair.pubkey();
-        let liab_mint = liab_bank.bank.mint;
+        let liab_mint = liab_bank_wrapper.bank.mint;
 
         let lending_account = &self
             .cache
             .marginfi_accounts
-            .try_get_account(&self.liquidator_address)?
+            .try_get_account(&self.liquidator_address)
+            .map_err(LiquidationError::from_anyhow_error)?
             .lending_account;
 
-        let banks_to_include: Vec<Pubkey> = vec![liab_bank.address, asset_bank.address];
+        let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
 
         for bank_pk in banks_to_include.iter() {
-            let bank_to_validate_against = self.cache.banks.try_get_bank(bank_pk)?;
+            let bank_to_validate_against = self
+                .cache
+                .banks
+                .try_get_bank(bank_pk)
+                .map_err(LiquidationError::from_anyhow_error)?;
             if !check_asset_tags_matching(&bank_to_validate_against, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
-                debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
+                thread_debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
                 return Ok(());
             }
         }
@@ -210,7 +223,8 @@ impl LiquidatorAccount {
                 &banks_to_include,
                 &banks_to_exclude,
                 self.cache.clone(),
-            )?;
+            )
+            .map_err(LiquidationError::from_anyhow_error)?;
         thread_debug!(
             "The Liquidator {} observation accounts: {:?}",
             &self.liquidator_address,
@@ -225,7 +239,8 @@ impl LiquidatorAccount {
                 &banks_to_include,
                 &banks_to_exclude,
                 self.cache.clone(),
-            )?;
+            )
+            .map_err(LiquidationError::from_anyhow_error)?;
         thread_debug!(
             "The Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address,
@@ -238,97 +253,98 @@ impl LiquidatorAccount {
             .copied()
             .collect::<Vec<_>>();
 
-        let mut swb_oracles = liquidator_swb_oracles;
-        for swb_oracle in liquidatee_swb_oracles.into_iter() {
-            if !swb_oracles.contains(&swb_oracle) {
-                swb_oracles.push(swb_oracle);
-            }
-        }
-
-        // TODO: move to utils/swb_cranker.rs
-        let crank_data = if !swb_oracles.is_empty() {
-            thread_debug!(
-                "Obtaining cranking instructions for Swb Oracles {:#?}",
-                swb_oracles
-            );
-            match self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
-                SbContext::new(),
-                &self.non_blocking_rpc_client,
-                FetchUpdateManyParams {
-                    feeds: swb_oracles,
-                    payer: self.signer_keypair.pubkey(),
-                    gateway: self.swb_gateway.clone(),
-                    num_signatures: Some(1),
-                    //                    debug: Some(true),
-                    ..Default::default()
-                },
-            )) {
-                Ok((ix, luts)) => {
-                    thread_debug!("Successfully obtained cranking instructions for Swb Oracles.");
-                    Some((ix, luts))
-                }
-                Err(err) => {
-                    thread_error!(
-                        "Failed obtained cranking instructions for Swb Oracles: {}",
-                        err
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
         let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
+
+        let total_observation_accounts = joined_observation_accounts.len();
 
         let liquidate_ix = make_liquidate_ix(
             self.program_id,
             self.group,
             self.liquidator_address,
-            asset_bank,
-            liab_bank,
+            &asset_bank_wrapper,
+            &liab_bank_wrapper,
             signer_pk,
             liquidatee_account_address,
-            self.cache.mints.try_get_account(&liab_mint)?.account.owner,
+            self.cache
+                .mints
+                .try_get_account(&liab_mint)
+                .map_err(LiquidationError::from_anyhow_error)?
+                .account
+                .owner,
             joined_observation_accounts,
             asset_amount,
         );
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let recent_blockhash = self
+            .rpc_client
+            .get_latest_blockhash()
+            .map_err(|e| LiquidationError::from_anyhow_error(anyhow!(e)))?;
 
-        if let Some((crank_ix, crank_lut)) = crank_data {
-            let mut transactions =
-                vec![RawTransaction::new(crank_ix).with_lookup_tables(crank_lut)];
-
-            transactions.push(RawTransaction::new(vec![liquidate_ix]));
-
-            self.pending_liquidations
-                .write()
-                .unwrap()
-                .insert(liquidatee_account_address);
-            Ok(self.transaction_tx.send(TransactionData {
-                transactions,
-                account: liquidatee_account_address,
-            })?)
-        } else {
-            let tx: solana_sdk::transaction::Transaction =
-                solana_sdk::transaction::Transaction::new_signed_with_payer(
-                    &[cu_limit_ix.clone(), liquidate_ix.clone()],
-                    Some(&signer_pk),
-                    &[&self.signer_keypair],
-                    recent_blockhash,
+        // Use LUTs only when your transaction involves a large number of observation accounts.
+        let luts: &Vec<AddressLookupTableAccount> = {
+            if total_observation_accounts > 22 {
+                thread_debug!(
+                    "Using LUT for liquidating the Account {} .",
+                    liquidatee_account_address
                 );
+                &self.cache.luts
+            } else {
+                &vec![]
+            }
+        };
 
-            self.rpc_client
-                .send_and_confirm_transaction_with_spinner_and_config(
-                    &tx,
-                    CommitmentConfig::confirmed(),
-                    RpcSendTransactionConfig {
-                        skip_preflight: true,
-                        ..Default::default()
-                    },
-                )?;
-            Ok(())
+        let msg = Message::try_compile(
+            &signer_pk,
+            &[cu_limit_ix.clone(), liquidate_ix.clone()],
+            luts,
+            recent_blockhash,
+        )
+        .map_err(LiquidationError::from_compile_error)?;
+
+        let txn = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer_keypair])
+            .map_err(LiquidationError::from_signer_error)?;
+
+        thread_info!(
+            "Sending liquidation txn for the Account {} .",
+            liquidatee_account_address
+        );
+        match self
+            .rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &txn,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: false,
+                    ..Default::default()
+                },
+            ) {
+            Ok(signature) => {
+                thread_info!(
+                    "Liquidation txn for the Account {} was confirmed. Signature: {}",
+                    liquidatee_account_address,
+                    signature,
+                );
+                Ok(())
+            }
+            Err(err) => {
+                let mut swb_oracles: Vec<Pubkey> = vec![];
+                if is_stale_swb_price_error(&err) {
+                    swb_oracles = liquidator_swb_oracles;
+                    for swb_oracle in liquidatee_swb_oracles.into_iter() {
+                        if !swb_oracles.contains(&swb_oracle) {
+                            swb_oracles.push(swb_oracle);
+                        }
+                    }
+                }
+                Err(LiquidationError::from_anyhow_error_with_keys(
+                    anyhow!(
+                        "Liquidation txn for the Account {} failed: {} ",
+                        liquidatee_account_address,
+                        err
+                    ),
+                    swb_oracles,
+                ))
+            }
         }
     }
 

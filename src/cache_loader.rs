@@ -12,6 +12,7 @@ use solana_client::{
 };
 use solana_sdk::{
     account::Account,
+    address_lookup_table::{state::AddressLookupTable, AddressLookupTableAccount},
     bs58,
     instruction::Instruction,
     pubkey::Pubkey,
@@ -38,10 +39,11 @@ pub struct CacheLoader {
     signer: Keypair,
     rpc_url: String,
     rpc_client: RpcClient,
+    lut_addresses: Vec<Pubkey>,
 }
 
 impl CacheLoader {
-    pub fn new(keypair_path: PathBuf, rpc_url: String) -> Result<Self> {
+    pub fn new(keypair_path: PathBuf, rpc_url: String, lut_addresses: Vec<Pubkey>) -> Result<Self> {
         let signer =
             read_keypair_file(&keypair_path).map_err(|e| anyhow!("Keypair read failed: {}", e))?;
         let rpc_client = RpcClient::new(&rpc_url);
@@ -50,6 +52,7 @@ impl CacheLoader {
             signer,
             rpc_url,
             rpc_client,
+            lut_addresses,
         })
     }
 
@@ -58,11 +61,41 @@ impl CacheLoader {
         cache: &mut Cache,
         newly_created_acc: Option<Pubkey>,
     ) -> anyhow::Result<()> {
+        self.load_luts(cache)?;
         self.load_marginfi_accounts(cache, newly_created_acc)?;
         self.load_banks(cache)?;
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
         self.load_tokens(cache)?;
+        Ok(())
+    }
+
+    fn load_luts(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        thread_info!("Loading LUTs.");
+
+        let lut_accounts = self.rpc_client.get_multiple_accounts(&self.lut_addresses)?;
+
+        let luts: Vec<AddressLookupTableAccount> = self
+            .lut_addresses
+            .iter()
+            .zip(lut_accounts.into_iter())
+            .map(|(lut_address, lut_account_opt)| {
+                let lut_account = lut_account_opt
+                    .ok_or_else(|| anyhow!("Failed to find the {} LUT.", lut_address))?;
+                let lut = AddressLookupTable::deserialize(&lut_account.data).map_err(|e| {
+                    anyhow!("Failed to deserialize the {} LUT : {:?}", lut_address, e)
+                })?;
+                Ok(AddressLookupTableAccount {
+                    key: *lut_address,
+                    addresses: lut.addresses.to_vec(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        luts.into_iter().for_each(|lut| cache.add_lut(lut));
+
+        thread_info!("Loaded {} LUTs.", &cache.luts.len());
+
         Ok(())
     }
 
