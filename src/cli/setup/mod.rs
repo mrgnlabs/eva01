@@ -6,7 +6,6 @@ use crate::{
 use anchor_lang::Discriminator;
 use anyhow::bail;
 use lazy_static::lazy_static;
-use log::debug;
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
     rpc_client::RpcClient,
@@ -204,7 +203,6 @@ pub fn marginfi_groups_by_program(
             if arena_only {
                 let flags_bytes: [u8; 8] = account.data[..].try_into().unwrap();
                 let group_flags = u64::from_le_bytes(flags_bytes);
-                debug!("Group flags for {}: {}", pubkey, group_flags);
                 let is_arena = (group_flags & (1 << 1)) != 0; // second bit stands for ARENA_GROUP
                 if !is_arena {
                     return None;

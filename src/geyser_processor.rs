@@ -8,6 +8,7 @@ use crate::{
 use anyhow::Result;
 use crossbeam::channel::Receiver;
 use marginfi::state::marginfi_account::MarginfiAccount;
+use solana_sdk::pubkey::Pubkey;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -38,12 +39,12 @@ impl GeyserProcessor {
         })
     }
 
-    pub fn start(&self) -> Result<()> {
+    pub fn start(&self, new_liquidator_account: Option<Pubkey>) -> Result<()> {
         thread_info!("Staring the GeyserProcessor loop.");
         while !self.stop.load(Ordering::Relaxed) {
             match self.geyser_rx.recv() {
                 Ok(geyser_update) => {
-                    if let Err(error) = self.process_update(geyser_update) {
+                    if let Err(error) = self.process_update(geyser_update, new_liquidator_account) {
                         log_genuine_error("Failed to process Geyser update", error);
                     }
                 }
@@ -56,7 +57,11 @@ impl GeyserProcessor {
         Ok(())
     }
 
-    fn process_update(&self, msg: GeyserUpdate) -> Result<()> {
+    fn process_update(
+        &self,
+        msg: GeyserUpdate,
+        new_liquidator_account: Option<Pubkey>,
+    ) -> Result<()> {
         let msg_account = msg.account.clone();
         thread_debug!(
             "Processing the {:?} {:?} update.",
@@ -64,29 +69,41 @@ impl GeyserProcessor {
             msg.address
         );
 
+        // If we just created the new liquidator account, this would be Some(), and we'd have to wait
+        // for a funding update on this account to come through Geyser until we set run_* flags.
+        let mut liquidator_funded = new_liquidator_account.is_none();
         match msg.account_type {
             AccountType::Oracle => {
                 self.cache.oracles.try_update(&msg.address, msg_account)?;
 
-                self.run_liquidation.store(true, Ordering::Relaxed);
-                self.run_rebalance.store(true, Ordering::Relaxed);
+                if liquidator_funded {
+                    self.run_liquidation.store(true, Ordering::Relaxed);
+                    self.run_rebalance.store(true, Ordering::Relaxed);
+                }
             }
             AccountType::Marginfi => {
                 let marginfi_account =
                     bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
+                if let Some(account) = new_liquidator_account {
+                    liquidator_funded = account == msg.address;
+                }
                 self.cache.marginfi_accounts.try_insert({
                     MarginfiAccountWrapper::new(msg.address, marginfi_account.lending_account)
                 })?;
 
-                self.run_liquidation.store(true, Ordering::Relaxed);
-                self.run_rebalance.store(true, Ordering::Relaxed);
+                if liquidator_funded {
+                    self.run_liquidation.store(true, Ordering::Relaxed);
+                    self.run_rebalance.store(true, Ordering::Relaxed);
+                }
             }
             AccountType::Token => {
                 self.cache
                     .tokens
                     .try_update_account(msg.address, msg.account)?;
 
-                self.run_rebalance.store(true, Ordering::Relaxed);
+                if liquidator_funded {
+                    self.run_rebalance.store(true, Ordering::Relaxed);
+                }
             }
         }
         Ok(())
@@ -142,7 +159,7 @@ mod tests {
 
         // Simulate stopping the processor
         stop.store(true, Ordering::Relaxed);
-        let result = processor.start();
+        let result = processor.start(None);
         assert!(result.is_ok());
     }
 
@@ -180,7 +197,7 @@ mod tests {
             account: Default::default(),
         };
 
-        let result = processor.process_update(geyser_update);
+        let result = processor.process_update(geyser_update, None);
         result.unwrap();
     }
 }

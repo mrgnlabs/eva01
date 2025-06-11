@@ -65,12 +65,13 @@ pub fn run_liquidator(
         Arc::clone(&preferred_mints),
     );
 
-    let mut newly_created = false;
+    // If there is no liquidator account for this group, we'll create it.
+    let mut new_liquidator_account: Option<Pubkey> = None;
     let mut liquidator_account = LiquidatorAccount::new(
         &config.general_config,
         marginfi_group_id,
         Arc::new(cache),
-        &mut newly_created,
+        &mut new_liquidator_account,
     )?;
 
     info!("Loading Cache...");
@@ -87,14 +88,7 @@ pub fn run_liquidator(
         config.general_config.rpc_url.clone(),
         config.general_config.clone().address_lookup_tables,
     )?;
-    cache_loader.load_cache(
-        &mut cache,
-        if newly_created {
-            Some(liquidator_account.liquidator_address)
-        } else {
-            None
-        },
-    )?;
+    cache_loader.load_cache(&mut cache, &new_liquidator_account)?;
 
     // Check if the preferred asset is in the cache. If not, make the first one the preferred asset.
     let mints = cache.mints.get_mints();
@@ -140,10 +134,6 @@ pub fn run_liquidator(
         Arc::clone(&cache),
     )?;
 
-    if newly_created {
-        rebalancer.fund_liquidator_account()?;
-    }
-
     let geyser_service = GeyserService::new(
         config.general_config,
         marginfi_group_id,
@@ -166,6 +156,23 @@ pub fn run_liquidator(
     thread::spawn(move || clock_manager.start());
 
     thread::spawn(move || {
+        if let Err(e) = geyser_processor.start(new_liquidator_account) {
+            thread_error!("GeyserProcessor failed! {:?}", e);
+            panic!("Fatal error in GeyserProcessor!");
+        }
+    });
+    thread::spawn(move || {
+        if let Err(e) = geyser_service.start() {
+            thread_error!("GeyserService failed! {:?}", e);
+            panic!("Fatal error in GeyserService!");
+        }
+    });
+
+    if new_liquidator_account.is_some() {
+        rebalancer.fund_liquidator_account()?;
+    }
+
+    thread::spawn(move || {
         if let Err(e) = rebalancer.start() {
             thread_error!("Rebalancer failed! {:?}", e);
             panic!("Fatal error in Rebalancer!");
@@ -176,19 +183,6 @@ pub fn run_liquidator(
         if let Err(e) = liquidator.start() {
             thread_error!("The Liquidator service failed! {:?}", e);
             panic!("Fatal error in the Liquidator service!");
-        }
-    });
-
-    thread::spawn(move || {
-        if let Err(e) = geyser_processor.start() {
-            thread_error!("GeyserProcessor failed! {:?}", e);
-            panic!("Fatal error in GeyserProcessor!");
-        }
-    });
-    thread::spawn(move || {
-        if let Err(e) = geyser_service.start() {
-            thread_error!("GeyserService failed! {:?}", e);
-            panic!("Fatal error in GeyserService!");
         }
     });
 

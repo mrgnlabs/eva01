@@ -78,12 +78,12 @@ impl LiquidatorAccount {
         config: &GeneralConfig,
         marginfi_group_id: Pubkey,
         cache: Arc<Cache>,
-        newly_created: &mut bool,
+        new_liquidator_account: &mut Option<Pubkey>,
     ) -> Result<Self> {
         let signer_keypair = read_keypair_file(&config.keypair_path).unwrap();
         let rpc_client = RpcClient::new(config.rpc_url.clone());
 
-        let accounts = marginfi_account_by_authority(
+        let mut accounts = marginfi_account_by_authority(
             signer_keypair.pubkey(),
             &rpc_client,
             config.marginfi_program_id,
@@ -96,6 +96,7 @@ impl LiquidatorAccount {
         for account in accounts.iter() {
             info!("MarginFi account: {:?}", account);
         }
+        accounts.clear();
 
         let liquidator_address = if accounts.is_empty() {
             thread_info!("No MarginFi account found for the provided signer. Creating it...");
@@ -109,7 +110,7 @@ impl LiquidatorAccount {
 
             thread::sleep(Duration::from_secs(20));
 
-            *newly_created = true;
+            *new_liquidator_account = Some(liquidator_marginfi_account);
 
             liquidator_marginfi_account
         } else {

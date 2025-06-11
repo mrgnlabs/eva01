@@ -174,8 +174,7 @@ impl GeneralConfig {
     }
 
     pub fn default_marginfi_program_id() -> Pubkey {
-        pubkey!("stag8sTKds2h4KzjUw3zKTsxbqvT4XKHdaR9X9E6Rct")
-        //marginfi::id()
+        marginfi::id()
     }
 
     pub fn default_account_whitelist() -> Option<Vec<Pubkey>> {

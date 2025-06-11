@@ -59,10 +59,10 @@ impl CacheLoader {
     pub fn load_cache(
         &self,
         cache: &mut Cache,
-        newly_created_acc: Option<Pubkey>,
+        new_liquidator_account: &Option<Pubkey>,
     ) -> anyhow::Result<()> {
         self.load_luts(cache)?;
-        self.load_marginfi_accounts(cache, newly_created_acc)?;
+        self.load_marginfi_accounts(cache, new_liquidator_account)?;
         self.load_banks(cache)?;
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
@@ -102,7 +102,7 @@ impl CacheLoader {
     fn load_marginfi_accounts(
         &self,
         cache: &mut Cache,
-        newly_created_acc: Option<Pubkey>,
+        new_liquidator_account: &Option<Pubkey>,
     ) -> anyhow::Result<()> {
         thread_info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
@@ -110,9 +110,9 @@ impl CacheLoader {
             &cache.marginfi_program_id,
             &cache.marginfi_group_address,
         )?;
-        if let Some(newly_created_acc) = newly_created_acc {
+        if let Some(new_liquidator_account) = new_liquidator_account {
             thread_debug!("PUSHING NEW ONE");
-            marginfi_accounts_pubkeys.push(newly_created_acc);
+            marginfi_accounts_pubkeys.push(*new_liquidator_account);
         }
 
         let marginfi_accounts = batch_get_multiple_accounts(
