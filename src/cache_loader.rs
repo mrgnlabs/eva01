@@ -111,7 +111,6 @@ impl CacheLoader {
             &cache.marginfi_group_address,
         )?;
         if let Some(new_liquidator_account) = new_liquidator_account {
-            thread_debug!("PUSHING NEW ONE");
             marginfi_accounts_pubkeys.push(*new_liquidator_account);
         }
 
