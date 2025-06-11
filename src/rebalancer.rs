@@ -114,28 +114,28 @@ impl Rebalancer {
         let usd_value = (self.general_config.min_profit * 40.0) * (MIN_LIQUIDATIONS_COUNT as f64);
 
         let sol_price = 150.0; // TODO: Fetch the current SOL price and account for slippage by lowering it
-        let sol_amount: f64 = usd_value / sol_price;
+        let sol_amount: f64 = usd_value / sol_price / 4.0;
         let swap_mint_amount = self.swap(
             solana_sdk::native_token::sol_to_lamports(sol_amount),
             spl_token::native_mint::ID,
             self.config.swap_mint,
-        )? / 10;
+        )?;
 
         thread_info!(
             "Funding the newly created liquidator account with {} tokens ({} in SOL).",
             swap_mint_amount,
             sol_amount
         );
+        thread::sleep(Duration::from_secs(10));
         if let Err(error) = self.deposit_preferred_token(swap_mint_amount) {
             thread_error!("Failed to deposit preferred token: {}", error)
         }
+        thread::sleep(Duration::from_secs(10));
         Ok(())
     }
 
     pub fn start(&mut self) -> anyhow::Result<()> {
         thread_info!("Starting the Rebalancer loop");
-        self.rebalance_accounts();
-
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             if self.run_rebalance.load(Ordering::Relaxed) && self.needs_to_be_rebalanced()? {
                 thread_debug!("Running the Rebalancing process...");
@@ -143,7 +143,7 @@ impl Rebalancer {
                 self.rebalance_accounts();
                 thread_debug!("The Rebalancing process is complete.");
             }
-            thread::sleep(Duration::from_secs(10))
+            thread::sleep(Duration::from_secs(10));
         }
         thread_info!("The Rebalancer loop stopped.");
 

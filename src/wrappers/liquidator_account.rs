@@ -34,6 +34,8 @@ use std::{
     collections::HashSet,
     str::FromStr,
     sync::{Arc, RwLock},
+    thread,
+    time::Duration,
 };
 use switchboard_on_demand_client::{
     FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
@@ -52,7 +54,7 @@ pub struct LiquidatorAccount {
     pub pending_liquidations: Arc<RwLock<HashSet<Pubkey>>>,
     compute_unit_limit: u32,
     tokio_rt: Runtime,
-    cache: Arc<Cache>,
+    pub cache: Arc<Cache>,
 }
 
 impl LiquidatorAccount {
@@ -85,6 +87,7 @@ impl LiquidatorAccount {
         for account in accounts.iter() {
             info!("MarginFi account: {:?}", account);
         }
+
         let liquidator_address = if accounts.is_empty() {
             info!("No MarginFi account found for the provided signer. Creating it...");
 
@@ -95,13 +98,13 @@ impl LiquidatorAccount {
                 &signer_keypair,
             )?;
 
+            thread::sleep(Duration::from_secs(20));
+
             *newly_created = true;
 
             liquidator_marginfi_account
         } else {
-            //pubkey!("BTJh4MSjVnY9f9o2NXXKoxVVy7VimAUzKo4V2y6XQKZq")
-            pubkey!("H1swPW9RK34VKPLJjgRCSEorry46u4EQseXZQqFbCSoL")
-            //accounts[0]
+            accounts[0]
         };
 
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
@@ -171,9 +174,10 @@ impl LiquidatorAccount {
     ) -> Result<()> {
         let liquidatee_account_address = liquidatee_account.address;
         thread_info!(
-            "Liquidating account {:?} with liquidator account {:?}",
+            "Liquidating account {:?} with liquidator account {:?}. Amount: {}",
             liquidatee_account_address,
-            self.liquidator_address
+            self.liquidator_address,
+            asset_amount
         );
 
         let signer_pk = self.signer_keypair.pubkey();
@@ -394,13 +398,14 @@ impl LiquidatorAccount {
                     skip_preflight: true,
                     ..Default::default()
                 },
-            );
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+
         thread_debug!(
             "Withdrawing result for Liquidator account {:?} (without preflight check): {:?} ",
             marginfi_account,
             res
         );
-
         Ok(())
     }
 

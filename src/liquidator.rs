@@ -14,6 +14,7 @@ use crate::{
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
+use log::debug;
 use marginfi::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
     state::{
@@ -165,6 +166,10 @@ impl Liquidator {
         }
 
         let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
+        debug!(
+            "Account: {:?} assets: {:?}, liabs: {:?}",
+            account.address, deposit_shares, liabs_shares
+        );
         if liabs_shares.is_empty() {
             return Ok(None);
         }
@@ -195,6 +200,10 @@ impl Liquidator {
                 &liab_bank_pk,
             )?;
 
+        debug!(
+            "max_liquidatable_amount: {:?}, profit: {:?}",
+            max_liquidatable_amount, profit
+        );
         if max_liquidatable_amount.is_zero() {
             return Ok(None);
         }
@@ -304,6 +313,10 @@ impl Liquidator {
         deposit_values: Vec<(I80F48, Pubkey)>,
         liab_values: Vec<(I80F48, Pubkey)>,
     ) -> Result<Option<(Pubkey, Pubkey)>> {
+        debug!(
+            "deposit_values: {:?}, liab_values: {:?}",
+            deposit_values, liab_values
+        );
         if deposit_values.is_empty() || liab_values.is_empty() {
             return Ok(None);
         }
@@ -320,7 +333,7 @@ impl Liquidator {
         let (_, asset_bank) = deposit_values
             .iter()
             .max_by(|a, b| {
-                //debug!("Asset Bank {:?} value: {:?}", a.1, a.0);
+                debug!("Asset Bank {:?} value: {:?}", a.1, a.0);
                 a.0.cmp(&b.0)
             })
             .ok_or_else(|| anyhow!("No asset bank found"))?;
@@ -328,7 +341,7 @@ impl Liquidator {
         let (_, liab_bank) = liab_values
             .iter()
             .max_by(|a, b| {
-                //debug!("Liab Bank {:?} value: {:?}", a.1, a.0);
+                debug!("Liab Bank {:?} value: {:?}", a.1, a.0);
 
                 a.0.cmp(&b.0)
             })
@@ -346,6 +359,7 @@ impl Liquidator {
         let (total_weighted_assets, total_weighted_liabilities) =
             calc_total_weighted_assets_liabs(&self.cache, account, RequirementType::Maintenance)?;
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
+        debug!("maintenance_health = {:?}", maintenance_health);
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }

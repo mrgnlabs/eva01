@@ -23,7 +23,7 @@ use crate::{
     cache::Cache,
     geyser::AccountType,
     sender::{SenderCfg, TransactionSender},
-    thread_debug, thread_error, thread_info,
+    thread_debug, thread_error, thread_info, thread_warn,
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
@@ -53,8 +53,12 @@ impl CacheLoader {
         })
     }
 
-    pub fn load_cache(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        self.load_marginfi_accounts(cache)?;
+    pub fn load_cache(
+        &self,
+        cache: &mut Cache,
+        newly_created_acc: Option<Pubkey>,
+    ) -> anyhow::Result<()> {
+        self.load_marginfi_accounts(cache, newly_created_acc)?;
         self.load_banks(cache)?;
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
@@ -62,13 +66,21 @@ impl CacheLoader {
         Ok(())
     }
 
-    fn load_marginfi_accounts(&self, cache: &mut Cache) -> anyhow::Result<()> {
+    fn load_marginfi_accounts(
+        &self,
+        cache: &mut Cache,
+        newly_created_acc: Option<Pubkey>,
+    ) -> anyhow::Result<()> {
         thread_info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
-        let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
+        let mut marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
             &cache.marginfi_program_id,
             &cache.marginfi_group_address,
         )?;
+        if let Some(newly_created_acc) = newly_created_acc {
+            thread_debug!("PUSHING NEW ONE");
+            marginfi_accounts_pubkeys.push(newly_created_acc);
+        }
 
         let marginfi_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
@@ -90,6 +102,8 @@ impl CacheLoader {
                     lending_account: marginfi_account.lending_account,
                 };
                 cache.marginfi_accounts.try_insert(maw)?;
+            } else {
+                thread_warn!("Couldn't load Marginfi account for key: {}", *address);
             }
         }
 

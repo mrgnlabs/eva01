@@ -16,6 +16,7 @@ use crate::{
 };
 use log::info;
 use solana_client::rpc_client::RpcClient;
+use solana_program::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use std::{
     collections::HashSet,
@@ -58,6 +59,27 @@ pub fn run_liquidator(
         config.general_config.solana_clock_refresh_interval,
     )?;
 
+    // TODO: refactor this fake cache
+    let cache = Cache::new(
+        config.general_config.signer_pubkey,
+        config.general_config.marginfi_program_id,
+        marginfi_group_id,
+        clock.clone(),
+        Arc::clone(&preferred_mints),
+    );
+
+    let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
+    let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
+    let mut newly_created = false;
+    let mut liquidator_account = LiquidatorAccount::new(
+        transaction_tx.clone(),
+        &config.general_config,
+        marginfi_group_id,
+        Arc::clone(&pending_bundles),
+        Arc::new(cache),
+        &mut newly_created,
+    )?;
+
     info!("Loading Cache...");
     let mut cache = Cache::new(
         config.general_config.signer_pubkey,
@@ -71,7 +93,14 @@ pub fn run_liquidator(
         config.general_config.keypair_path.clone(),
         config.general_config.rpc_url.clone(),
     )?;
-    cache_loader.load_cache(&mut cache)?;
+    cache_loader.load_cache(
+        &mut cache,
+        if newly_created {
+            Some(liquidator_account.liquidator_address)
+        } else {
+            None
+        },
+    )?;
 
     // Check if the preferred asset is in the cache. If not, make the first one the preferred asset.
     let mints = cache.mints.get_mints();
@@ -87,8 +116,6 @@ pub fn run_liquidator(
 
     let accounts_to_track = get_accounts_to_track(&cache)?;
 
-    let cache = Arc::new(cache);
-
     info!("Initializing services...");
 
     // GeyserService -> GeyserProcessor
@@ -97,7 +124,6 @@ pub fn run_liquidator(
     let (geyser_tx, geyser_rx) = crossbeam::channel::unbounded::<GeyserUpdate>();
     let run_liquidation = Arc::new(AtomicBool::new(false));
     let run_rebalance = Arc::new(AtomicBool::new(false));
-    let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
     let (jito_tx, jito_rx) = crossbeam::channel::unbounded::<(Pubkey, String)>();
 
     let mut transaction_manager = TransactionManager::new(config.general_config.clone())?;
@@ -106,27 +132,18 @@ pub fn run_liquidator(
         config.general_config.block_engine_uuid.clone(),
     )?;
 
-    let swb_price_simulator = Arc::new(SwbCranker::new(cache.clone())?);
-    let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
+    let cache = Arc::new(cache);
+    let swb_price_simulator = Arc::new(SwbCranker::new(Arc::clone(&cache))?);
 
-    let mut newly_created = false;
-    let liquidator_account = LiquidatorAccount::new(
-        transaction_tx.clone(),
-        &config.general_config,
-        marginfi_group_id,
-        Arc::clone(&pending_bundles),
-        cache.clone(),
-        &mut newly_created,
-    )?;
+    liquidator_account.cache = Arc::clone(&cache);
     let liquidator_account_clone = liquidator_account.clone()?;
-
     let mut liquidator = Liquidator::new(
         config.general_config.clone(),
         config.liquidator_config.clone(),
         liquidator_account,
         run_liquidation.clone(),
         stop_liquidator.clone(),
-        cache.clone(),
+        Arc::clone(&cache),
         swb_price_simulator.clone(),
     )?;
 
@@ -136,7 +153,7 @@ pub fn run_liquidator(
         liquidator_account_clone,
         run_rebalance.clone(),
         stop_liquidator.clone(),
-        cache.clone(),
+        Arc::clone(&cache),
         swb_price_simulator.clone(),
     )?;
 
@@ -158,7 +175,7 @@ pub fn run_liquidator(
         run_liquidation.clone(),
         run_rebalance.clone(),
         stop_liquidator.clone(),
-        cache.clone(),
+        cache,
     )?;
 
     info!("Starting services...");
