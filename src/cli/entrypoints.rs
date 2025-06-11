@@ -9,13 +9,14 @@ use crate::{
     metrics::{FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS},
     rebalancer::Rebalancer,
     thread_error, thread_info,
+    wrappers::liquidator_account::LiquidatorAccount,
 };
 use log::info;
 use solana_client::rpc_client::RpcClient;
-use solana_program::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use std::{
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    collections::HashSet,
+    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
     thread,
 };
 
@@ -64,14 +65,10 @@ pub fn run_liquidator(
         Arc::clone(&preferred_mints),
     );
 
-    let pending_bundles = Arc::new(RwLock::new(HashSet::<Pubkey>::new()));
-    let (transaction_tx, transaction_rx) = crossbeam::channel::unbounded::<TransactionData>();
     let mut newly_created = false;
     let mut liquidator_account = LiquidatorAccount::new(
-        transaction_tx.clone(),
         &config.general_config,
         marginfi_group_id,
-        Arc::clone(&pending_bundles),
         Arc::new(cache),
         &mut newly_created,
     )?;

@@ -10,8 +10,10 @@ use crate::{
     metrics::LIQUIDATION_ATTEMPTS,
     thread_debug, thread_info,
     utils::{check_asset_tags_matching, swb_cranker::is_stale_swb_price_error},
+    wrappers::oracle::OracleWrapper,
 };
 use anyhow::{anyhow, Result};
+use log::info;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 
 use solana_program::pubkey::Pubkey;
@@ -27,7 +29,7 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::sync::Arc;
+use std::{sync::Arc, thread, time::Duration};
 
 #[derive(Debug)]
 pub struct LiquidationError {
@@ -63,12 +65,11 @@ impl LiquidationError {
 
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
-    pub signer_keypair: Keypair,
+    pub signer_keypair: Arc<Keypair>,
     program_id: Pubkey,
     group: Pubkey,
     rpc_client: RpcClient,
     compute_unit_limit: u32,
-    tokio_rt: Runtime,
     pub cache: Arc<Cache>,
 }
 
@@ -81,11 +82,6 @@ impl LiquidatorAccount {
     ) -> Result<Self> {
         let signer_keypair = read_keypair_file(&config.keypair_path).unwrap();
         let rpc_client = RpcClient::new(config.rpc_url.clone());
-        let tokio_rt = Builder::new_multi_thread()
-            .thread_name("liquidator-account")
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
 
         let accounts = marginfi_account_by_authority(
             signer_keypair.pubkey(),
@@ -122,7 +118,7 @@ impl LiquidatorAccount {
 
         Ok(Self {
             liquidator_address,
-            signer_keypair,
+            signer_keypair: Arc::new(signer_keypair),
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
             rpc_client,
@@ -132,34 +128,16 @@ impl LiquidatorAccount {
     }
 
     pub fn clone(&self) -> Result<Self> {
-        let tokio_rt = Builder::new_multi_thread()
-            .thread_name("liquidator-account")
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
-
         let rpc_url = self.rpc_client.url();
         let rpc_client = RpcClient::new(rpc_url.clone());
-        let non_blocking_rpc_client = NonBlockingRpcClient::new(rpc_url);
-        let queue = tokio_rt.block_on(QueueAccountData::load(
-            &non_blocking_rpc_client,
-            &Pubkey::from_str("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w").unwrap(),
-        ))?;
-        let swb_gateway =
-            tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
 
         Ok(Self {
             liquidator_address: self.liquidator_address,
             signer_keypair: Arc::clone(&self.signer_keypair),
             program_id: self.program_id,
             group: self.group,
-            transaction_tx: self.transaction_tx.clone(),
-            swb_gateway,
             rpc_client,
-            non_blocking_rpc_client,
-            pending_liquidations: Arc::clone(&self.pending_liquidations),
             compute_unit_limit: self.compute_unit_limit,
-            tokio_rt,
             cache: Arc::clone(&self.cache),
         })
     }

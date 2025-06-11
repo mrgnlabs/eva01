@@ -14,9 +14,7 @@ use anyhow::Result;
 use banks::BanksCache;
 use mints::MintsCache;
 use oracles::OraclesCache;
-use solana_sdk::{
-    account::Account, address_lookup_table::AddressLookupTableAccount, clock::Clock, pubkey::Pubkey,
-};
+use solana_sdk::{address_lookup_table::AddressLookupTableAccount, clock::Clock, pubkey::Pubkey};
 use tokens::TokensCache;
 
 use crate::{
@@ -190,11 +188,13 @@ mod tests {
         let signer_pk = Pubkey::new_unique();
         let marginfi_program_id = Pubkey::new_unique();
         let marginfi_group_address = Pubkey::new_unique();
+        let preferred_mints = Arc::new(RwLock::new(HashSet::new()));
         let mut cache = Cache::new(
             signer_pk,
             marginfi_program_id,
             marginfi_group_address,
             Arc::new(Mutex::new(Clock::default())),
+            preferred_mints,
         );
         let lut = AddressLookupTableAccount {
             key: Pubkey::new_unique(),
