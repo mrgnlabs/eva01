@@ -18,23 +18,15 @@ use marginfi::{
     },
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
-use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serializer};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{
-    account::Account,
-    signature::{read_keypair_file, Keypair},
-};
+use solana_sdk::account::Account;
 use std::{
-    io::Write,
     mem::MaybeUninit,
-    path::PathBuf,
-    str::FromStr,
     sync::{atomic::AtomicUsize, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
-use url::Url;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 use crate::{
@@ -187,99 +179,6 @@ pub fn account_update_to_account(account_update: &SubscribeUpdateAccountInfo) ->
     };
 
     Ok(account)
-}
-
-pub(crate) fn from_pubkey_string<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-    Pubkey::from_str(&s).map_err(serde::de::Error::custom)
-}
-
-pub(crate) fn from_option_vec_pubkey_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<Pubkey>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: Option<Vec<String>> = Deserialize::deserialize(deserializer)?;
-
-    match s {
-        Some(a) => Ok(Some(
-            a.into_iter()
-                .map(|s| Pubkey::from_str(&s).map_err(serde::de::Error::custom))
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
-        None => Ok(None),
-    }
-}
-
-pub(crate) fn fixed_from_float<'de, D>(deserializer: D) -> Result<I80F48, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: f64 = Deserialize::deserialize(deserializer)?;
-
-    Ok(I80F48::from_num(s))
-}
-
-pub(crate) fn fixed_to_float<S>(i: &I80F48, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_f64(i.to_num::<f64>())
-}
-
-pub(crate) fn pubkey_to_str<S>(p: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&p.to_string())
-}
-
-// TODO: The next functions can be done better
-
-pub(crate) fn vec_pubkey_to_str<S>(ps: &Vec<Pubkey>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let mut seq = serializer.serialize_seq(Some(ps.len()))?;
-
-    for pubkey in ps {
-        seq.serialize_element(&pubkey.to_string())?;
-    }
-
-    seq.end()
-}
-
-pub(crate) fn vec_pubkey_to_option_vec_str<S>(
-    v: &Option<Vec<Pubkey>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    match v {
-        Some(pubkeys) => {
-            let mut seq = serializer.serialize_seq(Some(pubkeys.len()))?;
-            for pubkey in pubkeys {
-                seq.serialize_element(&pubkey.to_string())?;
-            }
-            seq.end()
-        }
-        None => serializer.serialize_none(),
-    }
-}
-
-pub(crate) fn from_vec_str_to_pubkey<'de, D>(deserializer: D) -> Result<Vec<Pubkey>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: Vec<String> = Deserialize::deserialize(deserializer)?;
-    s.into_iter()
-        .map(|s| Pubkey::from_str(&s).map_err(serde::de::Error::custom))
-        .collect()
 }
 
 pub struct BankAccountWithPriceFeedEva<'a> {
@@ -571,42 +470,6 @@ pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> Result<PullFeedAccountD
         >(vec);
 
         Ok(vec[0])
-    }
-}
-
-pub fn expand_tilde(path: &str) -> PathBuf {
-    if path.starts_with("~") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(&path[2..]);
-        }
-    }
-    PathBuf::from(path)
-}
-
-pub fn is_valid_url(input: &str) -> bool {
-    Url::parse(input).is_ok()
-}
-
-pub fn prompt_user(prompt_text: &str) -> Result<String> {
-    print!("{}", prompt_text);
-    let mut input = String::new();
-    std::io::stdout().flush()?;
-    std::io::stdin().read_line(&mut input)?;
-    input.pop();
-    Ok(input)
-}
-
-/// Simply asks the keypair path until it is a valid one,
-/// Returns (keypair_path, signer_keypair)
-pub fn ask_keypair_until_valid() -> Result<(PathBuf, Keypair)> {
-    loop {
-        let keypair_path = expand_tilde(&prompt_user("Keypair file path [required]: ")?);
-        match read_keypair_file(&keypair_path) {
-            Ok(keypair) => return Ok((keypair_path, keypair)),
-            Err(_) => {
-                println!("Failed to load the keypair from the provided path. Please try again");
-            }
-        }
     }
 }
 

@@ -159,8 +159,3 @@ pub fn run_liquidator(config: Eva01Config, marginfi_group_id: Pubkey) -> anyhow:
 
     Ok(())
 }
-
-pub fn wizard_setup() -> anyhow::Result<()> {
-    crate::cli::setup::setup()?;
-    Ok(())
-}

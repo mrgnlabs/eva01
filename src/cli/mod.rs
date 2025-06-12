@@ -5,14 +5,10 @@ use std::{
 };
 
 use crate::config::Eva01Config;
-use clap::Parser;
 use log::{error, info};
 use setup::marginfi_groups_by_program;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
-
-/// Main Clap app for the CLI
-pub mod app;
 
 /// Entrypoints for the Eva
 pub mod entrypoints;
@@ -22,55 +18,44 @@ pub mod setup;
 
 /// Main entrypoint for Eva
 pub fn main_entry() -> anyhow::Result<()> {
-    let args = app::Args::parse();
+    let config = Eva01Config::new()?;
+    info!("Starting eva01 liquidator! {:#?}", &config);
 
-    match args.cmd {
-        app::Commands::Run { path } => {
-            let mut config = Eva01Config::try_load_from_file(path)?;
-            info!("Starting eva01 liquidator! {:#?}", &config);
+    // Now this is a multi-threaded liquidator logic which will monitor new groups creation
+    // and spawn a new liquidator for each except the ones listed in the blacklist.
+    // Note that it is not allowed to have both whitelist and blacklist at the same time!
 
-            if let Some(mut whitelist) = config.general_config.marginfi_groups_whitelist.take() {
-                // The last group will be started in the main thread to decrease total thread count
-                let last_group = whitelist.pop().unwrap();
-                whitelist.into_iter().for_each(|group| {
-                    start_liquidator_in_separate_thread(&config, group);
-                });
-                return entrypoints::run_liquidator(config, last_group);
-            }
+    let mut whitelist = config.general_config.marginfi_groups_whitelist.clone();
+    if !whitelist.is_empty() {
+        // The last group will be started in the main thread to decrease total thread count
+        let last_group = whitelist.pop().unwrap();
+        for group in whitelist {
+            start_liquidator_in_separate_thread(&config, group);
+        }
+        return entrypoints::run_liquidator(config, last_group);
+    }
 
-            // Now this is a multi-threaded liquidator logic which will monitor new groups creation
-            // and spawn a new liquidator for each except the ones listed in the blacklist.
-            let blacklist = config
-                .general_config
-                .marginfi_groups_blacklist
-                .take()
-                .unwrap();
+    let black_list = config.general_config.marginfi_groups_blacklist.clone();
+    if !black_list.is_empty() {
+        // This is a set of MarginFi groups (pubkeys) for which we have already spawned a liquidator.
+        // Initially, we fill it with the groups from the blacklist so that we don't spawn liquidators for them.
+        let mut active_groups = black_list.into_iter().collect::<HashSet<Pubkey>>();
 
-            // This is a set of MarginFi groups (pubkeys) for which we have already spawned a liquidator.
-            // Initially, we fill it with the groups from the blacklist so that we don't spawn liquidators for them.
-            let mut active_groups = blacklist.into_iter().collect::<HashSet<Pubkey>>();
+        let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
+        loop {
+            let marginfi_groups =
+                marginfi_groups_by_program(&rpc_client, config.general_config.marginfi_program_id)?;
 
-            let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
-            loop {
-                let marginfi_groups = marginfi_groups_by_program(
-                    &rpc_client,
-                    config.general_config.marginfi_program_id,
-                )?;
-
-                for group in marginfi_groups {
-                    if active_groups.contains(&group) {
-                        continue;
-                    }
-
-                    start_liquidator_in_separate_thread(&config, group);
-                    active_groups.insert(group);
+            for group in marginfi_groups {
+                if active_groups.contains(&group) {
+                    continue;
                 }
 
-                sleep(Duration::from_secs(60));
+                start_liquidator_in_separate_thread(&config, group);
+                active_groups.insert(group);
             }
-        }
-        app::Commands::Setup => {
-            entrypoints::wizard_setup()?;
+
+            sleep(Duration::from_secs(60));
         }
     }
 

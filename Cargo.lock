@@ -1232,46 +1232,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clap"
-version = "4.5.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed93b9805f8ba930df42c2590f05453d5ec36cbb85d018868a5b24d31f6ac000"
-dependencies = [
- "clap_builder",
- "clap_derive",
-]
-
-[[package]]
-name = "clap_builder"
-version = "4.5.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "379026ff283facf611b0ea629334361c4211d1b12ee01024eec1591133b04120"
-dependencies = [
- "anstream",
- "anstyle",
- "clap_lex",
- "strsim 0.11.1",
-]
-
-[[package]]
-name = "clap_derive"
-version = "4.5.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09176aae279615badda0765c0c0b3f6ed53f4709118af73cf4655d85d1530cd7"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2",
- "quote",
- "syn 2.0.101",
-]
-
-[[package]]
-name = "clap_lex"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
-
-[[package]]
 name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1902,7 +1862,6 @@ dependencies = [
  "bytemuck",
  "bytes",
  "chrono",
- "clap 4.5.38",
  "crossbeam",
  "dirs",
  "env_logger",
@@ -1931,6 +1890,7 @@ dependencies = [
  "spl-token 7.0.0",
  "switchboard-on-demand",
  "switchboard-on-demand-client",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "toml 0.8.22",
@@ -5357,7 +5317,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c82ea996f4b390ad9868e9acd6403f8809adf97f616361d3767e9376619d230"
 dependencies = [
  "chrono",
- "clap 2.34.0",
+ "clap",
  "rpassword",
  "solana-derivation-path",
  "solana-remote-wallet",
@@ -5393,7 +5353,7 @@ dependencies = [
  "Inflector",
  "base64 0.22.1",
  "chrono",
- "clap 2.34.0",
+ "clap",
  "console",
  "humantime",
  "indicatif",
