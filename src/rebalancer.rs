@@ -108,7 +108,7 @@ impl Rebalancer {
         let usd_value = (self.general_config.min_profit * 40.0) * (MIN_LIQUIDATIONS_COUNT as f64);
 
         let sol_price = 150.0; // TODO: Fetch the current SOL price and account for slippage by lowering it
-        let sol_amount: f64 = usd_value / sol_price / 4.0;
+        let sol_amount: f64 = usd_value / sol_price;
         let swap_mint_amount = self.swap(
             solana_sdk::native_token::sol_to_lamports(sol_amount),
             spl_token::native_mint::ID,
