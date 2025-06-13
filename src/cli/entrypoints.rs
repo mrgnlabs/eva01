@@ -55,8 +55,10 @@ pub fn run_liquidator(
         config.general_config.solana_clock_refresh_interval,
     )?;
 
-    // TODO: refactor this fake cache
-    let cache = Cache::new(
+    // TODO: refactor this fake cache. Currently it's only needed to construct the LiquidatorAccount object.
+    // After construction it's replaced with the actual cache.
+    // This way we ensure that the potentially created liquidator (MarginFi) account is picked up when the cache is loaded.
+    let dummy_unused_cache = Cache::new(
         config.general_config.signer_pubkey,
         config.general_config.marginfi_program_id,
         marginfi_group_id,
@@ -69,7 +71,7 @@ pub fn run_liquidator(
     let mut liquidator_account = LiquidatorAccount::new(
         &config.general_config,
         marginfi_group_id,
-        Arc::new(cache),
+        Arc::new(dummy_unused_cache),
         &mut new_liquidator_account,
     )?;
 
