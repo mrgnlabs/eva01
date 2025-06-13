@@ -61,13 +61,13 @@ impl Eva01Config {
         let address_lookup_tables: Vec<Pubkey> =
             parse_pubkey_list("ADDRESS_LOOKUP_TABLES").unwrap_or_else(|_| vec![]);
 
-        let solana_clock_refresh_interval: u64 = std::env::var("SOLANA_CLOCK_REFERSH_INTERVAL")
+        let solana_clock_refresh_interval: u64 = std::env::var("SOLANA_CLOCK_REFRESH_INTERVAL")
             .map_err(|_| {
-                anyhow::anyhow!("SOLANA_CLOCK_REFERSH_INTERVAL environment variable is not set")
+                anyhow::anyhow!("SOLANA_CLOCK_REFRESH_INTERVAL environment variable is not set")
             })?
             .parse()
             .map_err(|e| {
-                anyhow::anyhow!("Invalid SOLANA_CLOCK_REFERSH_INTERVAL number: {:#?}", e)
+                anyhow::anyhow!("Invalid SOLANA_CLOCK_REFRESH_INTERVAL number: {:#?}", e)
             })?;
 
         let general_config = GeneralConfig {
