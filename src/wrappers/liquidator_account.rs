@@ -82,7 +82,7 @@ impl LiquidatorAccount {
         let signer_keypair = read_keypair_file(&config.keypair_path).unwrap();
         let rpc_client = RpcClient::new(config.rpc_url.clone());
 
-        let mut accounts = marginfi_account_by_authority(
+        let accounts = marginfi_account_by_authority(
             signer_keypair.pubkey(),
             &rpc_client,
             config.marginfi_program_id,
