@@ -1,5 +1,4 @@
 use bincode::deserialize;
-use log::info;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::clock::Clock;
 use solana_sdk::sysvar::{self};
@@ -21,7 +20,7 @@ impl ClockManager {
         rpc_url: String,
         refresh_interval_sec: u64,
     ) -> anyhow::Result<Self> {
-        info!("Initializing ClockManager with RPC URL: {}", rpc_url);
+        thread_info!("Initializing ClockManager with RPC URL: {}", rpc_url);
 
         let rpc_client = RpcClient::new(rpc_url);
         //        let clock = Arc::new(Mutex::new(fetch_clock(&rpc_client)?));

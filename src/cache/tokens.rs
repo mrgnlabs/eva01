@@ -9,6 +9,7 @@ use log::error;
 use solana_sdk::{account::Account, pubkey::Pubkey};
 
 //The Liquidator Token accounts
+#[derive(Default)]
 pub struct TokensCache {
     tokens: RwLock<IndexMap<Pubkey, Account>>,
     token_addresses: HashSet<Pubkey>,
@@ -16,14 +17,6 @@ pub struct TokensCache {
 }
 
 impl TokensCache {
-    pub fn new() -> Self {
-        Self {
-            tokens: RwLock::new(IndexMap::new()),
-            token_addresses: HashSet::new(),
-            mint_to_token: HashMap::new(),
-        }
-    }
-
     pub fn try_insert(
         &mut self,
         token_address: Pubkey,
@@ -54,8 +47,17 @@ impl TokensCache {
             .ok()
     }
 
-    pub fn get_addresses(&self) -> Vec<Pubkey> {
-        self.token_addresses.iter().copied().collect()
+    pub fn get_non_preferred_mints(&self, preferred_mints: Vec<Pubkey>) -> Vec<(Pubkey, Pubkey)> {
+        self.mint_to_token
+            .iter()
+            .filter_map(|(mint_address, token_address)| {
+                if preferred_mints.iter().any(|mint| mint == mint_address) {
+                    None
+                } else {
+                    Some((*mint_address, *token_address))
+                }
+            })
+            .collect()
     }
 
     pub fn try_update_account(&self, address: Pubkey, account: Account) -> Result<()> {
@@ -97,13 +99,13 @@ mod tests {
 
     #[test]
     fn test_new_cache() {
-        let cache = TokensCache::new();
+        let cache = TokensCache::default();
         assert_eq!(cache.len().unwrap(), 0);
     }
 
     #[test]
     fn test_try_insert_and_get_account() {
-        let mut cache = TokensCache::new();
+        let mut cache = TokensCache::default();
         let token_address = Pubkey::new_unique();
         let mint_address = Pubkey::new_unique();
         let account = Account::default();
@@ -118,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_try_get_account_not_found() {
-        let cache = TokensCache::new();
+        let cache = TokensCache::default();
         let token_address = Pubkey::new_unique();
 
         let result = cache.try_get_account(&token_address);
@@ -127,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_get_address_by_index() {
-        let mut cache = TokensCache::new();
+        let mut cache = TokensCache::default();
         let token_address = Pubkey::new_unique();
         let mint_address = Pubkey::new_unique();
         let account = Account::default();
@@ -136,13 +138,18 @@ mod tests {
             .try_insert(token_address, account, mint_address)
             .unwrap();
 
-        let retrieved_address = cache.get_addresses().get(0).unwrap().clone();
-        assert_eq!(retrieved_address, token_address);
+        let (retrieved_mint_address, retrieved_token_address) = cache
+            .get_non_preferred_mints(vec![])
+            .get(0)
+            .unwrap()
+            .clone();
+        assert_eq!(retrieved_mint_address, mint_address);
+        assert_eq!(retrieved_token_address, token_address);
     }
 
     #[test]
     fn test_try_update_account() {
-        let mut cache = TokensCache::new();
+        let mut cache = TokensCache::default();
         let token_address = Pubkey::new_unique();
         let mint_address = Pubkey::new_unique();
         let account = Account::default();
@@ -164,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_get_token_for_mint() {
-        let mut cache = TokensCache::new();
+        let mut cache = TokensCache::default();
         let token_address = Pubkey::new_unique();
         let mint_address = Pubkey::new_unique();
         let account = Account::default();
@@ -179,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_try_get_token_for_mint_not_found() {
-        let cache = TokensCache::new();
+        let cache = TokensCache::default();
         let mint_address = Pubkey::new_unique();
 
         let result = cache.try_get_token_for_mint(&mint_address);
@@ -188,7 +195,7 @@ mod tests {
 
     #[test]
     fn test_len() {
-        let mut cache = TokensCache::new();
+        let mut cache = TokensCache::default();
         let token_address = Pubkey::new_unique();
         let mint_address = Pubkey::new_unique();
         let account = Account::default();

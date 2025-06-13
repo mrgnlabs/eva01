@@ -2,12 +2,13 @@ use crate::{
     cache::Cache,
     config::{GeneralConfig, RebalancerCfg},
     sender::{SenderCfg, TransactionSender},
-    thread_debug, thread_error, thread_info, thread_trace,
+    thread_debug, thread_error, thread_info, thread_trace, thread_warn,
     utils::{
         self, build_emode_config, calc_total_weighted_assets_liabs, calc_weighted_bank_assets,
         calc_weighted_bank_liabs, find_oracle_keys, get_free_collateral, swb_cranker::SwbCranker,
         BankAccountWithPriceFeedEva,
     },
+    ward,
     wrappers::{
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
@@ -23,6 +24,7 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
+use log::{debug, info};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
@@ -37,7 +39,6 @@ use solana_sdk::{
 };
 use std::{
     cmp::min,
-    collections::HashSet,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -46,6 +47,8 @@ use std::{
     time::Duration,
 };
 use tokio::runtime::{Builder, Runtime};
+
+const MIN_LIQUIDATIONS_COUNT: u64 = 10;
 
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
@@ -56,7 +59,6 @@ pub struct Rebalancer {
     liquidator_account: LiquidatorAccount,
     swb_cranker: SwbCranker,
     rpc_client: RpcClient,
-    preferred_mints: HashSet<Pubkey>,
     swap_mint_bank_pk: Pubkey,
     run_rebalance: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
@@ -68,18 +70,13 @@ impl Rebalancer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         general_config: GeneralConfig,
-        marginfi_group_id: Pubkey,
         config: RebalancerCfg,
+        liquidator_account: LiquidatorAccount,
         run_rebalance: Arc<AtomicBool>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> anyhow::Result<Self> {
         let rpc_client = RpcClient::new(general_config.rpc_url.clone());
-
-        let liquidator_account =
-            LiquidatorAccount::new(&general_config, marginfi_group_id, cache.clone())?;
-
-        let preferred_mints = config.preferred_mints.iter().copied().collect();
 
         let swap_mint_bank_pk = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
 
@@ -97,13 +94,37 @@ impl Rebalancer {
             liquidator_account,
             swb_cranker,
             rpc_client,
-            preferred_mints,
             swap_mint_bank_pk,
             run_rebalance,
             stop_liquidator,
             tokio_rt,
             cache,
         })
+    }
+
+    pub fn fund_liquidator_account(&mut self) -> anyhow::Result<()> {
+        // Multiply by 40 because the profit is 0.025 of the amount that is being liquidated.
+        // And then multiply by MIN_LIQUIDATIONS_COUNT to get enough funds for that many liquidations.
+        let usd_value = (self.general_config.min_profit * 40.0) * (MIN_LIQUIDATIONS_COUNT as f64);
+
+        let sol_price = 150.0; // TODO: Fetch the current SOL price and account for slippage by lowering it
+        let sol_amount: f64 = usd_value / sol_price;
+        let swap_mint_amount = self.swap(
+            solana_sdk::native_token::sol_to_lamports(sol_amount),
+            spl_token::native_mint::ID,
+            self.config.swap_mint,
+        )?;
+
+        thread_info!(
+            "Funding the newly created liquidator account with {} tokens ({} in SOL).",
+            swap_mint_amount,
+            sol_amount
+        );
+        thread::sleep(Duration::from_secs(10));
+        if let Err(error) = self.deposit_preferred_token(swap_mint_amount) {
+            thread_error!("Failed to deposit preferred token: {}", error)
+        }
+        Ok(())
     }
 
     pub fn start(&mut self) -> anyhow::Result<()> {
@@ -115,7 +136,7 @@ impl Rebalancer {
                 self.rebalance_accounts();
                 thread_debug!("The Rebalancing process is complete.");
             }
-            thread::sleep(Duration::from_secs(10))
+            thread::sleep(Duration::from_secs(10));
         }
         thread_info!("The Rebalancer loop stopped.");
 
@@ -130,7 +151,9 @@ impl Rebalancer {
 
         self.should_stop_liquidator(&lq_account)?;
 
-        Ok(self.has_non_preferred_deposits(&lq_account)? || lq_account.has_liabs())
+        Ok(self.has_tokens_in_token_accounts()?
+            || self.has_non_preferred_deposits(&lq_account)?
+            || lq_account.has_liabs())
     }
 
     fn crank_active_swb_oracles(&self) -> anyhow::Result<()> {
@@ -177,20 +200,29 @@ impl Rebalancer {
             )
         }
 
-        if let Err(error) = self.sell_non_preferred_deposits() {
-            thread_error!("Failed to sell non preferred deposits! {}", error)
-        }
-
         if let Err(error) = self.repay_liabilities() {
             thread_error!("Failed to repay liabilities! {}", error)
         }
 
-        if let Err(error) = self.drain_tokens_from_token_accounts() {
-            thread_error!("Failed to drain the Liquidator's tokens! {}", error)
-        }
+        let sold_deposits = ward!(self
+            .sell_non_preferred_deposits()
+            .map_err(|e| thread_error!("Failed to sell non preferred deposits! {}", e))
+            .ok());
+        debug!("Sold {:?} non-preferred deposits.", sold_deposits.len());
 
-        if let Err(error) = self.deposit_preferred_tokens() {
-            thread_error!("Failed to deposit preferred Tokens! {}", error)
+        let drained_amount = ward!(self
+            .drain_tokens_from_token_accounts(sold_deposits)
+            .map_err(|e| thread_error!("Failed to drain the Liquidator's tokens! {}", e))
+            .ok());
+        debug!(
+            "Drained {:?} tokens from the Liquidator's token accounts.",
+            drained_amount
+        );
+
+        if drained_amount > 0 {
+            if let Err(error) = self.deposit_preferred_token(drained_amount) {
+                thread_error!("Failed to deposit preferred token: {}", error)
+            }
         }
     }
 
@@ -200,13 +232,11 @@ impl Rebalancer {
             calc_total_weighted_assets_liabs(&self.cache, lq_account, RequirementType::Initial)?;
 
         if weighted_assets.is_zero() {
-            thread_error!(
+            thread_warn!(
                 "The Liquidator {:?} has no assets!",
                 self.liquidator_account.liquidator_address
             );
-
-            self.stop_liquidator
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
         }
 
         let ratio = (weighted_assets - weighted_liabs) / weighted_assets;
@@ -226,30 +256,37 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn sell_non_preferred_deposits(&mut self) -> Result<()> {
-        let lq_account = self
+    fn sell_non_preferred_deposits(&mut self) -> Result<Vec<(Pubkey, Pubkey)>> {
+        let liquidator_account = self
             .cache
             .marginfi_accounts
             .try_get_account(&self.liquidator_account.liquidator_address)?;
+        let non_preferred_deposits = liquidator_account.get_deposits(&[self.swap_mint_bank_pk]);
 
-        let non_preferred_deposits =
-            lq_account.get_deposits(&self.config.preferred_mints, self.cache.clone());
+        if non_preferred_deposits.is_empty() {
+            return Ok(vec![]);
+        }
 
-        if !non_preferred_deposits.is_empty() {
-            thread_debug!("Selling non-preferred deposits.");
+        let mut sold_deposits = vec![];
 
-            for bank_pk in non_preferred_deposits {
-                if let Err(error) = self.withdraw_and_sell_deposit(&bank_pk, &lq_account) {
+        thread_debug!("Selling non-preferred deposits.");
+
+        for bank_pk in non_preferred_deposits {
+            match self.withdraw_and_sell_deposit(&bank_pk, &liquidator_account) {
+                Err(error) => {
                     thread_error!(
                         "Failed to withdraw and sell deposit for the Bank ({}): {:?}",
                         bank_pk,
                         error
                     );
                 }
+                Ok(mint_pk) => {
+                    sold_deposits.push((mint_pk, bank_pk));
+                }
             }
         }
 
-        Ok(())
+        Ok(sold_deposits)
     }
 
     fn repay_liabilities(&mut self) -> Result<()> {
@@ -277,12 +314,9 @@ impl Rebalancer {
 
     /// Repay a liability for a given bank
     ///
-    /// - Find any bank tokens in token accounts
     /// - Calc $ value of liab
-    /// - Find USDC account
-    /// - Calc additional USDC to withdraw
-    /// - Withdraw USDC
-    /// - Swap USDC for bank tokens
+    /// - Find swap token account
+    /// - Swap enough of swap token to cover the liab in bank token
     /// - Repay liability
     fn repay_liability(
         &mut self,
@@ -307,19 +341,12 @@ impl Rebalancer {
 
         let (liab_balance, _) = liab_balance_opt.unwrap();
 
-        // Gets how much tokens of needing repay asset to purchase
-        let token_balance = self
-            .get_token_balance_for_bank(&bank_pk)
-            .unwrap_or_default();
-
-        let liab_to_purchase = liab_balance - token_balance;
-
-        if liab_to_purchase.is_zero() {
+        if liab_balance.is_zero() {
             return Ok(());
         }
 
         let liab_usd_value = self.get_value(
-            liab_to_purchase,
+            liab_balance,
             &bank_pk,
             lq_account,
             RequirementType::Initial,
@@ -328,7 +355,7 @@ impl Rebalancer {
         if liab_usd_value < self.config.token_account_dust_threshold {
             thread_debug!(
                 "The {:?} unscaled Liability tokens of Bank {:?} are below the dust threshold {}.",
-                liab_to_purchase,
+                liab_balance,
                 bank_pk,
                 self.config.token_account_dust_threshold
             );
@@ -337,32 +364,22 @@ impl Rebalancer {
 
         thread_debug!(
             "The {:?} unscaled Liability tokens of Bank {:?} need to be repaid with {:?} USD.",
-            liab_to_purchase,
+            liab_balance,
             bank_pk,
             liab_usd_value
         );
 
-        // Get the amount of USDC needed to repay the liability
-
+        // Get the amount of swap token needed to repay the liability
         let required_swap_token = self.get_amount(liab_usd_value, &self.swap_mint_bank_pk, None)?;
 
-        let swap_token_balance = self
-            .get_token_balance_for_bank(&self.swap_mint_bank_pk)
-            .unwrap_or_default();
-
-        let token_balance_to_withdraw = required_swap_token - swap_token_balance;
-
-        let withdraw_amount = if token_balance_to_withdraw.is_positive() {
+        let withdraw_amount = if required_swap_token.is_positive() {
             let (max_withdraw_amount, withdraw_all) =
                 self.get_max_withdraw_for_bank(&self.swap_mint_bank_pk, lq_account)?;
 
-            let withdraw_amount = min(max_withdraw_amount, token_balance_to_withdraw);
-
-            let bank = self.cache.try_get_bank_wrapper(&self.swap_mint_bank_pk)?;
+            let withdraw_amount = min(max_withdraw_amount, required_swap_token);
 
             self.liquidator_account.withdraw(
                 &bank,
-                self.cache.tokens.try_get_token_for_mint(&bank.bank.mint)?,
                 withdraw_amount.to_num(),
                 Some(withdraw_all),
             )?;
@@ -380,69 +397,60 @@ impl Rebalancer {
                 bank_pk,
                 self.swap_mint_bank_pk,
             );
-            self.swap(amount_to_swap.to_num(), &self.swap_mint_bank_pk, &bank_pk)?;
+            self.swap(
+                amount_to_swap.to_num(),
+                self.config.swap_mint,
+                bank.bank.mint,
+            )?;
         }
 
         thread_debug!("Repaying liability for bank {}", bank_pk);
 
         let token_balance = self
-            .get_token_balance_for_bank(&bank_pk)
+            .get_token_balance_for_mint(&bank.bank.mint)
             .unwrap_or_default();
 
         let repay_all = token_balance >= liab_balance;
 
         let bank = self.cache.try_get_bank_wrapper(&bank_pk)?;
-        let token_account = self.cache.tokens.try_get_token_for_mint(&bank.bank.mint)?;
 
-        self.liquidator_account.repay(
-            &bank,
-            &token_account,
-            token_balance.to_num(),
-            Some(repay_all),
-        )?;
+        self.liquidator_account
+            .repay(&bank, token_balance.to_num(), Some(repay_all))?;
 
         Ok(())
     }
 
-    fn deposit_preferred_tokens(&self) -> anyhow::Result<()> {
-        if let Some(balance) = self.get_token_balance_for_bank(&self.swap_mint_bank_pk) {
-            if !balance.is_zero() {
-                thread_debug!(
-                    "Depositing {} of preferred tokens to the Swap mint bank {:?}.",
-                    balance,
-                    &self.swap_mint_bank_pk
-                );
+    fn deposit_preferred_token(&self, amount: u64) -> anyhow::Result<()> {
+        if amount == 0 {
+            return Err(anyhow::anyhow!("Deposit amount is zero!"));
+        }
+        thread_debug!(
+            "Depositing {} of preferred token to the Swap mint bank {:?}.",
+            amount,
+            &self.swap_mint_bank_pk
+        );
 
-                let bank_wrapper = self.cache.try_get_bank_wrapper(&self.swap_mint_bank_pk)?;
-                let token_address = self
-                    .cache
-                    .tokens
-                    .try_get_token_for_mint(&bank_wrapper.bank.mint)?;
-
-                if let Err(error) =
-                    self.liquidator_account
-                        .deposit(&bank_wrapper, token_address, balance.to_num())
-                {
-                    thread_error!(
-                        "Failed to deposit to the Bank ({:?}): {:?}",
-                        &self.swap_mint_bank_pk,
-                        error
-                    );
-                }
-            }
+        let bank_wrapper = self.cache.try_get_bank_wrapper(&self.swap_mint_bank_pk)?;
+        if let Err(error) = self.liquidator_account.deposit(&bank_wrapper, amount) {
+            thread_error!(
+                "Failed to deposit to the Bank ({:?}): {:?}",
+                &self.swap_mint_bank_pk,
+                error
+            );
         }
 
         Ok(())
     }
 
-    // FIXME: broken, it supposed to be checking if the liquidator has any tokens in it's token accounts
-    // https://linear.app/marginfi/issue/LIQ-20/the-token-balances-check-is-broken
-    #[allow(dead_code)]
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
-        for token_address in self.cache.tokens.get_addresses() {
+        for (mint_address, token_address) in self
+            .cache
+            .tokens
+            .get_non_preferred_mints(self.cache.get_preferred_mints())
+        {
             match self
                 .cache
-                .try_get_token_wrapper::<OracleWrapper>(&token_address)
+                .try_get_token_wrapper::<OracleWrapper>(&mint_address, &token_address)
             {
                 Ok(wrapper) => match wrapper.get_value() {
                     Ok(value) => {
@@ -479,18 +487,18 @@ impl Rebalancer {
                     .get_bank(&balance.bank_pk)
                     .is_some_and(|bank| {
                         matches!(balance.get_side(), Some(BalanceSide::Assets))
-                            && !self.preferred_mints.contains(&bank.mint)
+                            && bank.mint != self.config.swap_mint
                     })
             }))
     }
 
-    fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<()> {
-        // FIXME: is it only evaluating the Liquidator's token accounts?
-        for token_address in self.cache.tokens.get_addresses() {
-            match self
-                .cache
-                .try_get_token_wrapper::<OracleWrapper>(&token_address)
-            {
+    fn drain_tokens_from_token_accounts(
+        &mut self,
+        mint_token_addresses: Vec<(Pubkey, Pubkey)>,
+    ) -> anyhow::Result<u64> {
+        let mut drained_amount = 0;
+        for (mint_address, token_address) in mint_token_addresses {
+            match self.cache.try_get_token_wrapper::<OracleWrapper>(&mint_address, &token_address) {
                 Ok(wrapper) => {
                     // Ignore the swap token, usually USDC
                     if wrapper.bank.bank.mint == self.config.swap_mint {
@@ -499,10 +507,10 @@ impl Rebalancer {
 
                     let value = wrapper.get_value()?;
                     if value > self.config.token_account_dust_threshold {
-                        self.swap(
+                        drained_amount += self.swap(
                             wrapper.get_amount().to_num(),
-                            &wrapper.bank.address,
-                            &self.swap_mint_bank_pk,
+                            wrapper.bank.bank.mint,
+                            self.config.swap_mint,
                         )?;
                     } else {
                         thread_debug!(
@@ -521,7 +529,7 @@ impl Rebalancer {
             }
         }
 
-        Ok(())
+        Ok(drained_amount)
     }
 
     /// Withdraw and sells a given asset
@@ -529,12 +537,12 @@ impl Rebalancer {
         &mut self,
         bank_pk: &Pubkey,
         lq_account: &MarginfiAccountWrapper,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Pubkey> {
         let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
         let balance = lq_account.get_balance_for_bank(&bank);
 
         if !matches!(&balance, Some((_, BalanceSide::Assets))) {
-            return Ok(());
+            return Err(anyhow!("No assets to withdraw from the bank"));
         }
 
         let (withdraw_amount, withdrawl_all) =
@@ -548,29 +556,17 @@ impl Rebalancer {
             bank.bank.mint,
             bank_pk
         );
-        self.liquidator_account.withdraw(
-            &bank,
-            self.cache.tokens.try_get_token_for_mint(&bank.bank.mint)?,
-            amount,
-            Some(withdrawl_all),
-        )?;
 
-        self.swap(amount, bank_pk, &self.swap_mint_bank_pk)?;
+        self.liquidator_account
+            .withdraw(&bank, amount, Some(withdrawl_all))?;
 
-        Ok(())
+        self.swap(amount, bank.bank.mint, self.config.swap_mint)?;
+
+        Ok(bank.bank.mint)
     }
 
-    fn swap(&self, amount: u64, src_bank: &Pubkey, dst_bank: &Pubkey) -> anyhow::Result<()> {
-        thread_debug!(
-            "Swapping {} unscaled tokens from {} to {}.",
-            amount,
-            src_bank,
-            dst_bank
-        );
-
-        let input_mint = self.cache.banks.try_get_bank(src_bank)?.mint;
-        let output_mint = self.cache.banks.try_get_bank(dst_bank)?.mint;
-
+    fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {
+        info!("Jupiter swap: {} -> {}", input_mint, output_mint);
         let jup_swap_client = JupiterSwapApiClient::new(self.config.jup_swap_api_url.clone());
 
         let quote_response = self
@@ -583,12 +579,14 @@ impl Rebalancer {
                 ..Default::default()
             }))?;
 
+        let out_amount = quote_response.out_amount;
+
         let swap = self.tokio_rt.block_on(jup_swap_client.swap(
             &SwapRequest {
                 user_public_key: self.general_config.signer_pubkey,
                 quote_response,
                 config: TransactionConfig {
-                    wrap_and_unwrap_sol: false,
+                    wrap_and_unwrap_sol: input_mint == spl_token::native_mint::ID,
                     compute_unit_price_micro_lamports: Some(
                         ComputeUnitPriceMicroLamports::MicroLamports(
                             self.general_config.compute_unit_price_micro_lamports,
@@ -601,7 +599,7 @@ impl Rebalancer {
         ))?;
 
         let mut tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
-            .map_err(|_| anyhow!("Failed to deserialize"))?;
+            .map_err(|_| anyhow::anyhow!("Failed to deserialize"))?;
 
         tx = VersionedTransaction::try_new(
             tx.message,
@@ -611,7 +609,7 @@ impl Rebalancer {
         TransactionSender::aggressive_send_tx(&self.rpc_client, &tx, SenderCfg::DEFAULT)
             .map_err(|_| anyhow!("Failed to send swap transaction"))?;
 
-        Ok(())
+        Ok(out_amount)
     }
 
     pub fn get_max_withdraw_for_bank(
@@ -667,9 +665,11 @@ impl Rebalancer {
         Ok(value)
     }
 
-    fn get_token_balance_for_bank(&self, bank_pk: &Pubkey) -> Option<I80F48> {
+    fn get_token_balance_for_mint(&self, mint_address: &Pubkey) -> Option<I80F48> {
+        let token_account_address = self.cache.tokens.get_token_for_mint(mint_address)?;
         self.cache
-            .get_token_account_for_bank(bank_pk)
+            .tokens
+            .get_account(&token_account_address)
             .map(|account| I80F48::from_num(utils::accessor::amount(account.data())))
     }
 

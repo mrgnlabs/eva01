@@ -5,19 +5,13 @@ use solana_sdk::pubkey::Pubkey;
 
 use crate::utils::find_oracle_keys;
 use anyhow::{anyhow, Result};
+#[derive(Default)]
 pub struct BanksCache {
     banks: HashMap<Pubkey, Bank>,
     mint_to_bank: HashMap<Pubkey, Pubkey>,
 }
 
 impl BanksCache {
-    pub fn new() -> Self {
-        Self {
-            banks: HashMap::new(),
-            mint_to_bank: HashMap::new(),
-        }
-    }
-
     pub fn insert(&mut self, bank_address: Pubkey, bank: Bank) {
         self.banks.insert(bank_address, bank);
         self.mint_to_bank.insert(bank.mint, bank_address);
@@ -121,7 +115,7 @@ pub mod tests {
 
     #[test]
     fn test_insert_and_get_account() {
-        let mut cache = BanksCache::new();
+        let mut cache = BanksCache::default();
         let bank_address = Pubkey::new_unique();
         let bank = create_test_bank(Pubkey::new_unique());
 
@@ -134,7 +128,7 @@ pub mod tests {
 
     #[test]
     fn test_try_get_account() {
-        let mut cache = BanksCache::new();
+        let mut cache = BanksCache::default();
         let bank_address = Pubkey::new_unique();
         let bank = create_test_bank(Pubkey::new_unique());
 
@@ -147,19 +141,20 @@ pub mod tests {
 
     #[test]
     fn test_get_oracles() {
-        let mut cache = BanksCache::new();
+        let mut cache = BanksCache::default();
         let bank_address = Pubkey::new_unique();
         let bank = create_test_bank(Pubkey::new_unique());
 
         cache.insert(bank_address, bank);
         let oracles = cache.get_oracles();
 
-        assert_eq!(oracles.len(), 2);
+        assert_eq!(oracles.len(), 1);
+        assert_eq!(oracles.iter().next().unwrap(), &bank.config.oracle_keys[0]);
     }
 
     #[test]
     fn test_try_get_account_for_mint() {
-        let mut cache = BanksCache::new();
+        let mut cache = BanksCache::default();
         let bank_address = Pubkey::new_unique();
         let mint = Pubkey::new_unique();
         let bank = create_test_bank(mint);
@@ -173,7 +168,7 @@ pub mod tests {
 
     #[test]
     fn test_get_mints() {
-        let mut cache = BanksCache::new();
+        let mut cache = BanksCache::default();
         let bank_address1 = Pubkey::new_unique();
         let bank_address2 = Pubkey::new_unique();
         let mint1 = Pubkey::new_unique();
@@ -192,7 +187,7 @@ pub mod tests {
 
     #[test]
     fn test_len() {
-        let mut cache = BanksCache::new();
+        let mut cache = BanksCache::default();
         assert_eq!(cache.len(), 0);
 
         let bank_address = Pubkey::new_unique();

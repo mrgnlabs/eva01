@@ -70,6 +70,11 @@ impl Eva01Config {
                 anyhow::anyhow!("Invalid SOLANA_CLOCK_REFRESH_INTERVAL number: {:#?}", e)
             })?;
 
+        let min_profit: f64 = std::env::var("MIN_PROFIT")
+            .map_err(|_| anyhow::anyhow!("MIN_PROFIT environment variable is not set"))?
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid MIN_PROFIT number: {:#?}", e))?;
+
         let general_config = GeneralConfig {
             rpc_url,
             yellowstone_endpoint,
@@ -83,24 +88,18 @@ impl Eva01Config {
             marginfi_groups_blacklist,
             address_lookup_tables,
             solana_clock_refresh_interval,
+            min_profit,
         };
 
         general_config.validate()?;
 
         // Liquidator process configuration
-        let min_profit: f64 = std::env::var("MIN_PROFIT")
-            .map_err(|_| anyhow::anyhow!("MIN_PROFIT environment variable is not set"))?
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid MIN_PROFIT number: {:#?}", e))?;
         let isolated_banks: bool = std::env::var("ISOLATED_BANKS")
             .map_err(|_| anyhow::anyhow!("ISOLATED_BANKS environment variable is not set"))?
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid ISOLATED_BANKS boolean: {:#?}", e))?;
 
-        let liquidator_config = LiquidatorCfg {
-            min_profit,
-            isolated_banks,
-        };
+        let liquidator_config = LiquidatorCfg { isolated_banks };
 
         // Rebalancer process configuration
         let token_account_dust_threshold: f64 = std::env::var("TOKEN_ACCOUNT_DUST_THRESHOLD")
@@ -172,6 +171,7 @@ pub struct GeneralConfig {
     pub marginfi_groups_blacklist: Vec<Pubkey>,
     pub address_lookup_tables: Vec<Pubkey>,
     pub solana_clock_refresh_interval: u64,
+    pub min_profit: f64,
 }
 
 impl GeneralConfig {
@@ -203,6 +203,7 @@ impl std::fmt::Display for GeneralConfig {
                  - Keypair Path: {:?}\n\
                  - Compute Unit Price Micro Lamports: {}\n\
                  - Compute Unit Limit: {}\n\
+                 - Minimun profit: {}$\n\
                  - Marginfi Program ID: {}\n\
                  - Marginfi Groups Whitelist: {:?}\n\
                  - Marginfi Groups Blacklist: {:?}\n",
@@ -213,6 +214,7 @@ impl std::fmt::Display for GeneralConfig {
             self.keypair_path,
             self.compute_unit_price_micro_lamports,
             self.compute_unit_limit,
+            self.min_profit,
             self.marginfi_program_id,
             self.marginfi_groups_whitelist,
             self.marginfi_groups_blacklist,
@@ -223,7 +225,6 @@ impl std::fmt::Display for GeneralConfig {
 #[derive(Debug, Default, Clone)]
 pub struct LiquidatorCfg {
     /// Minimun profit on a liquidation to be considered, denominated in USD. Example: 0.01 means $0.01
-    pub min_profit: f64,
     pub isolated_banks: bool,
 }
 
@@ -232,9 +233,8 @@ impl std::fmt::Display for LiquidatorCfg {
         write!(
             f,
             "Liquidator Config: \n\
-                - Minimun profit: {}$\n\
                 - Isolated banks: {}$\n",
-            self.min_profit, self.isolated_banks
+            self.isolated_banks
         )
     }
 }
@@ -437,6 +437,7 @@ mod tests {
             marginfi_groups_blacklist: vec![],
             address_lookup_tables: vec![],
             solana_clock_refresh_interval: 0,
+            min_profit: 0.01,
         };
         assert!(config.validate().is_ok());
 
@@ -460,6 +461,7 @@ mod tests {
             marginfi_groups_blacklist: vec![Pubkey::default()],
             address_lookup_tables: vec![],
             solana_clock_refresh_interval: 0,
+            min_profit: 0.01,
         };
         assert!(config.validate().is_err());
     }
@@ -479,6 +481,7 @@ mod tests {
             marginfi_groups_blacklist: vec![],
             address_lookup_tables: vec![],
             solana_clock_refresh_interval: 0,
+            min_profit: 0.01,
         };
         assert!(config.validate().is_err());
     }

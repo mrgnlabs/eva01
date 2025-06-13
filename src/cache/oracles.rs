@@ -2,17 +2,12 @@ use anyhow::{anyhow, Result};
 use solana_sdk::{account::Account, pubkey::Pubkey};
 use std::{collections::HashMap, sync::RwLock};
 
+#[derive(Default)]
 pub struct OraclesCache {
     accounts: RwLock<HashMap<Pubkey, Account>>,
 }
 
 impl OraclesCache {
-    pub fn new() -> Self {
-        Self {
-            accounts: RwLock::new(HashMap::new()),
-        }
-    }
-
     pub fn try_insert(&mut self, address: Pubkey, account: Account) -> Result<()> {
         self.accounts
             .write()
@@ -102,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_try_insert() {
-        let mut cache = OraclesCache::new();
+        let mut cache = OraclesCache::default();
         let oracle_account = Account::default();
         let oracle_wrapper = TestOracleWrapper::test_sol();
         let oracle_address = oracle_wrapper.address;
@@ -118,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_get_accounts() {
-        let mut cache = OraclesCache::new();
+        let mut cache = OraclesCache::default();
         let address1 = Pubkey::new_unique();
         let account1 = Account::default();
         cache.try_insert(address1, account1.clone()).unwrap();
@@ -134,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_get_addresses() {
-        let mut cache = OraclesCache::new();
+        let mut cache = OraclesCache::default();
         let address1 = Pubkey::new_unique();
         let address2 = Pubkey::new_unique();
 

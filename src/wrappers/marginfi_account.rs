@@ -1,8 +1,4 @@
-use crate::{
-    cache::Cache,
-    thread_debug,
-    wrappers::oracle::{try_build_oracle_wrapper, OracleWrapper},
-};
+use crate::{cache::Cache, thread_debug, wrappers::oracle::try_build_oracle_wrapper};
 
 use super::{bank::BankWrapperT, oracle::OracleWrapperTrait};
 use anyhow::{Error, Result};
@@ -46,15 +42,14 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_deposits(&self, mints_to_exclude: &[Pubkey], cache: Arc<Cache>) -> Vec<Pubkey> {
+    pub fn get_deposits(&self, banks_to_exclude: &[Pubkey]) -> Vec<Pubkey> {
         self.lending_account
             .balances
             .iter()
             .filter_map(|b| {
                 if b.is_active()
                     && matches!(b.get_side(), Some(BalanceSide::Assets))
-                    && !mints_to_exclude
-                        .contains(&cache.banks.get_bank(&b.bank_pk).map(|bank| bank.mint)?)
+                    && !banks_to_exclude.contains(&b.bank_pk)
                 {
                     Some(b.bank_pk)
                 } else {
@@ -116,7 +111,7 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_observation_accounts(
+    pub fn get_observation_accounts<T: OracleWrapperTrait + Clone>(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
@@ -141,7 +136,7 @@ impl MarginfiAccountWrapper {
         // Add bank oracles
         let observation_accounts = bank_pks.iter().flat_map(|bank_pk| {
             let bank = cache.banks.try_get_bank(bank_pk)?;
-            let bank_oracle_wrapper = try_build_oracle_wrapper::<OracleWrapper>(&cache, bank_pk)?;
+            let bank_oracle_wrapper: T = try_build_oracle_wrapper(&cache, bank_pk)?;
             thread_debug!(
                 "Observation account Bank: {:?}, asset tag type: {:?}.",
                 bank_pk,
@@ -169,10 +164,15 @@ impl MarginfiAccountWrapper {
             }
         });
 
-        Ok((
-            observation_accounts.into_iter().flatten().collect(),
+        let res = (
+            observation_accounts
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>(),
             swb_oracles,
-        ))
+        );
+
+        Ok(res)
     }
 }
 
@@ -278,7 +278,9 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
 
-    use crate::wrappers::bank::test_utils::TestBankWrapper;
+    use crate::wrappers::{
+        bank::test_utils::TestBankWrapper, oracle::test_utils::TestOracleWrapper,
+    };
 
     use super::*;
 
@@ -293,18 +295,13 @@ mod tests {
         cache.banks.insert(sol_bank.address, sol_bank.bank);
         cache.banks.insert(usdc_bank.address, usdc_bank.bank);
 
-        let cache = Arc::new(cache);
-
         let healthy = MarginfiAccountWrapper::test_healthy(&sol_bank, &usdc_bank);
         assert!(healthy.has_liabs());
         assert_eq!(
             healthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), usdc_bank.address)]
         );
-        assert_eq!(
-            healthy.get_deposits(&[], cache.clone()),
-            vec![(sol_bank.address)]
-        );
+        assert_eq!(healthy.get_deposits(&[]), vec![sol_bank.address]);
         let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
@@ -335,10 +332,7 @@ mod tests {
             unhealthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), sol_bank.address)]
         );
-        assert_eq!(
-            unhealthy.get_deposits(&[], cache),
-            vec![(usdc_bank.address)]
-        );
+        assert_eq!(unhealthy.get_deposits(&[]), vec![usdc_bank.address]);
         let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
@@ -388,7 +382,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_get_healthy_observation_accounts() {
         let sol_bank = TestBankWrapper::test_sol();
         let sol_oracle_address = sol_bank.oracle_adapter.get_address();
@@ -399,7 +392,7 @@ mod tests {
         let cache = Arc::new(cache);
 
         assert_eq!(
-            MarginfiAccountWrapper::get_observation_accounts(
+            MarginfiAccountWrapper::get_observation_accounts::<TestOracleWrapper>(
                 &healthy_wrapper.lending_account,
                 &[],
                 &[],
@@ -425,7 +418,7 @@ mod tests {
         let cache = Arc::new(cache);
 
         assert_eq!(
-            MarginfiAccountWrapper::get_observation_accounts(
+            MarginfiAccountWrapper::get_observation_accounts::<TestOracleWrapper>(
                 &unhealthy_wrapper.lending_account,
                 &[],
                 &[],
@@ -437,7 +430,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_get_observation_accounts_with_banks_to_include() {
         let sol_bank_wrapper = TestBankWrapper::test_sol();
         let usdc_bank_wrapper = TestBankWrapper::test_usdc();
@@ -454,8 +446,9 @@ mod tests {
 
         let banks_to_include = vec![bonk_bank_wrapper.address, sol_bank_wrapper.address];
         let banks_to_exclude = vec![];
+
         assert_eq!(
-            MarginfiAccountWrapper::get_observation_accounts(
+            MarginfiAccountWrapper::get_observation_accounts::<TestOracleWrapper>(
                 &healthy_wrapper.lending_account,
                 &banks_to_include,
                 &banks_to_exclude,
@@ -464,12 +457,12 @@ mod tests {
             .unwrap(),
             (
                 vec![
+                    bonk_bank_wrapper.address,
+                    bonk_bank_wrapper.oracle_adapter.address,
                     sol_bank_wrapper.address,
                     sol_bank_wrapper.oracle_adapter.address,
                     usdc_bank_wrapper.address,
                     usdc_bank_wrapper.oracle_adapter.address,
-                    bonk_bank_wrapper.address,
-                    bonk_bank_wrapper.oracle_adapter.address
                 ],
                 vec![bonk_bank_wrapper.oracle_adapter.address] // Bonk oracle is the only switchboard oracle
             )
@@ -477,7 +470,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_get_observation_accounts_with_banks_to_exclude_and_gaps() {
         let sol_bank_wrapper = TestBankWrapper::test_sol();
         let usdc_bank_wrapper = TestBankWrapper::test_usdc();
@@ -496,7 +488,7 @@ mod tests {
         let banks_to_include = vec![bonk_bank_wrapper.address];
         let banks_to_exclude = vec![sol_bank_wrapper.address];
         assert_eq!(
-            MarginfiAccountWrapper::get_observation_accounts(
+            MarginfiAccountWrapper::get_observation_accounts::<TestOracleWrapper>(
                 &healthy_wrapper.lending_account,
                 &banks_to_include,
                 &banks_to_exclude,

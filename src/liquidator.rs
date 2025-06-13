@@ -34,6 +34,7 @@ use std::{sync::atomic::Ordering, thread};
 pub struct Liquidator {
     liquidator_account: LiquidatorAccount,
     config: LiquidatorCfg,
+    min_profit: f64,
     run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
@@ -49,22 +50,19 @@ pub struct PreparedLiquidatableAccount {
 }
 
 impl Liquidator {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         general_config: GeneralConfig,
-        marginfi_group_id: Pubkey,
         liquidator_config: LiquidatorCfg,
+        liquidator_account: LiquidatorAccount,
         run_liquidation: Arc<AtomicBool>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
-        let liquidator_account =
-            LiquidatorAccount::new(&general_config, marginfi_group_id, cache.clone())?;
-
         let swb_cranker = SwbCranker::new(&general_config)?;
 
         Ok(Liquidator {
             config: liquidator_config,
+            min_profit: general_config.min_profit,
             run_liquidation,
             liquidator_account,
             stop_liquidator,
@@ -361,6 +359,7 @@ impl Liquidator {
         let (total_weighted_assets, total_weighted_liabilities) =
             calc_total_weighted_assets_liabs(&self.cache, account, RequirementType::Maintenance)?;
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
+        thread_debug!("maintenance_health = {:?}", maintenance_health);
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
@@ -405,7 +404,7 @@ impl Liquidator {
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
-        if liquidator_profit <= self.config.min_profit {
+        if liquidator_profit <= self.min_profit {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
 
