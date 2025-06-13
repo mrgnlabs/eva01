@@ -1,44 +1,38 @@
 
-# Eva01
+# Eva01 - the Marginfi Liquidator
 
-Marginfi liquidator
+## Structure
+* `bin` - shell scripts and environment configuration file templare
+* `src` - source code
+* eva.Dockerfile - the Docker configuration for building an image to run on Kubernetes.
 
-## Deployment Guide
-### Installing dependencies
+### Configuration
+The [env.template](bin/env.template) file is a template for required and optional environment variables that are used by Eva.
 
-1. OS librarires: `sudo apt install build-essential libssl-dev pkg-config unzip`
-1. Protoc:  https://grpc.io/docs/protoc-installation/#install-pre-compiled-binaries-any-os;
-1. Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+## Deployment
+### Linux box
+1. Install dependencies
+    * OS librarires: `sudo apt install build-essential libssl-dev pkg-config unzip`
+    * Protoc:  https://grpc.io/docs/protoc-installation/#install-pre-compiled-binaries-any-os;
+    * Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+1. Clone the Git repo.
+1. Create and configure the `.env`  file by using [env.template](bin/env.template) as prototype.
 
-### Creating a New Configuration File
-To initiate the creation of a new configuration file for the liquidator, execute the following command in your terminal: `cargo run -- setup`
+ > VSCode: create the VSCode launch configuration and add the configured `.env` to it.
 
-This command launches a Mini CLI wizard that guides you through setting up a base configuration for the liquidator. During this process, it will also check if you have a MarginfiAccount initialized. If not, it will prompt you to create one. At this stage, the setup will only request the essential variables. For adjusting settings like `Minimum Profit`, you'll need to manually edit the configuration file afterward.
+### Kubernetes
+tbd
 
-#### Ubuntu 
-Copy the `src/eva01/bin/env.template` to environment specific file and populate environment variables.
-
-### Starting the liquidator
-Local:`cargo run -- run <config.toml>`
-
-#### Ubuntu
-1. `source src/eva01/bin/prod.env`
+## Run
+### Linux box
+1. Source the `.env` file. Example: `source src/eva01/bin/prod.env`
 1. Optionally Rotate logs: `mv  ~/log/liquidator.log  ~/log/liquidator.log.$(date +'%Y%m%dT%H%M%S')`
-1. `nohup bash $LIQUIDATOR_SRC_PATH/bin/start.sh ~/.config/mrgn/lq_config.toml >> ~/log/liquidator.log 2>&1 &`
+1. Run the Liquidator: `nohup bash $LIQUIDATOR_SRC_PATH/bin/start.sh >> ~/log/liquidator.log 2>&1 &`
 
-Replace `<config.toml>` with the path to your newly created configuration file. After initiating this command, Eva begins its operation. Please note that it might take a few minutes for Eva to load all the marginfi accounts, including English support, and to be fully operational.
-
-### Initial Loading Time
+> Initial Loading Time
 The initial loading phase can take some time, depending on your RPC. Eva will load everything needed into the state, including all Marginfi Accounts. Expect the loading time to be between 1-3 minutes depending on the RPC.
 
-## Eva01 Configuration
-To run eva you need to add configuration variables first.
+> Local Docker: Run `docker build -f <CONFIG FILE> -t eva:latest .` to build an image and `docker run --env-file docker.staging.env --rm -v <WALLET>:<WALLET> eva` to run it.
 
-## Required Configuration
-The following are mandatory to run Eva
-
-- `RPC_URL` The RPC endpoint URL as a string.
-- `YELLOWSTONE_ENDPOINT` The Yellowstone endpoint URL as a string.
-- `KEYPAIR_PATH` The wallet keypair for the liquidator. It is a string that is the path of the file containing the Keypair object.
-- `SIGNER_PUBKEY` The pubkey corresponding to the keypair
-- `LIQUIDATOR_ACCOUNT` The marginfi account corresponding to the `SIGNER_PUBKEY`
+### Kubernetes
+tbd

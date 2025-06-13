@@ -581,23 +581,22 @@ impl Rebalancer {
 
         let out_amount = quote_response.out_amount;
 
-        let swap = self.tokio_rt.block_on(
-            jup_swap_client.swap(
-                &SwapRequest {
-                    user_public_key: self.general_config.signer_pubkey,
-                    quote_response,
-                    config: TransactionConfig {
-                        wrap_and_unwrap_sol: input_mint == spl_token::native_mint::ID,
-                        compute_unit_price_micro_lamports: self
-                            .general_config
-                            .compute_unit_price_micro_lamports
-                            .map(ComputeUnitPriceMicroLamports::MicroLamports),
-                        ..Default::default()
-                    },
+        let swap = self.tokio_rt.block_on(jup_swap_client.swap(
+            &SwapRequest {
+                user_public_key: self.general_config.signer_pubkey,
+                quote_response,
+                config: TransactionConfig {
+                    wrap_and_unwrap_sol: input_mint == spl_token::native_mint::ID,
+                    compute_unit_price_micro_lamports: Some(
+                        ComputeUnitPriceMicroLamports::MicroLamports(
+                            self.general_config.compute_unit_price_micro_lamports,
+                        ),
+                    ),
+                    ..Default::default()
                 },
-                None,
-            ),
-        )?;
+            },
+            None,
+        ))?;
 
         let mut tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
             .map_err(|_| anyhow::anyhow!("Failed to deserialize"))?;
