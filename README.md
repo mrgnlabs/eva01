@@ -32,5 +32,7 @@ tbd
 > Initial Loading Time
 The initial loading phase can take some time, depending on your RPC. Eva will load everything needed into the state, including all Marginfi Accounts. Expect the loading time to be between 1-3 minutes depending on the RPC.
 
+> Local Docker: Run `docker build -f <CONFIG FILE> -t eva:latest .` to build an image and `docker run --env-file docker.staging.env --rm -v <WALLET>:<WALLET> eva` to run it.
+
 ### Kubernetes
 tbd
