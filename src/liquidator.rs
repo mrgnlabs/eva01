@@ -13,7 +13,6 @@ use crate::{
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::debug;
 use marginfi::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
     state::{
@@ -360,7 +359,7 @@ impl Liquidator {
         let (total_weighted_assets, total_weighted_liabilities) =
             calc_total_weighted_assets_liabs(&self.cache, account, RequirementType::Maintenance)?;
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
-        debug!("maintenance_health = {:?}", maintenance_health);
+        thread_debug!("maintenance_health = {:?}", maintenance_health);
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }

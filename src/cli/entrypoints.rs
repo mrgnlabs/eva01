@@ -11,7 +11,6 @@ use crate::{
     thread_error, thread_info,
     wrappers::liquidator_account::LiquidatorAccount,
 };
-use log::info;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::{
@@ -25,7 +24,7 @@ pub fn run_liquidator(
     marginfi_group_id: Pubkey,
     preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
 ) -> anyhow::Result<()> {
-    info!("Starting liquidator for group: {:?}", marginfi_group_id);
+    thread_info!("Starting liquidator for group: {:?}", marginfi_group_id);
     // TODO: re-enable. https://linear.app/marginfi/issue/LIQ-13/reenable-grafana-metrics-reporting
     // register_metrics();
 
@@ -74,7 +73,7 @@ pub fn run_liquidator(
         &mut new_liquidator_account,
     )?;
 
-    info!("Loading Cache...");
+    thread_info!("Loading Cache...");
     let mut cache = Cache::new(
         config.general_config.signer_pubkey,
         config.general_config.marginfi_program_id,
@@ -97,14 +96,14 @@ pub fn run_liquidator(
         .any(|&mint| mint == &config.rebalancer_config.swap_mint)
     {
         config.rebalancer_config.swap_mint = *mints[0]; // TODO: come up with a smarter logic for choosing the preferred asset
-        info!("Configured preferred asset not found in cache, using the first one from cache as preferred: {}", config.rebalancer_config.swap_mint);
+        thread_info!("Configured preferred asset not found in cache, using the first one from cache as preferred: {}", config.rebalancer_config.swap_mint);
     }
 
     cache.insert_preferred_mint(config.rebalancer_config.swap_mint);
 
     let accounts_to_track = get_accounts_to_track(&cache)?;
 
-    info!("Initializing services...");
+    thread_info!("Initializing services...");
 
     // GeyserService -> GeyserProcessor
     // GeyserProcessor -> Liquidator/Rebalancer
@@ -151,16 +150,24 @@ pub fn run_liquidator(
         cache,
     )?;
 
-    info!("Starting services...");
+    thread_info!("Starting services...");
 
     thread::spawn(move || clock_manager.start());
 
     thread::spawn(move || {
-        if let Err(e) = geyser_processor.start(new_liquidator_account) {
+        if let Err(e) = liquidator.start() {
+            thread_error!("The Liquidator service failed! {:?}", e);
+            panic!("Fatal error in the Liquidator service!");
+        }
+    });
+
+    thread::spawn(move || {
+        if let Err(e) = geyser_processor.start() {
             thread_error!("GeyserProcessor failed! {:?}", e);
             panic!("Fatal error in GeyserProcessor!");
         }
     });
+
     thread::spawn(move || {
         if let Err(e) = geyser_service.start() {
             thread_error!("GeyserService failed! {:?}", e);
@@ -176,13 +183,6 @@ pub fn run_liquidator(
         if let Err(e) = rebalancer.start() {
             thread_error!("Rebalancer failed! {:?}", e);
             panic!("Fatal error in Rebalancer!");
-        }
-    });
-
-    thread::spawn(move || {
-        if let Err(e) = liquidator.start() {
-            thread_error!("The Liquidator service failed! {:?}", e);
-            panic!("Fatal error in the Liquidator service!");
         }
     });
 

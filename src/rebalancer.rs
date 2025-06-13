@@ -2,7 +2,7 @@ use crate::{
     cache::Cache,
     config::{GeneralConfig, RebalancerCfg},
     sender::{SenderCfg, TransactionSender},
-    thread_debug, thread_error, thread_info, thread_trace,
+    thread_debug, thread_error, thread_info, thread_trace, thread_warn,
     utils::{
         self, build_emode_config, calc_total_weighted_assets_liabs, calc_weighted_bank_assets,
         calc_weighted_bank_liabs, find_oracle_keys, get_free_collateral, swb_cranker::SwbCranker,
@@ -124,7 +124,6 @@ impl Rebalancer {
         if let Err(error) = self.deposit_preferred_token(swap_mint_amount) {
             thread_error!("Failed to deposit preferred token: {}", error)
         }
-        thread::sleep(Duration::from_secs(10));
         Ok(())
     }
 
@@ -233,13 +232,11 @@ impl Rebalancer {
             calc_total_weighted_assets_liabs(&self.cache, lq_account, RequirementType::Initial)?;
 
         if weighted_assets.is_zero() {
-            thread_error!(
+            thread_warn!(
                 "The Liquidator {:?} has no assets!",
                 self.liquidator_account.liquidator_address
             );
-
-            self.stop_liquidator
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
         }
 
         let ratio = (weighted_assets - weighted_liabs) / weighted_assets;
@@ -449,7 +446,7 @@ impl Rebalancer {
         for (mint_address, token_address) in self
             .cache
             .tokens
-            .get_non_preferred_addresses(self.cache.get_preferred_mints())
+            .get_non_preferred_mints(self.cache.get_preferred_mints())
         {
             match self
                 .cache

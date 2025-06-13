@@ -52,7 +52,7 @@ impl Cache {
             signer_pk,
             marginfi_program_id,
             marginfi_group_address,
-            marginfi_accounts: MarginfiAccountsCache::new(),
+            marginfi_accounts: MarginfiAccountsCache::default(),
             banks: BanksCache::default(),
             mints: MintsCache::default(),
             oracles: OraclesCache::default(),

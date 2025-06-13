@@ -47,10 +47,7 @@ impl TokensCache {
             .ok()
     }
 
-    pub fn get_non_preferred_addresses(
-        &self,
-        preferred_mints: Vec<Pubkey>,
-    ) -> Vec<(Pubkey, Pubkey)> {
+    pub fn get_non_preferred_mints(&self, preferred_mints: Vec<Pubkey>) -> Vec<(Pubkey, Pubkey)> {
         self.mint_to_token
             .iter()
             .filter_map(|(mint_address, token_address)| {
@@ -142,7 +139,7 @@ mod tests {
             .unwrap();
 
         let (retrieved_mint_address, retrieved_token_address) = cache
-            .get_non_preferred_addresses(vec![])
+            .get_non_preferred_mints(vec![])
             .get(0)
             .unwrap()
             .clone();

@@ -13,7 +13,6 @@ use crate::{
     wrappers::oracle::OracleWrapper,
 };
 use anyhow::{anyhow, Result};
-use log::info;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 
 use solana_program::pubkey::Pubkey;
@@ -89,14 +88,13 @@ impl LiquidatorAccount {
             config.marginfi_program_id,
             marginfi_group_id,
         )?;
-        info!(
+        thread_info!(
             "Found {} MarginFi accounts for the provided signer",
             accounts.len()
         );
         for account in accounts.iter() {
-            info!("MarginFi account: {:?}", account);
+            thread_info!("MarginFi account: {:?}", account);
         }
-        accounts.clear();
 
         let liquidator_address = if accounts.is_empty() {
             thread_info!("No MarginFi account found for the provided signer. Creating it...");
