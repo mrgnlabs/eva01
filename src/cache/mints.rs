@@ -5,19 +5,13 @@ use solana_sdk::{account::Account, pubkey::Pubkey};
 
 use crate::wrappers::mint::MintWrapper;
 
+#[derive(Default)]
 pub struct MintsCache {
     mints: HashMap<Pubkey, MintWrapper>,
     token_to_mint: HashMap<Pubkey, Pubkey>,
 }
 
 impl MintsCache {
-    pub fn new() -> Self {
-        Self {
-            mints: HashMap::new(),
-            token_to_mint: HashMap::new(),
-        }
-    }
-
     pub fn insert(&mut self, mint_address: Pubkey, mint: Account, token_address: Pubkey) {
         self.mints
             .insert(mint_address, MintWrapper::new(token_address, mint));
@@ -29,6 +23,10 @@ impl MintsCache {
             .get(address)
             .ok_or(anyhow!("Failed to find Mint for the Address {}!", &address))
             .cloned()
+    }
+
+    pub fn get_mints(&self) -> Vec<&Pubkey> {
+        self.mints.keys().collect()
     }
 
     pub fn get_tokens(&self) -> Vec<Pubkey> {
@@ -57,7 +55,7 @@ mod tests {
 
     #[test]
     fn test_mints_cache() {
-        let mut mints_cache = MintsCache::new();
+        let mut mints_cache = MintsCache::default();
         let mint_address = Pubkey::new_unique();
         let token_address = Pubkey::new_unique();
         let mint_account = Account::new(0, 0, &Pubkey::new_unique());
@@ -71,7 +69,7 @@ mod tests {
 
     #[test]
     fn test_try_get_account_not_found() {
-        let mints_cache = MintsCache::new();
+        let mints_cache = MintsCache::default();
         let mint_address = Pubkey::new_unique();
 
         let result = mints_cache.try_get_account(&mint_address);
@@ -80,7 +78,7 @@ mod tests {
 
     #[test]
     fn test_try_get_mint_for_token_not_found() {
-        let mints_cache = MintsCache::new();
+        let mints_cache = MintsCache::default();
         let token_address = Pubkey::new_unique();
 
         let result = mints_cache.try_get_mint_for_token(&token_address);
@@ -89,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_get_token() {
-        let mut mints_cache = MintsCache::new();
+        let mut mints_cache = MintsCache::default();
         let mint_address = Pubkey::new_unique();
         let token_address = Pubkey::new_unique();
         let mint_account = Account::new(0, 0, &Pubkey::new_unique());
@@ -103,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_len() {
-        let mut mints_cache = MintsCache::new();
+        let mut mints_cache = MintsCache::default();
         assert_eq!(mints_cache.len(), 0);
 
         let mint_address = Pubkey::new_unique();
@@ -117,7 +115,7 @@ mod tests {
 
     #[test]
     fn test_insert_duplicate() {
-        let mut mints_cache = MintsCache::new();
+        let mut mints_cache = MintsCache::default();
         let mint_address = Pubkey::new_unique();
         let token_address = Pubkey::new_unique();
         let mint_account = Account::new(0, 0, &Pubkey::new_unique());

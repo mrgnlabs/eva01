@@ -10,12 +10,12 @@ use switchboard_on_demand_client::PullFeedAccountData;
 
 use crate::{
     cache::Cache,
-    clock_manager, thread_debug, thread_error, thread_trace, thread_warn,
+    clock_manager, thread_debug, thread_error, thread_warn,
     utils::{find_oracle_keys, load_swb_pull_account_from_bytes},
 };
 
 pub trait OracleWrapperTrait {
-    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self;
+    fn new(address: Pubkey, price_adapter: Option<OraclePriceFeedAdapter>) -> Self;
     fn get_price_of_type(
         &self,
         oracle_type: OraclePriceType,
@@ -33,10 +33,10 @@ pub struct OracleWrapper {
 }
 
 impl OracleWrapperTrait for OracleWrapper {
-    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
+    fn new(address: Pubkey, price_adapter: Option<OraclePriceFeedAdapter>) -> Self {
         Self {
             address,
-            price_adapter,
+            price_adapter: price_adapter.unwrap(),
             simulated_price: None,
         }
     }
@@ -84,7 +84,7 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
                             OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
                                 feed: Box::new((&swb_feed).into()),
                             });
-                        let oracle_wrapper = T::new(oracle_address, price_adapter.clone());
+                        let oracle_wrapper = T::new(oracle_address, Some(price_adapter.clone()));
                         result = Some(oracle_wrapper);
                         break;
                     }
@@ -100,29 +100,40 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
             }
         }
         OracleSetup::PythPushOracle => {
-            for (oracle_address, oracle_account) in
-                cache.oracles.try_get_accounts(&oracle_addresses)?
+            #[cfg(test)]
             {
-                let mut oracle_tuple = (oracle_address, oracle_account);
-                let oracle_account_info = oracle_tuple.into_account_info();
-                match OraclePriceFeedAdapter::try_from_bank_config(
-                    &bank.config,
-                    &[oracle_account_info],
-                    &clock_manager::get_clock(&cache.clock)?,
-                ) {
-                    Result::Ok(price_adapter) => {
-                        let oracle_wrapper = T::new(oracle_address, price_adapter.clone());
-                        result = Some(oracle_wrapper);
-                        break;
-                    }
-                    Err(e) => {
-                        thread_trace!(
+                return crate::wrappers::bank::test_utils::get_pyth_pull_oracle_wrapper(
+                    bank_address,
+                );
+            }
+
+            #[cfg(not(test))]
+            {
+                for (oracle_address, oracle_account) in
+                    cache.oracles.try_get_accounts(&oracle_addresses)?
+                {
+                    let mut oracle_tuple = (oracle_address, oracle_account);
+                    let oracle_account_info = oracle_tuple.into_account_info();
+                    match OraclePriceFeedAdapter::try_from_bank_config(
+                        &bank.config,
+                        &[oracle_account_info],
+                        &clock_manager::get_clock(&cache.clock)?,
+                    ) {
+                        Result::Ok(price_adapter) => {
+                            let oracle_wrapper =
+                                T::new(oracle_address, Some(price_adapter.clone()));
+                            result = Some(oracle_wrapper);
+                            break;
+                        }
+                        Err(e) => {
+                            crate::thread_trace!(
                             "Failed to build Pyth Push price adapter for Bank {:?} and Oracle {:?} : {}",
                             bank_address,
                             oracle_address,
                             e
                         );
-                        continue;
+                            continue;
+                        }
                     }
                 }
             }
@@ -160,7 +171,7 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
                 &clock_manager::get_clock(&cache.clock)?,
             )?;
 
-            let oracle_wrapper = T::new(bank_oracle_address, adapter.clone());
+            let oracle_wrapper = T::new(bank_oracle_address, Some(adapter.clone()));
             result = Some(oracle_wrapper);
         }
         _ => {
@@ -184,6 +195,8 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
 #[cfg(test)]
 pub mod test_utils {
     use std::str::FromStr;
+
+    use solana_sdk::account::Account;
 
     use super::*;
 
@@ -235,7 +248,7 @@ pub mod test_utils {
     }
 
     impl OracleWrapperTrait for TestOracleWrapper {
-        fn new(address: Pubkey, _: OraclePriceFeedAdapter) -> Self {
+        fn new(address: Pubkey, _: Option<OraclePriceFeedAdapter>) -> Self {
             TestOracleWrapper {
                 price: 42.0,
                 bias: 5.0,
@@ -260,17 +273,23 @@ pub mod test_utils {
         }
     }
 
-    pub fn create_pull_feed_account_data() -> PullFeedAccountData {
+    pub fn create_empty_oracle_account() -> Account {
         let buffer = vec![0u8; std::mem::size_of::<PullFeedAccountData>()];
-        let result = bytemuck::try_from_bytes::<PullFeedAccountData>(&buffer);
-        *result.unwrap()
+        let pull_feed_data = bytemuck::try_from_bytes::<PullFeedAccountData>(&buffer).unwrap();
+        let bytes: &[u8] = bytemuck::bytes_of(pull_feed_data);
+
+        let mut oracle_account = Account::default();
+        oracle_account
+            .data
+            .resize(std::mem::size_of::<PullFeedAccountData>() + 8, 0);
+        oracle_account.data[8..].copy_from_slice(bytes);
+
+        oracle_account
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use solana_sdk::account::Account;
-
     use crate::cache::test_utils::create_test_cache;
     use crate::wrappers::bank::test_utils::TestBankWrapper;
 
@@ -311,20 +330,11 @@ mod tests {
         usdc_bank_wrapper.bank.config.oracle_keys[0] = oracle_key.clone();
 
         let mut cache = create_test_cache(&vec![usdc_bank_wrapper.clone()]);
-        //        let cache = Arc::new(cache);
-
         cache
             .banks
             .insert(usdc_bank_wrapper.address, usdc_bank_wrapper.bank);
 
-        let pull_feed_data = create_pull_feed_account_data();
-        let bytes: &[u8] = bytemuck::bytes_of(&pull_feed_data);
-
-        let mut oracle_account = Account::default();
-        oracle_account
-            .data
-            .resize(std::mem::size_of::<PullFeedAccountData>() + 8, 0);
-        oracle_account.data[8..].copy_from_slice(bytes);
+        let oracle_account = create_empty_oracle_account();
 
         // Mock oracles in the cache
         cache

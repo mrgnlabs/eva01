@@ -6,17 +6,12 @@ use solana_sdk::pubkey::Pubkey;
 use crate::wrappers::marginfi_account::MarginfiAccountWrapper;
 use anyhow::{anyhow, Result};
 
+#[derive(Default)]
 pub struct MarginfiAccountsCache {
     accounts: RwLock<IndexMap<Pubkey, MarginfiAccountWrapper>>,
 }
 
 impl MarginfiAccountsCache {
-    pub fn new() -> Self {
-        Self {
-            accounts: RwLock::new(IndexMap::new()),
-        }
-    }
-
     pub fn try_insert(&self, account: MarginfiAccountWrapper) -> Result<()> {
         self.accounts
             .write()
@@ -103,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_try_insert_and_try_get_account() {
-        let cache = MarginfiAccountsCache::new();
+        let cache = MarginfiAccountsCache::default();
         let address = Pubkey::new_unique();
         let account = create_test_account(address);
 
@@ -117,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_try_get_account_not_found() {
-        let cache = MarginfiAccountsCache::new();
+        let cache = MarginfiAccountsCache::default();
         let address = Pubkey::new_unique();
 
         // Test retrieval of non-existent account
@@ -127,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_get_account_by_index() {
-        let cache = MarginfiAccountsCache::new();
+        let cache = MarginfiAccountsCache::default();
         let address1 = Pubkey::new_unique();
         let address2 = Pubkey::new_unique();
         let account1 = create_test_account(address1);
@@ -149,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_len() {
-        let cache = MarginfiAccountsCache::new();
+        let cache = MarginfiAccountsCache::default();
         let address1 = Pubkey::new_unique();
         let address2 = Pubkey::new_unique();
         let account1 = create_test_account(address1);

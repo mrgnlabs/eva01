@@ -84,11 +84,10 @@ use super::oracle::test_utils::TestOracleWrapper;
 
 #[cfg(test)]
 pub mod test_utils {
-    use std::str::FromStr;
-
     use super::*;
-
+    use anyhow::Result;
     use marginfi::state::{marginfi_group::BankConfig, price::OracleSetup};
+    use std::str::FromStr;
 
     pub type TestBankWrapper = BankWrapperT<TestOracleWrapper>;
 
@@ -98,7 +97,7 @@ pub mod test_utils {
 
     impl TestBankWrapper {
         pub fn test_sol() -> Self {
-            let bank = Bank::new(
+            let mut bank = Bank::new(
                 Pubkey::new_unique(),
                 BankConfig::default(),
                 Pubkey::new_unique(),
@@ -115,11 +114,13 @@ pub mod test_utils {
                 0u8,
             );
             let oracle = TestOracleWrapper::test_sol();
+            bank.config.oracle_setup = OracleSetup::PythPushOracle;
+            bank.config.oracle_keys[0] = oracle.address;
             BankWrapperT::new(Pubkey::from_str(SOL_BANK_ADDRESS).unwrap(), bank, oracle)
         }
 
         pub fn test_usdc() -> Self {
-            let bank = Bank::new(
+            let mut bank = Bank::new(
                 Pubkey::new_unique(),
                 BankConfig::default(),
                 Pubkey::new_unique(),
@@ -136,6 +137,8 @@ pub mod test_utils {
                 0u8,
             );
             let oracle = TestOracleWrapper::test_usdc();
+            bank.config.oracle_setup = OracleSetup::PythPushOracle;
+            bank.config.oracle_keys[0] = oracle.address;
             BankWrapperT::new(Pubkey::from_str(USDC_BANK_ADDRESS).unwrap(), bank, oracle)
         }
 
@@ -156,10 +159,23 @@ pub mod test_utils {
                 0u8,
                 0u8,
             );
-            bank.config.oracle_setup = OracleSetup::SwitchboardPull;
             let oracle = TestOracleWrapper::test_bonk();
+            bank.config.oracle_setup = OracleSetup::SwitchboardPull;
+            bank.config.oracle_keys[0] = oracle.address;
             BankWrapperT::new(Pubkey::from_str(BONK_BANK_ADDRESS).unwrap(), bank, oracle)
         }
+    }
+
+    pub fn get_pyth_pull_oracle_wrapper<T: OracleWrapperTrait + Clone>(
+        bank_pk: &Pubkey,
+    ) -> Result<T> {
+        let wrapper = match bank_pk.to_string().as_str() {
+            SOL_BANK_ADDRESS => TestOracleWrapper::test_sol(),
+            USDC_BANK_ADDRESS => TestOracleWrapper::test_usdc(),
+            BONK_BANK_ADDRESS => TestOracleWrapper::test_bonk(),
+            _ => return Err(anyhow::anyhow!("Unknown bank address: {}", bank_pk)),
+        };
+        Ok(T::new(wrapper.address, None))
     }
 }
 

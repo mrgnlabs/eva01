@@ -1,19 +1,20 @@
 mod accounts;
 mod banks;
-mod mints;
+pub mod mints;
 mod oracles;
 mod tokens;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex, RwLock},
+};
 
 use accounts::MarginfiAccountsCache;
 use anyhow::Result;
 use banks::BanksCache;
 use mints::MintsCache;
 use oracles::OraclesCache;
-use solana_sdk::{
-    account::Account, address_lookup_table::AddressLookupTableAccount, clock::Clock, pubkey::Pubkey,
-};
+use solana_sdk::{address_lookup_table::AddressLookupTableAccount, clock::Clock, pubkey::Pubkey};
 use tokens::TokensCache;
 
 use crate::{
@@ -36,6 +37,7 @@ pub struct Cache {
     pub tokens: TokensCache,
     pub clock: Arc<Mutex<Clock>>,
     pub luts: Vec<AddressLookupTableAccount>,
+    preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
 }
 
 impl Cache {
@@ -44,18 +46,20 @@ impl Cache {
         marginfi_program_id: Pubkey,
         marginfi_group_address: Pubkey,
         clock: Arc<Mutex<Clock>>,
+        preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
     ) -> Self {
         Self {
             signer_pk,
             marginfi_program_id,
             marginfi_group_address,
-            marginfi_accounts: MarginfiAccountsCache::new(),
-            banks: BanksCache::new(),
-            mints: MintsCache::new(),
-            oracles: OraclesCache::new(),
-            tokens: TokensCache::new(),
+            marginfi_accounts: MarginfiAccountsCache::default(),
+            banks: BanksCache::default(),
+            mints: MintsCache::default(),
+            oracles: OraclesCache::default(),
+            tokens: TokensCache::default(),
             clock,
             luts: vec![],
+            preferred_mints,
         }
     }
 
@@ -78,19 +82,13 @@ impl Cache {
         }
     }
 
-    pub fn get_token_account_for_bank(&self, bank_pk: &Pubkey) -> Option<Account> {
-        let mint = self.banks.get_bank(bank_pk)?.mint;
-        let token = self.tokens.get_token_for_mint(&mint)?;
-        self.tokens.get_account(&token)
-    }
-
     pub fn try_get_token_wrapper<T: OracleWrapperTrait + Clone>(
         &self,
+        mint_address: &Pubkey,
         token_address: &Pubkey,
     ) -> Result<TokenAccountWrapperT<T>> {
         let token_account = self.tokens.try_get_account(token_address)?;
-        let mint_address = self.mints.try_get_mint_for_token(token_address)?;
-        let bank_address = self.banks.try_get_account_for_mint(&mint_address)?;
+        let bank_address = self.banks.try_get_account_for_mint(mint_address)?;
         let bank_wrapper = self.try_get_bank_wrapper(&bank_address)?;
 
         Ok(TokenAccountWrapperT {
@@ -98,15 +96,33 @@ impl Cache {
             bank: bank_wrapper,
         })
     }
+
+    pub fn insert_preferred_mint(&mut self, mint_address: Pubkey) {
+        self.preferred_mints.write().unwrap().insert(mint_address);
+    }
+
+    pub fn get_preferred_mints(&self) -> Vec<Pubkey> {
+        self.preferred_mints
+            .read()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
 pub mod test_utils {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex, RwLock},
+    };
 
     use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
 
-    use crate::wrappers::bank::test_utils::TestBankWrapper;
+    use crate::wrappers::{
+        bank::test_utils::TestBankWrapper, oracle::test_utils::create_empty_oracle_account,
+    };
 
     use super::Cache;
 
@@ -116,6 +132,7 @@ pub mod test_utils {
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Arc::new(Mutex::new(Clock::default())),
+            Arc::new(RwLock::new(HashSet::new())),
         );
 
         for bank_wrapper in bank_wrappers {
@@ -131,7 +148,7 @@ pub mod test_utils {
                 .unwrap();
             cache.banks.insert(bank_wrapper.address, bank_wrapper.bank);
 
-            let oracle_account = Account::new(0, 0, &Pubkey::new_unique());
+            let oracle_account = create_empty_oracle_account();
             cache
                 .oracles
                 .try_insert(bank_wrapper.oracle_adapter.address.clone(), oracle_account)
@@ -159,6 +176,7 @@ mod tests {
             marginfi_program_id,
             marginfi_group_address,
             Arc::new(Mutex::new(Clock::default())),
+            Arc::new(RwLock::new(HashSet::new())),
         );
         assert_eq!(cache.signer_pk, signer_pk);
         assert_eq!(cache.marginfi_program_id, marginfi_program_id);
@@ -170,11 +188,13 @@ mod tests {
         let signer_pk = Pubkey::new_unique();
         let marginfi_program_id = Pubkey::new_unique();
         let marginfi_group_address = Pubkey::new_unique();
+        let preferred_mints = Arc::new(RwLock::new(HashSet::new()));
         let mut cache = Cache::new(
             signer_pk,
             marginfi_program_id,
             marginfi_group_address,
             Arc::new(Mutex::new(Clock::default())),
+            preferred_mints,
         );
         let lut = AddressLookupTableAccount {
             key: Pubkey::new_unique(),

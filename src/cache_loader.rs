@@ -24,7 +24,7 @@ use crate::{
     cache::Cache,
     geyser::AccountType,
     sender::{SenderCfg, TransactionSender},
-    thread_debug, thread_info,
+    thread_debug, thread_error, thread_info, thread_warn,
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
@@ -56,9 +56,13 @@ impl CacheLoader {
         })
     }
 
-    pub fn load_cache(&self, cache: &mut Cache) -> anyhow::Result<()> {
+    pub fn load_cache(
+        &self,
+        cache: &mut Cache,
+        new_liquidator_account: &Option<Pubkey>,
+    ) -> anyhow::Result<()> {
         self.load_luts(cache)?;
-        self.load_marginfi_accounts(cache)?;
+        self.load_marginfi_accounts(cache, new_liquidator_account)?;
         self.load_banks(cache)?;
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
@@ -95,13 +99,20 @@ impl CacheLoader {
         Ok(())
     }
 
-    fn load_marginfi_accounts(&self, cache: &mut Cache) -> anyhow::Result<()> {
+    fn load_marginfi_accounts(
+        &self,
+        cache: &mut Cache,
+        new_liquidator_account: &Option<Pubkey>,
+    ) -> anyhow::Result<()> {
         thread_info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
-        let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
+        let mut marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
             &cache.marginfi_program_id,
             &cache.marginfi_group_address,
         )?;
+        if let Some(new_liquidator_account) = new_liquidator_account {
+            marginfi_accounts_pubkeys.push(*new_liquidator_account);
+        }
 
         let marginfi_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
@@ -123,6 +134,8 @@ impl CacheLoader {
                     lending_account: marginfi_account.lending_account,
                 };
                 cache.marginfi_accounts.try_insert(maw)?;
+            } else {
+                thread_warn!("Couldn't load Marginfi account for key: {}", *address);
             }
         }
 
@@ -254,6 +267,8 @@ impl CacheLoader {
                     .mints
                     .insert(*mint_address, mint_account.clone(), token_address);
                 thread_debug!("Loaded the Mint {:?}.", mint_address);
+            } else {
+                thread_error!("Mint account {:?} not found.", mint_address);
             }
         }
 
