@@ -53,6 +53,13 @@ impl Eva01Config {
             })?)
             .map_err(|e| anyhow::anyhow!("Invalid MARGINFI_PROGRAM_ID: {:#?}", e))?;
 
+        let marginfi_api_url = std::env::var("MARGINFI_API_URL").ok();
+        let marginfi_api_key = std::env::var("MARGINFI_API_KEY").ok();
+        let marginfi_api_arena_threshold: Option<u64> =
+            std::env::var("MARGINFI_API_ARENA_THRESHOLD")
+                .ok()
+                .and_then(|s| s.parse().ok());
+
         let marginfi_groups_whitelist: Vec<Pubkey> =
             parse_pubkey_list("MARGINFI_GROUPS_WHITELIST")?;
         let marginfi_groups_blacklist: Vec<Pubkey> =
@@ -84,6 +91,9 @@ impl Eva01Config {
             compute_unit_price_micro_lamports,
             compute_unit_limit,
             marginfi_program_id,
+            marginfi_api_url,
+            marginfi_api_key,
+            marginfi_api_arena_threshold,
             marginfi_groups_whitelist,
             marginfi_groups_blacklist,
             address_lookup_tables,
@@ -169,7 +179,7 @@ pub struct GeneralConfig {
     pub marginfi_program_id: Pubkey,
     pub marginfi_api_url: Option<String>,
     pub marginfi_api_key: Option<String>,
-    pub marginfi_api_arena_threshold: Option<u64>,    
+    pub marginfi_api_arena_threshold: Option<u64>,
     pub marginfi_groups_whitelist: Vec<Pubkey>,
     pub marginfi_groups_blacklist: Vec<Pubkey>,
     pub address_lookup_tables: Vec<Pubkey>,
@@ -210,7 +220,7 @@ impl std::fmt::Display for GeneralConfig {
                  - Marginfi Program ID: {}\n\
                  - Marginfi API URL: {}\n\
                  - Marginfi API Key: {}\n\
-                 - Marginfi API Arena Threshold: {}\n\                 
+                 - Marginfi API Arena Threshold: {}\n\
                  - Marginfi Groups Whitelist: {:?}\n\
                  - Marginfi Groups Blacklist: {:?}\n",
             self.rpc_url,
@@ -224,7 +234,7 @@ impl std::fmt::Display for GeneralConfig {
             self.marginfi_program_id,
             self.marginfi_api_url.as_deref().unwrap_or("None"),
             self.marginfi_api_key.as_deref().unwrap_or("None"),
-            self.marginfi_api_arena_threshold.unwrap_or_default(),            
+            self.marginfi_api_arena_threshold.unwrap_or_default(),
             self.marginfi_groups_whitelist,
             self.marginfi_groups_blacklist,
         )
@@ -442,6 +452,9 @@ mod tests {
             compute_unit_price_micro_lamports: 0,
             compute_unit_limit: 0,
             marginfi_program_id: Pubkey::default(),
+            marginfi_api_url: None,
+            marginfi_api_key: None,
+            marginfi_api_arena_threshold: None,
             marginfi_groups_whitelist: vec![Pubkey::default()],
             marginfi_groups_blacklist: vec![],
             address_lookup_tables: vec![],
@@ -466,6 +479,9 @@ mod tests {
             compute_unit_price_micro_lamports: 0,
             compute_unit_limit: 0,
             marginfi_program_id: Pubkey::default(),
+            marginfi_api_url: None,
+            marginfi_api_key: None,
+            marginfi_api_arena_threshold: None,
             marginfi_groups_whitelist: vec![Pubkey::default()],
             marginfi_groups_blacklist: vec![Pubkey::default()],
             address_lookup_tables: vec![],
@@ -486,6 +502,9 @@ mod tests {
             compute_unit_price_micro_lamports: 0,
             compute_unit_limit: 0,
             marginfi_program_id: Pubkey::default(),
+            marginfi_api_url: None,
+            marginfi_api_key: None,
+            marginfi_api_arena_threshold: None,
             marginfi_groups_whitelist: vec![],
             marginfi_groups_blacklist: vec![],
             address_lookup_tables: vec![],
