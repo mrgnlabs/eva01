@@ -37,11 +37,11 @@ pub fn main_entry() -> anyhow::Result<()> {
         return entrypoints::run_liquidator(config, last_group, Arc::clone(&preferred_mints));
     }
 
-    let black_list = config.general_config.marginfi_groups_blacklist.clone();
-    if !black_list.is_empty() {
+    let blacklist = config.general_config.marginfi_groups_blacklist.clone();
+    if !blacklist.is_empty() {
         // This is a set of MarginFi groups (pubkeys) for which we have already spawned a liquidator.
         // Initially, we fill it with the groups from the blacklist so that we don't spawn liquidators for them.
-        let mut active_groups = black_list.into_iter().collect::<HashSet<Pubkey>>();
+        let mut active_groups = blacklist.into_iter().collect::<HashSet<Pubkey>>();
 
         let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
         loop {
