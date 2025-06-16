@@ -360,7 +360,11 @@ impl Liquidator {
         let (total_weighted_assets, total_weighted_liabilities) =
             calc_total_weighted_assets_liabs(&self.cache, account, RequirementType::Maintenance)?;
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
-        thread_debug!("maintenance_health = {:?}", maintenance_health);
+        thread_trace!(
+            "Account {} maintenance_health = {:?}",
+            account.address,
+            maintenance_health
+        );
         if maintenance_health >= I80F48::ZERO {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }

@@ -203,8 +203,3 @@ pub fn run_liquidator(
 
     Ok(())
 }
-
-pub fn wizard_setup() -> anyhow::Result<()> {
-    crate::cli::setup::setup()?;
-    Ok(())
-}
