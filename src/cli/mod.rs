@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::config::Eva01Config;
+use crate::{cli::setup::get_active_arena_pools, config::Eva01Config};
 use clap::Parser;
 use log::{error, info};
 use setup::marginfi_groups_by_program;
@@ -58,11 +58,16 @@ pub fn main_entry() -> anyhow::Result<()> {
 
             let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
             loop {
-                let marginfi_groups = marginfi_groups_by_program(
-                    &rpc_client,
-                    config.general_config.marginfi_program_id,
-                    true,
-                )?;
+                let marginfi_groups =
+                    if let Some(api_key) = config.general_config.marginfi_api_key.as_ref() {
+                        get_active_arena_pools(api_key)?
+                    } else {
+                        marginfi_groups_by_program(
+                            &rpc_client,
+                            config.general_config.marginfi_program_id,
+                            true,
+                        )?
+                    };
 
                 for group in marginfi_groups {
                     if active_groups.contains(&group) {

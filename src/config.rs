@@ -63,6 +63,7 @@ pub struct GeneralConfig {
         default = "GeneralConfig::default_marginfi_program_id"
     )]
     pub marginfi_program_id: Pubkey,
+    pub marginfi_api_key: Option<String>,
     #[serde(
         deserialize_with = "from_option_vec_pubkey_string",
         serialize_with = "vec_pubkey_to_option_vec_str",
@@ -113,6 +114,7 @@ impl std::fmt::Display for GeneralConfig {
                  - Compute Unit Limit: {}\n\
                  - Minimun profit: {}$\n\
                  - Marginfi Program ID: {}\n\
+                 - Marginfi API Key: {}\n\
                  - Marginfi Groups Whitelist: {}\n\
                  - Marginfi Groups Blacklist: {}\n\
                  - Account Whitelist: {}",
@@ -125,6 +127,7 @@ impl std::fmt::Display for GeneralConfig {
             self.compute_unit_limit,
             self.min_profit,
             self.marginfi_program_id,
+            self.marginfi_api_key.as_deref().unwrap_or("None"),
             self.marginfi_groups_whitelist
                 .as_ref()
                 .map(|v| v
