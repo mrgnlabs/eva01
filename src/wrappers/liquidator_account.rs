@@ -8,7 +8,7 @@ use crate::{
         make_withdraw_ix,
     },
     metrics::LIQUIDATION_ATTEMPTS,
-    thread_debug, thread_info,
+    thread_debug, thread_info, thread_warn,
     utils::{check_asset_tags_matching, swb_cranker::is_stale_swb_price_error},
     wrappers::oracle::OracleWrapper,
 };
@@ -28,7 +28,7 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::VersionedTransaction,
 };
-use std::{sync::Arc, thread, time::Duration};
+use std::{collections::HashSet, sync::Arc, thread, time::Duration};
 
 #[derive(Debug)]
 pub struct LiquidationError {
@@ -47,6 +47,7 @@ impl LiquidationError {
     pub fn from_anyhow_error_with_keys(error: anyhow::Error, keys: Vec<Pubkey>) -> Self {
         Self { error, keys }
     }
+
     pub fn from_compile_error(error: CompileError) -> Self {
         Self {
             error: anyhow!("{:?}", error),
@@ -147,6 +148,7 @@ impl LiquidatorAccount {
         asset_bank: &Pubkey,
         liab_bank: &Pubkey,
         asset_amount: u64,
+        stale_swb_oracles: &HashSet<Pubkey>,
     ) -> Result<(), LiquidationError> {
         let liquidatee_account_address = liquidatee_account.address;
         thread_info!(
@@ -160,6 +162,7 @@ impl LiquidatorAccount {
             .cache
             .try_get_bank_wrapper(asset_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
+
         let liab_bank_wrapper = self
             .cache
             .try_get_bank_wrapper(liab_bank)
@@ -207,6 +210,16 @@ impl LiquidatorAccount {
             &self.liquidator_address,
             liquidator_observation_accounts
         );
+        if liquidator_swb_oracles.iter().any(|oracle| {
+            thread_warn!(
+                "Stale oracle found among liquidator observation accounts: {}",
+                oracle
+            );
+            stale_swb_oracles.contains(oracle)
+        }) {
+            thread_warn!("Skipping liquidation attempt...");
+            return Ok(());
+        }
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];
@@ -223,6 +236,16 @@ impl LiquidatorAccount {
             liquidatee_account_address,
             liquidatee_observation_accounts
         );
+        if liquidatee_swb_oracles.iter().any(|oracle| {
+            thread_warn!(
+                "Stale oracle found among liquidatee observation accounts: {}",
+                oracle
+            );
+            stale_swb_oracles.contains(oracle)
+        }) {
+            thread_warn!("Skipping liquidation attempt...");
+            return Ok(());
+        }
 
         let joined_observation_accounts = liquidator_observation_accounts
             .iter()

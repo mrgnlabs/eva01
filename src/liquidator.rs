@@ -83,7 +83,7 @@ impl Liquidator {
                     accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                     accounts.reverse();
 
-                    let mut swb_oracles: HashSet<Pubkey> = HashSet::new();
+                    let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
                     for candidate in accounts {
                         match self.process_account(&candidate.liquidatee_account) {
                             Ok(acc_opt) => {
@@ -94,6 +94,7 @@ impl Liquidator {
                                         &acc.asset_bank,
                                         &acc.liab_bank,
                                         acc.asset_amount,
+                                        &stale_swb_oracles,
                                     ) {
                                         thread_error!(
                                             "Failed to liquidate account {:?}, error: {:?}",
@@ -102,7 +103,7 @@ impl Liquidator {
                                         );
                                         FAILED_LIQUIDATIONS.inc();
                                         ERROR_COUNT.inc();
-                                        swb_oracles.extend(e.keys);
+                                        stale_swb_oracles.extend(e.keys);
                                     }
                                     let duration = start.elapsed().as_secs_f64();
                                     LIQUIDATION_LATENCY.observe(duration);
@@ -118,11 +119,11 @@ impl Liquidator {
                             }
                         }
                     }
-                    if !swb_oracles.is_empty() {
-                        thread_debug!("Cranking Swb Oracles {:#?}", swb_oracles);
+                    if !stale_swb_oracles.is_empty() {
+                        thread_debug!("Cranking Swb Oracles {:#?}", stale_swb_oracles);
                         if let Err(err) = self
                             .swb_cranker
-                            .crank_oracles(swb_oracles.into_iter().collect())
+                            .crank_oracles(stale_swb_oracles.into_iter().collect())
                         {
                             thread_error!("Failed to crank Swb Oracles: {}", err)
                         }
@@ -481,6 +482,11 @@ impl Liquidator {
                 bank.bank.config.operational_state,
                 BankOperationalState::Operational
             ) {
+                continue;
+            }
+
+            if bank.bank.check_utilization_ratio().is_err() {
+                thread_debug!("Skipping bankrupt bank from evaluation: {}", bank_pk);
                 continue;
             }
 
