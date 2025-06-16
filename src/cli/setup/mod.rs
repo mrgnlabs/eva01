@@ -176,72 +176,32 @@ pub fn marginfi_account_by_authority(
     Ok(marginfi_account_pubkeys)
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct PoolResponse {
     pub data: Vec<Pool>,
-    pub metadata: Metadata,
 }
 
-#[allow(dead_code)]
-#[derive(Deserialize, Debug)]
-pub struct Metadata {
-    pub current_page: usize,
-    pub failed_pools: Option<serde_json::Value>,
-    pub has_next_page: bool,
-    pub has_previous_page: bool,
-    pub page_size: usize,
-    pub total_items: usize,
-    pub total_pages: usize,
-}
-
-#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct Pool {
-    pub base_bank: Bank,
-    pub created_at: String,
-    pub created_by: String,
-    pub featured: bool,
     pub group: String,
-    pub lookup_tables: Vec<String>,
+    pub base_bank: Bank,
     pub quote_bank: Bank,
-    pub status: String,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct Bank {
-    pub address: String,
     pub details: BankDetails,
-    pub group: String,
-    pub mint: Mint,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct BankDetails {
-    pub borrow_rate: f64,
-    pub deposit_rate: f64,
-    pub total_borrows: f64,
-    pub total_borrows_usd: f64,
-    pub total_deposits: f64,
     pub total_deposits_usd: f64,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, Debug)]
-pub struct Mint {
-    pub address: String,
-    pub decimals: u8,
-    pub name: String,
-    pub symbol: String,
-    pub token_program: String,
 }
 
 pub fn get_active_arena_pools(
     marginfi_api_url: &String,
     marginfi_api_key: &String,
-    total_deposits_usd_threshold: f64,
+    total_deposits_usd_threshold: u64,
 ) -> anyhow::Result<Vec<Pubkey>> {
     let client = Client::new();
     let res = client
@@ -250,11 +210,14 @@ pub fn get_active_arena_pools(
         .send()?
         .json::<PoolResponse>()?;
 
-    let mut groups_with_deposits: Vec<(Pubkey, f64)> = res
+    let mut groups_with_deposits: Vec<(Pubkey, u64)> = res
         .data
         .into_iter()
         .filter_map(|pool| {
-            let total_deposits = pool.quote_bank.details.total_deposits_usd;
+            let total_deposits = std::cmp::max(
+                pool.base_bank.details.total_deposits_usd as u64,
+                pool.quote_bank.details.total_deposits_usd as u64,
+            );
             if total_deposits > total_deposits_usd_threshold {
                 Some((pool.group.parse::<Pubkey>().ok()?, total_deposits))
             } else {

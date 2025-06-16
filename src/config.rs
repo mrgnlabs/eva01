@@ -65,7 +65,7 @@ pub struct GeneralConfig {
     pub marginfi_program_id: Pubkey,
     pub marginfi_api_url: Option<String>,
     pub marginfi_api_key: Option<String>,
-    pub marginfi_api_arena_threshold: Option<f64>,
+    pub marginfi_api_arena_threshold: Option<u64>,
     #[serde(
         deserialize_with = "from_option_vec_pubkey_string",
         serialize_with = "vec_pubkey_to_option_vec_str",
@@ -168,7 +168,7 @@ impl GeneralConfig {
             self.marginfi_api_url.is_some() && !self.marginfi_api_url.as_ref().unwrap().is_empty();
         let api_key_set =
             self.marginfi_api_key.is_some() && !self.marginfi_api_key.as_ref().unwrap().is_empty();
-        let api_arena_threshold_set = self.marginfi_api_arena_threshold.is_some_and(|t| t > 0.0);
+        let api_arena_threshold_set = self.marginfi_api_arena_threshold.is_some_and(|t| t > 0);
         match (api_url_set, api_key_set, api_arena_threshold_set) {
             (true, true, true) | (false, false, false) => Ok(()),
             _ => Err(anyhow::anyhow!("All three API parameters must be set: marginfi_api_url, marginfi_api_key, and marginfi_api_arena_threshold."))
