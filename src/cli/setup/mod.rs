@@ -89,7 +89,9 @@ pub fn setup() -> anyhow::Result<()> {
         ),
         compute_unit_limit: GeneralConfig::default_compute_unit_limit(),
         marginfi_program_id,
+        marginfi_api_url: None,
         marginfi_api_key: None,
+        marginfi_api_arena_threshold: None,
         marginfi_groups_whitelist: Some(vec![marginfi_group_address]),
         marginfi_groups_blacklist: None,
         account_whitelist: GeneralConfig::default_account_whitelist(),
@@ -236,12 +238,14 @@ pub struct Mint {
     pub token_program: String,
 }
 
-const TOTAL_DEPOSITS_USD_THRESHOLD: f64 = 1000.0;
-
-pub fn get_active_arena_pools(marginfi_api_key: &String) -> anyhow::Result<Vec<Pubkey>> {
+pub fn get_active_arena_pools(
+    marginfi_api_url: &String,
+    marginfi_api_key: &String,
+    total_deposits_usd_threshold: f64,
+) -> anyhow::Result<Vec<Pubkey>> {
     let client = Client::new();
     let res = client
-        .get("https://prod.mrgn.app/core-api/v1/arena/pools")
+        .get(marginfi_api_url)
         .header("x-api-key", marginfi_api_key)
         .send()?
         .json::<PoolResponse>()?;
@@ -251,7 +255,7 @@ pub fn get_active_arena_pools(marginfi_api_key: &String) -> anyhow::Result<Vec<P
         .into_iter()
         .filter_map(|pool| {
             let total_deposits = pool.quote_bank.details.total_deposits_usd;
-            if total_deposits > TOTAL_DEPOSITS_USD_THRESHOLD {
+            if total_deposits > total_deposits_usd_threshold {
                 Some((pool.group.parse::<Pubkey>().ok()?, total_deposits))
             } else {
                 None

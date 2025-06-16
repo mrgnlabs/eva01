@@ -60,7 +60,11 @@ pub fn main_entry() -> anyhow::Result<()> {
             loop {
                 let marginfi_groups =
                     if let Some(api_key) = config.general_config.marginfi_api_key.as_ref() {
-                        get_active_arena_pools(api_key)?
+                        get_active_arena_pools(
+                            config.general_config.marginfi_api_url.as_ref().unwrap(),
+                            api_key,
+                            config.general_config.marginfi_api_arena_threshold.unwrap(),
+                        )?
                     } else {
                         marginfi_groups_by_program(
                             &rpc_client,
