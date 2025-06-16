@@ -61,25 +61,6 @@ impl LiquidationError {
             keys: vec![],
         }
     }
-
-    pub fn from_anchor_error(error: anchor_lang::error::Error) -> Self {
-        let error_description = match error {
-            anchor_lang::error::Error::AnchorError(anchor_error) => {
-                format!(
-                    "{} (code: {}): {}",
-                    anchor_error.error_name, anchor_error.error_code_number, anchor_error.error_msg
-                )
-            }
-
-            anchor_lang::error::Error::ProgramError(program_error) => {
-                format!("{}", program_error)
-            }
-        };
-        Self {
-            error: anyhow!("{:?}", error_description),
-            keys: vec![],
-        }
-    }
 }
 
 pub struct LiquidatorAccount {
@@ -181,19 +162,11 @@ impl LiquidatorAccount {
             .cache
             .try_get_bank_wrapper(asset_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
-        asset_bank_wrapper
-            .bank
-            .check_utilization_ratio()
-            .map_err(LiquidationError::from_anchor_error)?;
 
         let liab_bank_wrapper = self
             .cache
             .try_get_bank_wrapper(liab_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
-        liab_bank_wrapper
-            .bank
-            .check_utilization_ratio()
-            .map_err(LiquidationError::from_anchor_error)?;
 
         let signer_pk = self.signer_keypair.pubkey();
         let liab_mint = liab_bank_wrapper.bank.mint;
@@ -237,13 +210,14 @@ impl LiquidatorAccount {
             &self.liquidator_address,
             liquidator_observation_accounts
         );
-        if liquidator_swb_oracles
-            .iter()
-            .any(|oracle| stale_swb_oracles.contains(oracle))
-        {
+        if liquidator_swb_oracles.iter().any(|oracle| {
             thread_warn!(
-                "Stale oracle(s) found among liquidator observation accounts, skipping liquidation attempt..."
+                "Stale oracle found among liquidator observation accounts: {}",
+                oracle
             );
+            stale_swb_oracles.contains(oracle)
+        }) {
+            thread_warn!("Skipping liquidation attempt...");
             return Ok(());
         }
 
@@ -262,13 +236,14 @@ impl LiquidatorAccount {
             liquidatee_account_address,
             liquidatee_observation_accounts
         );
-        if liquidator_swb_oracles
-            .iter()
-            .any(|oracle| stale_swb_oracles.contains(oracle))
-        {
+        if liquidatee_swb_oracles.iter().any(|oracle| {
             thread_warn!(
-                "Stale oracle(s) found among liquidatee observation accounts, skipping liquidation attempt..."
+                "Stale oracle found among liquidatee observation accounts: {}",
+                oracle
             );
+            stale_swb_oracles.contains(oracle)
+        }) {
+            thread_warn!("Skipping liquidation attempt...");
             return Ok(());
         }
 

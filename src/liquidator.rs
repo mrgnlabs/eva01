@@ -485,6 +485,11 @@ impl Liquidator {
                 continue;
             }
 
+            if bank.bank.check_utilization_ratio().is_err() {
+                thread_debug!("Skipping bankrupt bank from evaluation: {}", bank_pk);
+                continue;
+            }
+
             let value = match balance_side {
                 BalanceSide::Liabilities => {
                     let liabilities = bank
