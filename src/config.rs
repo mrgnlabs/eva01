@@ -167,6 +167,9 @@ pub struct GeneralConfig {
     pub compute_unit_price_micro_lamports: u64,
     pub compute_unit_limit: u32,
     pub marginfi_program_id: Pubkey,
+    pub marginfi_api_url: Option<String>,
+    pub marginfi_api_key: Option<String>,
+    pub marginfi_api_arena_threshold: Option<u64>,    
     pub marginfi_groups_whitelist: Vec<Pubkey>,
     pub marginfi_groups_blacklist: Vec<Pubkey>,
     pub address_lookup_tables: Vec<Pubkey>,
@@ -205,6 +208,9 @@ impl std::fmt::Display for GeneralConfig {
                  - Compute Unit Limit: {}\n\
                  - Minimun profit: {}$\n\
                  - Marginfi Program ID: {}\n\
+                 - Marginfi API URL: {}\n\
+                 - Marginfi API Key: {}\n\
+                 - Marginfi API Arena Threshold: {}\n\                 
                  - Marginfi Groups Whitelist: {:?}\n\
                  - Marginfi Groups Blacklist: {:?}\n",
             self.rpc_url,
@@ -216,6 +222,9 @@ impl std::fmt::Display for GeneralConfig {
             self.compute_unit_limit,
             self.min_profit,
             self.marginfi_program_id,
+            self.marginfi_api_url.as_deref().unwrap_or("None"),
+            self.marginfi_api_key.as_deref().unwrap_or("None"),
+            self.marginfi_api_arena_threshold.unwrap_or_default(),            
             self.marginfi_groups_whitelist,
             self.marginfi_groups_blacklist,
         )
