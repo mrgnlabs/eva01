@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use anchor_lang::Discriminator;
 use anchor_spl::associated_token;
@@ -16,7 +16,7 @@ use solana_sdk::{
     bs58,
     instruction::Instruction,
     pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair},
+    signature::Keypair,
     signer::Signer,
 };
 
@@ -43,9 +43,8 @@ pub struct CacheLoader {
 }
 
 impl CacheLoader {
-    pub fn new(keypair_path: PathBuf, rpc_url: String, lut_addresses: Vec<Pubkey>) -> Result<Self> {
-        let signer =
-            read_keypair_file(&keypair_path).map_err(|e| anyhow!("Keypair read failed: {}", e))?;
+    pub fn new(wallet_keypair: &[u8], rpc_url: String, lut_addresses: Vec<Pubkey>) -> Result<Self> {
+        let signer = Keypair::from_bytes(wallet_keypair)?;
         let rpc_client = RpcClient::new(&rpc_url);
 
         Ok(Self {

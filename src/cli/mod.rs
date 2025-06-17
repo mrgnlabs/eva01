@@ -21,7 +21,7 @@ pub mod setup;
 pub fn main_entry() -> anyhow::Result<()> {
     let config = Eva01Config::new()?;
     let preferred_mints = Arc::new(RwLock::new(HashSet::new()));
-    info!("Starting eva01 liquidator! {:#?}", &config);
+    info!("Starting eva01 liquidator! {}", &config);
 
     // Now this is a multi-threaded liquidator logic which will monitor new groups creation
     // and spawn a new liquidator for each except the ones listed in the blacklist.

@@ -1,7 +1,7 @@
 use crate::geyser::GeyserServiceConfig;
 use fixed::types::I80F48;
 use solana_sdk::pubkey::Pubkey;
-use std::{path::PathBuf, str::FromStr};
+use std::str::FromStr;
 
 #[derive(Clone, Debug)]
 pub struct Eva01Config {
@@ -13,45 +13,32 @@ pub struct Eva01Config {
 impl Eva01Config {
     pub fn new() -> anyhow::Result<Self> {
         //General configuration
-        let rpc_url = std::env::var("RPC_URL")
-            .map_err(|_| anyhow::anyhow!("RPC_URL environment variable is not set"))?;
+        let rpc_url = std::env::var("RPC_URL").expect("RPC_URL environment variable is not set");
 
         let yellowstone_endpoint = std::env::var("YELLOWSTONE_ENDPOINT")
-            .map_err(|_| anyhow::anyhow!("YELLOWSTONE_ENDPOINT environment variable is not set"))?;
+            .expect("YELLOWSTONE_ENDPOINT environment variable is not set");
         let yellowstone_x_token = std::env::var("YELLOWSTONE_X_TOKEN").ok();
 
-        let signer_pubkey = Pubkey::from_str(
-            &std::env::var("SIGNER_PUBKEY")
-                .map_err(|_| anyhow::anyhow!("SIGNER_PUBKEY environment variable is not set"))?,
-        )
-        .map_err(|e| anyhow::anyhow!("Invalid SIGNER_PUBKEY: {:#?}", e))?;
-
-        let keypair_path = PathBuf::from(
-            std::env::var("KEYPAIR_PATH")
-                .map_err(|_| anyhow::anyhow!("KEYPAIR_PATH environment variable is not set"))?,
-        );
+        let wallet_keypair_env = std::env::var("WALLET_KEYPAIR")
+            .expect("WALLET_KEYPAIR environment variable is not set");
+        let wallet_keypair: Vec<u8> =
+            serde_json::from_str(&wallet_keypair_env).expect("Invalid WALLET_KEYPAIR JSON format");
 
         let compute_unit_price_micro_lamports: u64 =
             std::env::var("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS")
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "COMPUTE_UNIT_PRICE_MICRO_LAMPORTS environment variable is not set"
-                    )
-                })?
+                .expect("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS environment variable is not set")
                 .parse()
-                .map_err(|e| {
-                    anyhow::anyhow!("Invalid COMPUTE_UNIT_PRICE_MICRO_LAMPORTS number: {:#?}", e)
-                })?;
+                .expect("Invalid COMPUTE_UNIT_PRICE_MICRO_LAMPORTS number");
         let compute_unit_limit: u32 = std::env::var("COMPUTE_UNIT_LIMIT")
-            .map_err(|_| anyhow::anyhow!("COMPUTE_UNIT_LIMIT environment variable is not set"))?
+            .expect("COMPUTE_UNIT_LIMIT environment variable is not set")
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid COMPUTE_UNIT_LIMIT number: {:#?}", e))?;
+            .expect("Invalid COMPUTE_UNIT_LIMIT number");
 
-        let marginfi_program_id =
-            Pubkey::from_str(&std::env::var("MARGINFI_PROGRAM_ID").map_err(|_| {
-                anyhow::anyhow!("MARGINFI_PROGRAM_ID environment variable is not set")
-            })?)
-            .map_err(|e| anyhow::anyhow!("Invalid MARGINFI_PROGRAM_ID: {:#?}", e))?;
+        let marginfi_program_id = Pubkey::from_str(
+            &std::env::var("MARGINFI_PROGRAM_ID")
+                .expect("MARGINFI_PROGRAM_ID environment variable is not set"),
+        )
+        .expect("Invalid MARGINFI_PROGRAM_ID Pubkey");
 
         let marginfi_api_url = std::env::var("MARGINFI_API_URL").ok();
         let marginfi_api_key = std::env::var("MARGINFI_API_KEY").ok();
@@ -69,25 +56,20 @@ impl Eva01Config {
             parse_pubkey_list("ADDRESS_LOOKUP_TABLES").unwrap_or_else(|_| vec![]);
 
         let solana_clock_refresh_interval: u64 = std::env::var("SOLANA_CLOCK_REFRESH_INTERVAL")
-            .map_err(|_| {
-                anyhow::anyhow!("SOLANA_CLOCK_REFRESH_INTERVAL environment variable is not set")
-            })?
+            .expect("SOLANA_CLOCK_REFRESH_INTERVAL environment variable is not set")
             .parse()
-            .map_err(|e| {
-                anyhow::anyhow!("Invalid SOLANA_CLOCK_REFRESH_INTERVAL number: {:#?}", e)
-            })?;
+            .expect("Invalid SOLANA_CLOCK_REFRESH_INTERVAL number");
 
         let min_profit: f64 = std::env::var("MIN_PROFIT")
-            .map_err(|_| anyhow::anyhow!("MIN_PROFIT environment variable is not set"))?
+            .expect("MIN_PROFIT environment variable is not set")
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid MIN_PROFIT number: {:#?}", e))?;
+            .expect("Invalid MIN_PROFIT number");
 
         let general_config = GeneralConfig {
             rpc_url,
             yellowstone_endpoint,
             yellowstone_x_token,
-            signer_pubkey,
-            keypair_path,
+            wallet_keypair,
             compute_unit_price_micro_lamports,
             compute_unit_limit,
             marginfi_program_id,
@@ -105,36 +87,32 @@ impl Eva01Config {
 
         // Liquidator process configuration
         let isolated_banks: bool = std::env::var("ISOLATED_BANKS")
-            .map_err(|_| anyhow::anyhow!("ISOLATED_BANKS environment variable is not set"))?
+            .expect("ISOLATED_BANKS environment variable is not set")
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid ISOLATED_BANKS boolean: {:#?}", e))?;
+            .expect("Invalid ISOLATED_BANKS boolean");
 
         let liquidator_config = LiquidatorCfg { isolated_banks };
 
         // Rebalancer process configuration
         let token_account_dust_threshold: f64 = std::env::var("TOKEN_ACCOUNT_DUST_THRESHOLD")
-            .map_err(|_| {
-                anyhow::anyhow!("TOKEN_ACCOUNT_DUST_THRESHOLD environment variable is not set")
-            })?
+            .expect("TOKEN_ACCOUNT_DUST_THRESHOLD environment variable is not set")
             .parse()
-            .map_err(|e| {
-                anyhow::anyhow!("Invalid TOKEN_ACCOUNT_DUST_THRESHOLD number: {:#?}", e)
-            })?;
+            .expect("Invalid TOKEN_ACCOUNT_DUST_THRESHOLD number");
 
         let preferred_mints: Vec<Pubkey> = parse_pubkey_list("PREFERRED_MINTS")?;
 
         let swap_mint = Pubkey::from_str(
-            &std::env::var("SWAP_MINT")
-                .map_err(|_| anyhow::anyhow!("SWAP_MINT environment variable is not set"))?,
-        )?;
+            &std::env::var("SWAP_MINT").expect("SWAP_MINT environment variable is not set"),
+        )
+        .expect("Invalid SWAP_MINT Pubkey");
 
         let jup_swap_api_url = std::env::var("JUP_SWAP_API_URL")
-            .map_err(|_| anyhow::anyhow!("JUP_SWAP_API_URL environment variable is not set"))?;
+            .expect("JUP_SWAP_API_URL environment variable is not set");
 
         let slippage_bps: u16 = std::env::var("SLIPPAGE_BPS")
-            .map_err(|_| anyhow::anyhow!("SLIPPAGE_BPS environment variable is not set"))?
+            .expect("SLIPPAGE_BPS environment variable is not set")
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid SLIPPAGE_BPS number: {:#?}", e))?;
+            .expect("Invalid SLIPPAGE_BPS number: {:#?}");
 
         let rebalancer_config = RebalancerCfg {
             token_account_dust_threshold: I80F48::from_num(token_account_dust_threshold),
@@ -171,9 +149,7 @@ pub struct GeneralConfig {
     pub rpc_url: String,
     pub yellowstone_endpoint: String,
     pub yellowstone_x_token: Option<String>,
-    // TODO: replace keypair path with the keypair object and the signer pubkey with get_signer_pubkey() method
-    pub signer_pubkey: Pubkey,
-    pub keypair_path: PathBuf,
+    pub wallet_keypair: Vec<u8>,
     pub compute_unit_price_micro_lamports: u64,
     pub compute_unit_limit: u32,
     pub marginfi_program_id: Pubkey,
@@ -191,8 +167,8 @@ impl GeneralConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         match (!self.marginfi_groups_whitelist.is_empty(), !self.marginfi_groups_blacklist.is_empty()) {
             (true, false) | (false, true) => Ok(()),
-            (true, true) => Err(anyhow::anyhow!("Only one of marginfi_groups_whitelist or marginfi_groups_blacklist must be set.")),
-            (false, false) => Err(anyhow::anyhow!("One of marginfi_groups_whitelist or marginfi_groups_blacklist must be set. marginfi_groups_whitelist must not be empty.")),
+            (true, true) => Err(anyhow::anyhow!("Only one of marginfi_groups_whitelist or marginfi_groups_blacklist must be set")),
+            (false, false) => Err(anyhow::anyhow!("One of marginfi_groups_whitelist or marginfi_groups_blacklist must be set. marginfi_groups_whitelist must not be empty")),
         }
     }
 
@@ -212,8 +188,6 @@ impl std::fmt::Display for GeneralConfig {
                  - RPC URL: {}\n\
                  - Yellowstone Endpoint: {}\n\
                  - Yellowstone X Token: {}\n\
-                 - Signer Pubkey: {}\n\
-                 - Keypair Path: {:?}\n\
                  - Compute Unit Price Micro Lamports: {}\n\
                  - Compute Unit Limit: {}\n\
                  - Minimun profit: {}$\n\
@@ -226,8 +200,6 @@ impl std::fmt::Display for GeneralConfig {
             self.rpc_url,
             self.yellowstone_endpoint,
             self.yellowstone_x_token.as_deref().unwrap_or("None"),
-            self.signer_pubkey,
-            self.keypair_path,
             self.compute_unit_price_micro_lamports,
             self.compute_unit_limit,
             self.min_profit,
@@ -309,15 +281,12 @@ fn parse_pubkey_list(env_var: &str) -> anyhow::Result<Vec<Pubkey>> {
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     use solana_sdk::signature::Keypair;
-    use tempfile::tempdir;
 
     use super::*;
-    use solana_sdk::signer::Signer;
 
     use std::env;
-    use std::fs::File;
-    use std::io::Write;
 
     fn set_env(key: &str, value: &str) {
         env::set_var(key, value);
@@ -341,20 +310,13 @@ mod tests {
         String,
         String,
         String,
-        String,
     ) {
-        let keypair = Keypair::new();
-        let dir = tempdir().unwrap();
-        let keypair_path = dir.path().join("keypair.json");
-        let mut file = File::create(&keypair_path).unwrap();
-        file.write_all(&keypair.to_bytes()).unwrap();
-        file.flush().unwrap();
+        let keypair = serde_json::to_string(&Keypair::new().to_bytes().to_vec()).unwrap();
 
         let rpc_url = "http://dummy:1234";
         let yellowstone_endpoint = "http://dummy:1234";
         let yellowstone_x_token = "token";
-        let signer_pubkey = keypair.pubkey().to_string();
-        let keypair_path_str = keypair_path.to_str().unwrap();
+        let keypair = keypair;
         let compute_unit_price_micro_lamports = "1000";
         let compute_unit_limit = "200000";
         let marginfi_program_id = Pubkey::new_unique().to_string();
@@ -368,8 +330,7 @@ mod tests {
         set_env("RPC_URL", rpc_url);
         set_env("YELLOWSTONE_ENDPOINT", yellowstone_endpoint);
         set_env("YELLOWSTONE_X_TOKEN", yellowstone_x_token);
-        set_env("SIGNER_PUBKEY", &signer_pubkey);
-        set_env("KEYPAIR_PATH", keypair_path_str);
+        set_env("WALLET_KEYPAIR", &keypair);
         set_env(
             "COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
             compute_unit_price_micro_lamports,
@@ -387,11 +348,10 @@ mod tests {
         set_env("ISOLATED_BANKS", isolated_banks);
 
         (
-            keypair_path_str.to_string(),
+            keypair,
             rpc_url.to_string(),
             yellowstone_endpoint.to_string(),
             yellowstone_x_token.to_string(),
-            signer_pubkey.to_string(),
             compute_unit_price_micro_lamports.to_string(),
             compute_unit_limit.to_string(),
             marginfi_program_id.to_string(),
@@ -406,13 +366,13 @@ mod tests {
 
     fn setup_rebalancer_env() {
         set_env("TOKEN_ACCOUNT_DUST_THRESHOLD", "0.0001");
-        set_env("PREFERRED_MINTS", &Pubkey::new_unique().to_string());
         set_env("SWAP_MINT", &Pubkey::new_unique().to_string());
         set_env("JUP_SWAP_API_URL", "https://dummy/swap");
         set_env("SLIPPAGE_BPS", "50");
     }
 
     #[test]
+    #[serial]
     fn test_parse_pubkey_list_empty() {
         unset_env("TEST_PUBKEY_LIST");
         let result = parse_pubkey_list("TEST_PUBKEY_LIST").unwrap();
@@ -420,6 +380,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_parse_pubkey_list_valid() {
         set_env(
             "TEST_PUBKEY_LIST",
@@ -435,6 +396,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_parse_pubkey_list_invalid() {
         set_env("TEST_PUBKEY_LIST", "invalid_pubkey");
         let result = parse_pubkey_list("TEST_PUBKEY_LIST");
@@ -442,13 +404,13 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_general_config_validate_whitelist_only() {
         let mut config = GeneralConfig {
             rpc_url: "".to_string(),
             yellowstone_endpoint: "".to_string(),
             yellowstone_x_token: None,
-            signer_pubkey: Pubkey::default(),
-            keypair_path: PathBuf::new(),
+            wallet_keypair: Vec::<u8>::new(),
             compute_unit_price_micro_lamports: 0,
             compute_unit_limit: 0,
             marginfi_program_id: Pubkey::default(),
@@ -469,13 +431,13 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_general_config_validate_both_set() {
         let config = GeneralConfig {
             rpc_url: "".to_string(),
             yellowstone_endpoint: "".to_string(),
             yellowstone_x_token: None,
-            signer_pubkey: Pubkey::default(),
-            keypair_path: PathBuf::new(),
+            wallet_keypair: Vec::<u8>::new(),
             compute_unit_price_micro_lamports: 0,
             compute_unit_limit: 0,
             marginfi_program_id: Pubkey::default(),
@@ -492,13 +454,13 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_general_config_validate_none_set() {
         let config = GeneralConfig {
             rpc_url: "".to_string(),
             yellowstone_endpoint: "".to_string(),
             yellowstone_x_token: None,
-            signer_pubkey: Pubkey::default(),
-            keypair_path: PathBuf::new(),
+            wallet_keypair: Vec::<u8>::new(),
             compute_unit_price_micro_lamports: 0,
             compute_unit_limit: 0,
             marginfi_program_id: Pubkey::default(),
@@ -515,6 +477,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_eva01_config_new_success() {
         let _ = setup_general_env();
         setup_rebalancer_env();
@@ -523,6 +486,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    #[should_panic(expected = "RPC_URL environment variable is not set")]
     fn test_eva01_config_new_missing_env() {
         unset_env("RPC_URL");
         let result = Eva01Config::new();
@@ -530,6 +495,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_display_impls() {
         let _ = setup_general_env();
         setup_rebalancer_env();
@@ -542,6 +508,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_geyser_service_config() {
         let _ = setup_general_env();
         setup_rebalancer_env();
@@ -555,5 +522,25 @@ mod tests {
             geyser_cfg.x_token,
             config.general_config.yellowstone_x_token
         );
+    }
+
+    #[test]
+    #[serial]
+    #[should_panic(expected = "Invalid MARGINFI_PROGRAM_ID Pubkey")]
+    fn test_eva01_config_new_invalid_pubkey_env() {
+        let _ = setup_general_env();
+        setup_rebalancer_env();
+        set_env("MARGINFI_PROGRAM_ID", "not_a_pubkey");
+        Eva01Config::new().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    #[should_panic(expected = "Invalid COMPUTE_UNIT_PRICE_MICRO_LAMPORTS number")]
+    fn test_eva01_config_new_invalid_compute_unit_price() {
+        let _ = setup_general_env();
+        setup_rebalancer_env();
+        set_env("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS", "not_a_number");
+        Eva01Config::new().unwrap();
     }
 }
