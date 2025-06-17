@@ -14,7 +14,7 @@ on:
       apps:
         description: 'List of apps to build and deploy (as JSON array)'
         required: true
-        default: '["liquidator"]'
+        default: '["eva"]'
         type: string
 
 jobs:
