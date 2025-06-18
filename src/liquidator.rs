@@ -489,6 +489,7 @@ impl Liquidator {
                 continue;
             }
 
+            // TODO: add Banks to Geyser!!!
             if bank.bank.check_utilization_ratio().is_err() {
                 thread_debug!("Skipping bankrupt bank from evaluation: {}", bank_pk);
                 continue;
