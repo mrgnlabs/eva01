@@ -34,9 +34,8 @@ use marginfi::{
 };
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{
-    account::ReadableAccount, signature::read_keypair_file, transaction::VersionedTransaction,
-};
+use solana_sdk::signature::Signer;
+use solana_sdk::{account::ReadableAccount, signature::Keypair, transaction::VersionedTransaction};
 use std::{
     cmp::min,
     sync::{
@@ -56,6 +55,7 @@ const MIN_LIQUIDATIONS_COUNT: u64 = 10;
 pub struct Rebalancer {
     config: RebalancerCfg,
     general_config: GeneralConfig,
+    signer: Keypair,
     liquidator_account: LiquidatorAccount,
     swb_cranker: SwbCranker,
     rpc_client: RpcClient,
@@ -76,6 +76,8 @@ impl Rebalancer {
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> anyhow::Result<Self> {
+        let signer = Keypair::from_bytes(&general_config.wallet_keypair)?;
+
         let rpc_client = RpcClient::new(general_config.rpc_url.clone());
 
         let swap_mint_bank_pk = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
@@ -91,6 +93,7 @@ impl Rebalancer {
         Ok(Self {
             config,
             general_config,
+            signer,
             liquidator_account,
             swb_cranker,
             rpc_client,
@@ -550,13 +553,6 @@ impl Rebalancer {
 
         let amount = withdraw_amount.to_num::<u64>();
 
-        thread_debug!(
-            "Withdrawing {:?} of {:?} from bank {:?}",
-            amount,
-            bank.bank.mint,
-            bank_pk
-        );
-
         self.liquidator_account
             .withdraw(&bank, amount, Some(withdrawl_all))?;
 
@@ -583,7 +579,7 @@ impl Rebalancer {
 
         let swap = self.tokio_rt.block_on(jup_swap_client.swap(
             &SwapRequest {
-                user_public_key: self.general_config.signer_pubkey,
+                user_public_key: self.signer.pubkey(),
                 quote_response,
                 config: TransactionConfig {
                     wrap_and_unwrap_sol: input_mint == spl_token::native_mint::ID,
@@ -601,10 +597,7 @@ impl Rebalancer {
         let mut tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
             .map_err(|_| anyhow::anyhow!("Failed to deserialize"))?;
 
-        tx = VersionedTransaction::try_new(
-            tx.message,
-            &[&read_keypair_file(&self.general_config.keypair_path).unwrap()],
-        )?;
+        tx = VersionedTransaction::try_new(tx.message, &[&self.signer])?;
 
         TransactionSender::aggressive_send_tx(&self.rpc_client, &tx, SenderCfg::DEFAULT)
             .map_err(|_| anyhow!("Failed to send swap transaction"))?;

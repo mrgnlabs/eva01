@@ -23,7 +23,7 @@ use solana_sdk::{
     instruction::Instruction,
     message::{v0::Message, CompileError, VersionedMessage},
     pubkey,
-    signature::{read_keypair_file, Keypair},
+    signature::Keypair,
     signer::{Signer, SignerError},
     system_instruction::transfer,
     transaction::VersionedTransaction,
@@ -65,7 +65,7 @@ impl LiquidationError {
 
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
-    pub signer_keypair: Arc<Keypair>,
+    pub signer: Keypair,
     program_id: Pubkey,
     group: Pubkey,
     rpc_client: RpcClient,
@@ -80,11 +80,11 @@ impl LiquidatorAccount {
         cache: Arc<Cache>,
         new_liquidator_account: &mut Option<Pubkey>,
     ) -> Result<Self> {
-        let signer_keypair = read_keypair_file(&config.keypair_path).unwrap();
+        let signer = Keypair::from_bytes(&config.wallet_keypair)?;
         let rpc_client = RpcClient::new(config.rpc_url.clone());
 
         let accounts = marginfi_account_by_authority(
-            signer_keypair.pubkey(),
+            signer.pubkey(),
             &rpc_client,
             config.marginfi_program_id,
             marginfi_group_id,
@@ -104,7 +104,7 @@ impl LiquidatorAccount {
                 &rpc_client,
                 config.marginfi_program_id,
                 marginfi_group_id,
-                &signer_keypair,
+                &signer,
             )?;
 
             thread::sleep(Duration::from_secs(20));
@@ -118,7 +118,7 @@ impl LiquidatorAccount {
 
         Ok(Self {
             liquidator_address,
-            signer_keypair: Arc::new(signer_keypair),
+            signer,
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
             rpc_client,
@@ -133,7 +133,7 @@ impl LiquidatorAccount {
 
         Ok(Self {
             liquidator_address: self.liquidator_address,
-            signer_keypair: Arc::clone(&self.signer_keypair),
+            signer: Keypair::from_bytes(&self.signer.to_bytes())?,
             program_id: self.program_id,
             group: self.group,
             rpc_client,
@@ -168,7 +168,7 @@ impl LiquidatorAccount {
             .try_get_bank_wrapper(liab_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
 
-        let signer_pk = self.signer_keypair.pubkey();
+        let signer_pk = self.signer.pubkey();
         let liab_mint = liab_bank_wrapper.bank.mint;
 
         let lending_account = &self
@@ -301,7 +301,7 @@ impl LiquidatorAccount {
         )
         .map_err(LiquidationError::from_compile_error)?;
 
-        let txn = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer_keypair])
+        let txn = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
             .map_err(LiquidationError::from_signer_error)?;
 
         thread_info!(
@@ -356,7 +356,7 @@ impl LiquidatorAccount {
     ) -> Result<()> {
         let marginfi_account = self.liquidator_address;
 
-        let signer_pk = self.signer_keypair.pubkey();
+        let signer_pk = self.signer.pubkey();
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude = if withdraw_all.unwrap_or(false) {
@@ -399,11 +399,16 @@ impl LiquidatorAccount {
             solana_sdk::transaction::Transaction::new_signed_with_payer(
                 &[withdraw_ix.clone()],
                 Some(&signer_pk),
-                &[&self.signer_keypair],
+                &[&self.signer],
                 recent_blockhash,
             );
 
-        thread_debug!("Withdrawing {:?} from {:?}", amount, token_account);
+        thread_debug!(
+            "Withdrawing {:?} unscaled Mint {} tokens from the Liquidator Account {:?}",
+            amount,
+            mint,
+            token_account
+        );
 
         let res = self
             .rpc_client
@@ -411,14 +416,14 @@ impl LiquidatorAccount {
                 &tx,
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
-                    skip_preflight: true,
+                    skip_preflight: false,
                     ..Default::default()
                 },
             )
             .map_err(|e| anyhow::anyhow!(e))?;
 
         thread_debug!(
-            "Withdrawing result for Liquidator account {:?} (without preflight check): {:?} ",
+            "Withdrawal result for Liquidator account {:?} (without preflight check): {:?} ",
             marginfi_account,
             res
         );
@@ -428,7 +433,7 @@ impl LiquidatorAccount {
     pub fn repay(&self, bank: &BankWrapper, amount: u64, repay_all: Option<bool>) -> Result<()> {
         let marginfi_account = self.liquidator_address;
 
-        let signer_pk = self.signer_keypair.pubkey();
+        let signer_pk = self.signer.pubkey();
 
         let mint = bank.bank.mint;
         let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
@@ -450,7 +455,7 @@ impl LiquidatorAccount {
             solana_sdk::transaction::Transaction::new_signed_with_payer(
                 &[repay_ix.clone()],
                 Some(&signer_pk),
-                &[&self.signer_keypair],
+                &[&self.signer],
                 recent_blockhash,
             );
 
@@ -462,7 +467,7 @@ impl LiquidatorAccount {
                 &tx,
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
-                    skip_preflight: true,
+                    skip_preflight: false,
                     ..Default::default()
                 },
             );
@@ -478,7 +483,7 @@ impl LiquidatorAccount {
     pub fn deposit(&self, bank: &BankWrapper, amount: u64) -> Result<()> {
         let marginfi_account = self.liquidator_address;
 
-        let signer_pk = self.signer_keypair.pubkey();
+        let signer_pk = self.signer.pubkey();
 
         let mint = bank.bank.mint;
         let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
@@ -506,7 +511,7 @@ impl LiquidatorAccount {
             solana_sdk::transaction::Transaction::new_signed_with_payer(
                 &instructions,
                 Some(&signer_pk),
-                &[&self.signer_keypair],
+                &[&self.signer],
                 recent_blockhash,
             );
 
@@ -518,7 +523,7 @@ impl LiquidatorAccount {
                 &tx,
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
-                    skip_preflight: true,
+                    skip_preflight: false,
                     ..Default::default()
                 },
             );

@@ -11,7 +11,7 @@ use solana_sdk::{
     instruction::InstructionError,
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair},
+    signature::Keypair,
     signer::Signer,
     transaction::{TransactionError, VersionedTransaction},
 };
@@ -54,7 +54,7 @@ pub struct SwbCranker {
 
 impl SwbCranker {
     pub fn new(config: &GeneralConfig) -> Result<Self> {
-        let payer = read_keypair_file(&config.keypair_path).unwrap();
+        let payer = Keypair::from_bytes(&config.wallet_keypair)?;
 
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("SwbCranker")

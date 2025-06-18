@@ -12,7 +12,7 @@ use crate::{
     wrappers::liquidator_account::LiquidatorAccount,
 };
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
+use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use std::{
     collections::HashSet,
     sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
@@ -44,6 +44,9 @@ pub fn run_liquidator(
     // This is to stop liquidator when rebalancer asks for it
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
+    let wallet_pubkey = Keypair::from_bytes(&config.general_config.wallet_keypair)?.pubkey();
+    thread_info!("Liquidator public key: {}", wallet_pubkey);
+
     // Solana Clock
     let clock = {
         let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
@@ -59,7 +62,7 @@ pub fn run_liquidator(
     // After construction it's replaced with the actual cache.
     // This way we ensure that the potentially created liquidator (MarginFi) account is picked up when the cache is loaded.
     let dummy_unused_cache = Cache::new(
-        config.general_config.signer_pubkey,
+        wallet_pubkey,
         config.general_config.marginfi_program_id,
         marginfi_group_id,
         clock.clone(),
@@ -77,7 +80,7 @@ pub fn run_liquidator(
 
     thread_info!("Loading Cache...");
     let mut cache = Cache::new(
-        config.general_config.signer_pubkey,
+        wallet_pubkey,
         config.general_config.marginfi_program_id,
         marginfi_group_id,
         clock.clone(),
@@ -85,7 +88,7 @@ pub fn run_liquidator(
     );
 
     let cache_loader = CacheLoader::new(
-        config.general_config.keypair_path.clone(),
+        &config.general_config.wallet_keypair,
         config.general_config.rpc_url.clone(),
         config.general_config.clone().address_lookup_tables,
     )?;
