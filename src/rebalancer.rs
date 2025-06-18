@@ -352,7 +352,7 @@ impl Rebalancer {
             liab_balance,
             &bank_pk,
             lq_account,
-            RequirementType::Initial,
+            RequirementType::Equity,
             BalanceSide::Liabilities,
         )?;
         if liab_usd_value < self.config.token_account_dust_threshold {
@@ -373,7 +373,11 @@ impl Rebalancer {
         );
 
         // Get the amount of swap token needed to repay the liability
-        let required_swap_token = self.get_amount(liab_usd_value, &self.swap_mint_bank_pk, None)?;
+        let required_swap_token = self.get_amount(
+            liab_usd_value,
+            &self.swap_mint_bank_pk,
+            Some(PriceBias::Low),
+        )?;
 
         let withdraw_amount = if required_swap_token.is_positive() {
             let (max_withdraw_amount, withdraw_all) =
@@ -381,8 +385,11 @@ impl Rebalancer {
 
             let withdraw_amount = min(max_withdraw_amount, required_swap_token);
 
+            let swap_bank = self
+                .cache
+                .try_get_bank_wrapper::<OracleWrapper>(&self.swap_mint_bank_pk)?;
             self.liquidator_account.withdraw(
-                &bank,
+                &swap_bank,
                 withdraw_amount.to_num(),
                 Some(withdraw_all),
             )?;
@@ -414,8 +421,6 @@ impl Rebalancer {
             .unwrap_or_default();
 
         let repay_all = token_balance >= liab_balance;
-
-        let bank = self.cache.try_get_bank_wrapper(&bank_pk)?;
 
         self.liquidator_account
             .repay(&bank, token_balance.to_num(), Some(repay_all))?;
@@ -619,7 +624,7 @@ impl Rebalancer {
                     balance,
                     bank_pk,
                     lq_account,
-                    RequirementType::Initial,
+                    RequirementType::Equity,
                     BalanceSide::Assets,
                 )?;
 
