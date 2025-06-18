@@ -21,7 +21,7 @@ jobs:
   build-and-push:
     name: Build & Push ${{ matrix.app }}
     if: ${{ github.event.inputs.environment == 'stage' }}
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     strategy:
       matrix: 
         app: ${{ fromJSON(github.event.inputs.apps) }}
