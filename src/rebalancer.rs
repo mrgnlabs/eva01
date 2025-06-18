@@ -349,7 +349,7 @@ impl Rebalancer {
             liab_balance,
             &bank_pk,
             lq_account,
-            RequirementType::Initial,
+            RequirementType::Equity,
             BalanceSide::Liabilities,
         )?;
         if liab_usd_value < self.config.token_account_dust_threshold {
@@ -370,7 +370,11 @@ impl Rebalancer {
         );
 
         // Get the amount of swap token needed to repay the liability
-        let required_swap_token = self.get_amount(liab_usd_value, &self.swap_mint_bank_pk, None)?;
+        let required_swap_token = self.get_amount(
+            liab_usd_value,
+            &self.swap_mint_bank_pk,
+            Some(PriceBias::Low),
+        )?;
 
         let withdraw_amount = if required_swap_token.is_positive() {
             let (max_withdraw_amount, withdraw_all) =
@@ -378,6 +382,9 @@ impl Rebalancer {
 
             let withdraw_amount = min(max_withdraw_amount, required_swap_token);
 
+            let bank = self
+                .cache
+                .try_get_bank_wrapper::<OracleWrapper>(&self.swap_mint_bank_pk)?;
             self.liquidator_account.withdraw(
                 &bank,
                 withdraw_amount.to_num(),
@@ -404,13 +411,13 @@ impl Rebalancer {
             )?;
         }
 
-        thread_debug!("Repaying liability for bank {}", bank_pk);
-
         let token_balance = self
             .get_token_balance_for_mint(&bank.bank.mint)
             .unwrap_or_default();
 
         let repay_all = token_balance >= liab_balance;
+
+        thread_debug!("Repaying liability for bank {} (REPAYING ALL = {})", bank_pk, repay_all);
 
         let bank = self.cache.try_get_bank_wrapper(&bank_pk)?;
 
@@ -618,6 +625,7 @@ impl Rebalancer {
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<(I80F48, bool)> {
         let free_collateral = get_free_collateral(&self.cache, lq_account)?;
+        thread_debug!("FREE COLLATERAL = {:?}", free_collateral);
         let balance = lq_account
             .get_balance_for_bank(&self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?);
         Ok(match balance {
@@ -626,11 +634,12 @@ impl Rebalancer {
                     balance,
                     bank_pk,
                     lq_account,
-                    RequirementType::Initial,
+                    RequirementType::Equity,
                     BalanceSide::Assets,
                 )?;
 
                 let max_withdraw = value.min(free_collateral);
+                thread_debug!("MAX WITHDRAW = {:?} (value = {:?})", max_withdraw, value);
 
                 let amount = self.get_amount(max_withdraw, bank_pk, Some(PriceBias::Low))?;
 
