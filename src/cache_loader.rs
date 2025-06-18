@@ -7,13 +7,14 @@ use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::Bank};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
     rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig},
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_sdk::{
     account::Account,
     address_lookup_table::{state::AddressLookupTable, AddressLookupTableAccount},
     bs58,
+    commitment_config::CommitmentConfig,
     instruction::Instruction,
     pubkey::Pubkey,
     signature::Keypair,
@@ -23,7 +24,6 @@ use solana_sdk::{
 use crate::{
     cache::Cache,
     geyser::AccountType,
-    sender::{SenderCfg, TransactionSender},
     thread_debug, thread_error, thread_info, thread_warn,
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
     wrappers::marginfi_account::MarginfiAccountWrapper,
@@ -364,12 +364,18 @@ impl CacheLoader {
                     recent_blockhash,
                 );
 
-                let sig = TransactionSender::aggressive_send_tx(
-                    &self.rpc_client,
-                    &tx,
-                    SenderCfg::DEFAULT,
-                )
-                .map_err(|e| anyhow!("Failed to send transaction: {:?}", e))?;
+                thread_info!("Registering {} new Token accounts...", chunk.len());
+
+                let sig = self
+                    .rpc_client
+                    .send_and_confirm_transaction_with_spinner_and_config(
+                        &tx,
+                        CommitmentConfig::finalized(),
+                        RpcSendTransactionConfig {
+                            skip_preflight: false,
+                            ..Default::default()
+                        },
+                    )?;
 
                 thread_info!(
                     "{} new Token accounts were successfully registered. Txn sig: {:?}",

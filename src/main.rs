@@ -11,9 +11,6 @@ mod geyser_processor;
 /// IX's for marginfi
 mod marginfi_ixs;
 
-/// Responsible for sending transactions for the blockchain
-mod sender;
-
 /// Liquidator is responsible to liquidate MarginfiAccounts
 mod liquidator;
 
