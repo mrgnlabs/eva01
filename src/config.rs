@@ -165,10 +165,17 @@ pub struct GeneralConfig {
 
 impl GeneralConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
-        match (!self.marginfi_groups_whitelist.is_empty(), !self.marginfi_groups_blacklist.is_empty()) {
+        match (
+            !self.marginfi_groups_whitelist.is_empty(),
+            !self.marginfi_groups_blacklist.is_empty(),
+        ) {
             (true, false) | (false, true) => Ok(()),
-            (true, true) => Err(anyhow::anyhow!("Only one of marginfi_groups_whitelist or marginfi_groups_blacklist must be set")),
-            (false, false) => Err(anyhow::anyhow!("One of marginfi_groups_whitelist or marginfi_groups_blacklist must be set. marginfi_groups_whitelist must not be empty")),
+            (true, true) => Err(anyhow::anyhow!(
+                "Only one of marginfi_groups_whitelist or marginfi_groups_blacklist must be set."
+            )),
+            (false, false) => Err(anyhow::anyhow!(
+                "Either marginfi_groups_whitelist or marginfi_groups_blacklist must be set - not both."
+            )),
         }
     }
 
