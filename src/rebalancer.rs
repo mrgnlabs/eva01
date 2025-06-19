@@ -132,15 +132,13 @@ impl Rebalancer {
         thread_info!("Starting the Rebalancer loop");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             match self.needs_to_be_rebalanced() {
-                Ok(true) => {
-                    thread_info!("Running the Rebalancing process...");
-                    self.run_rebalance.store(false, Ordering::Relaxed);
-                    self.rebalance_accounts();
-                    thread_info!("The Rebalancing process is complete.");
-                }
-                Ok(false) => {
-                    thread_debug!("The Liquidator account does not need to be rebalanced.");
-                    continue;
+                Ok(should_rebalance) => {
+                    if should_rebalance {
+                        thread_info!("Running the Rebalancing process...");
+                        self.run_rebalance.store(false, Ordering::Relaxed);
+                        self.rebalance_accounts();
+                        thread_info!("The Rebalancing process is complete.");
+                    }
                 }
                 Err(error) => {
                     thread_error!(
@@ -634,14 +632,7 @@ impl Rebalancer {
                     ..Default::default()
                 },
             )?;
-        thread_info!(
-            "The unscaled {} ({}) -> {} ({}) tokens swap txn is finalized. Sig: {:?}",
-            amount,
-            input_mint,
-            out_amount,
-            output_mint,
-            sig
-        );
+        thread_info!("The swap txn is finalized. Sig: {:?}", sig);
 
         Ok(out_amount)
     }
