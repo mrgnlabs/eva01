@@ -1,7 +1,6 @@
 use crate::{
     cache::Cache,
     config::{GeneralConfig, RebalancerCfg},
-    sender::{SenderCfg, TransactionSender},
     thread_debug, thread_error, thread_info, thread_trace, thread_warn,
     utils::{
         self, build_emode_config, calc_total_weighted_assets_liabs, calc_weighted_bank_assets,
@@ -24,7 +23,6 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
-use log::{debug, info};
 use marginfi::{
     constants::EXP_10_I80F48,
     state::{
@@ -32,10 +30,10 @@ use marginfi::{
         price::{OracleSetup, PriceBias},
     },
 };
-use solana_client::rpc_client::RpcClient;
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_program::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
 use solana_sdk::{account::ReadableAccount, signature::Keypair, transaction::VersionedTransaction};
+use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
 use std::{
     cmp::min,
     sync::{
@@ -133,12 +131,24 @@ impl Rebalancer {
     pub fn start(&mut self) -> anyhow::Result<()> {
         thread_info!("Starting the Rebalancer loop");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
-            if self.run_rebalance.load(Ordering::Relaxed) && self.needs_to_be_rebalanced()? {
-                thread_debug!("Running the Rebalancing process...");
-                self.run_rebalance.store(false, Ordering::Relaxed);
-                self.rebalance_accounts();
-                thread_debug!("The Rebalancing process is complete.");
+            match self.needs_to_be_rebalanced() {
+                Ok(should_rebalance) => {
+                    if should_rebalance {
+                        thread_info!("Running the Rebalancing process...");
+                        self.run_rebalance.store(false, Ordering::Relaxed);
+                        self.rebalance_accounts();
+                        thread_info!("The Rebalancing process is complete.");
+                    }
+                }
+                Err(error) => {
+                    thread_error!(
+                        "Failed to check if the Liquidator account needs to be rebalanced: {}",
+                        error
+                    );
+                    continue;
+                }
             }
+
             thread::sleep(Duration::from_secs(10));
         }
         thread_info!("The Rebalancer loop stopped.");
@@ -211,13 +221,13 @@ impl Rebalancer {
             .sell_non_preferred_deposits()
             .map_err(|e| thread_error!("Failed to sell non preferred deposits! {}", e))
             .ok());
-        debug!("Sold {:?} non-preferred deposits.", sold_deposits.len());
+        thread_debug!("Sold {:?} non-preferred deposits.", sold_deposits.len());
 
         let drained_amount = ward!(self
             .drain_tokens_from_token_accounts(sold_deposits)
             .map_err(|e| thread_error!("Failed to drain the Liquidator's tokens! {}", e))
             .ok());
-        debug!(
+        thread_debug!(
             "Drained {:?} tokens from the Liquidator's token accounts.",
             drained_amount
         );
@@ -567,7 +577,7 @@ impl Rebalancer {
     }
 
     fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {
-        info!("Jupiter swap: {} -> {}", input_mint, output_mint);
+        thread_info!("Jupiter swap: {} -> {}", input_mint, output_mint);
         let jup_swap_client = JupiterSwapApiClient::new(self.config.jup_swap_api_url.clone());
 
         let quote_response = self
@@ -604,8 +614,25 @@ impl Rebalancer {
 
         tx = VersionedTransaction::try_new(tx.message, &[&self.signer])?;
 
-        TransactionSender::aggressive_send_tx(&self.rpc_client, &tx, SenderCfg::DEFAULT)
-            .map_err(|_| anyhow!("Failed to send swap transaction"))?;
+        thread_info!(
+            "Swapping unscaled {} tokens of mint {} to {} tokens of mint {} ...",
+            amount,
+            input_mint,
+            out_amount,
+            output_mint
+        );
+
+        let sig = self
+            .rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::finalized(),
+                RpcSendTransactionConfig {
+                    skip_preflight: false,
+                    ..Default::default()
+                },
+            )?;
+        thread_info!("The swap txn is finalized. Sig: {:?}", sig);
 
         Ok(out_amount)
     }
