@@ -174,7 +174,7 @@ impl GeneralConfig {
                 "Only one of marginfi_groups_whitelist or marginfi_groups_blacklist must be set."
             )),
             (false, false) => Err(anyhow::anyhow!(
-                "Either marginfi_groups_whitelist or marginfi_groups_blacklist must be set."
+                "Either marginfi_groups_whitelist or marginfi_groups_blacklist must be set - not both."
             )),
         }
     }
