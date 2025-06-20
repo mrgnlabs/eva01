@@ -8,7 +8,7 @@ use std::{
 use crate::{
     cli::setup::get_active_arena_pools,
     config::Eva01Config,
-    utils::healthcheck::{HealthServer, HealthState},
+    utils::healthcheck::{HealthCheckServer, HealthState},
 };
 use log::{error, info};
 use setup::marginfi_groups_by_program;
@@ -36,12 +36,12 @@ pub fn main_entry() -> anyhow::Result<()> {
     let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     let health_state = Arc::new(Mutex::new(HealthState::Initializing));
-    let health_server = HealthServer::new(
+    let healthcheck_server = HealthCheckServer::new(
         config.general_config.healthcheck_port,
         health_state.clone(),
         stop_liquidator.clone(),
     );
-    thread::spawn(move || health_server.start());
+    thread::spawn(move || healthcheck_server.start());
 
     *health_state
         .lock()

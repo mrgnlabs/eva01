@@ -28,19 +28,19 @@ impl HealthState {
     }
 }
 
-pub struct HealthServer {
+pub struct HealthCheckServer {
     port: u16,
     health_state: Arc<Mutex<HealthState>>,
     stop_liquidator: Arc<AtomicBool>,
 }
 
-impl HealthServer {
+impl HealthCheckServer {
     pub fn new(
         port: u16,
         health_state: Arc<Mutex<HealthState>>,
         stop_liquidator: Arc<AtomicBool>,
     ) -> Self {
-        HealthServer {
+        HealthCheckServer {
             port,
             health_state,
             stop_liquidator,
@@ -109,7 +109,7 @@ mod tests {
     fn test_health_server_state_to_http_response_running() {
         let health_state = Arc::new(Mutex::new(HealthState::Running));
         let stop_liquidator = Arc::new(AtomicBool::new(false));
-        let server = HealthServer::new(8080, health_state, stop_liquidator);
+        let server = HealthCheckServer::new(8080, health_state, stop_liquidator);
         let resp = server.state_to_http_response();
         assert_eq!(resp.status_code(), HTTP_STATUS_OK);
     }
@@ -118,7 +118,7 @@ mod tests {
     fn test_health_server_state_to_http_response_initializing() {
         let health_state = Arc::new(Mutex::new(HealthState::Initializing));
         let stop_liquidator = Arc::new(AtomicBool::new(false));
-        let server = HealthServer::new(8080, health_state, stop_liquidator);
+        let server = HealthCheckServer::new(8080, health_state, stop_liquidator);
         let resp = server.state_to_http_response();
         assert_eq!(resp.status_code(), HTTP_STATUS_SERVICE_UNAVAILABLE);
     }
@@ -127,7 +127,7 @@ mod tests {
     fn test_health_server_new() {
         let health_state = Arc::new(Mutex::new(HealthState::Running));
         let stop_liquidator = Arc::new(AtomicBool::new(false));
-        let server = HealthServer::new(1234, health_state.clone(), stop_liquidator.clone());
+        let server = HealthCheckServer::new(1234, health_state.clone(), stop_liquidator.clone());
         assert_eq!(server.port, 1234);
         assert!(Arc::ptr_eq(&server.health_state, &health_state));
         assert!(Arc::ptr_eq(&server.stop_liquidator, &stop_liquidator));
