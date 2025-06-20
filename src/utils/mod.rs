@@ -1,3 +1,4 @@
+pub mod healthcheck;
 pub mod swb_cranker;
 
 use anyhow::{anyhow, Error, Result};

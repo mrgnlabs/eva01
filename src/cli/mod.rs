@@ -1,15 +1,20 @@
 use std::{
     collections::HashSet,
-    sync::{Arc, RwLock},
+    sync::{atomic::AtomicBool, Arc, RwLock},
     thread::{self, sleep},
     time::Duration,
 };
 
-use crate::{cli::setup::get_active_arena_pools, config::Eva01Config};
+use crate::{
+    cli::setup::get_active_arena_pools,
+    config::Eva01Config,
+    utils::healthcheck::{HealthServer, HealthState},
+};
 use log::{error, info};
 use setup::marginfi_groups_by_program;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
+use std::sync::Mutex;
 
 /// Entrypoints for the Eva
 pub mod entrypoints;
@@ -27,14 +32,40 @@ pub fn main_entry() -> anyhow::Result<()> {
     // and spawn a new liquidator for each except the ones listed in the blacklist.
     // Note that it is not allowed to have both whitelist and blacklist at the same time!
 
+    // This is to stop liquidator when rebalancer asks for it
+    let stop_liquidator = Arc::new(AtomicBool::new(false));
+
+    let health_state = Arc::new(Mutex::new(HealthState::Initializing));
+    let health_server = HealthServer::new(
+        config.general_config.healthcheck_port,
+        health_state.clone(),
+        stop_liquidator.clone(),
+    );
+    thread::spawn(move || health_server.start());
+
+    *health_state
+        .lock()
+        .expect("Failed to acquire the health_state lock") = HealthState::Running;
+
     let mut whitelist = config.general_config.marginfi_groups_whitelist.clone();
     if !whitelist.is_empty() {
         // The last group will be started in the main thread to decrease total thread count
         let last_group = whitelist.pop().unwrap();
         for group in whitelist {
-            start_liquidator_in_separate_thread(&config, group, Arc::clone(&preferred_mints));
+            start_liquidator_in_separate_thread(
+                &config,
+                group,
+                Arc::clone(&preferred_mints),
+                stop_liquidator.clone(),
+            );
         }
-        return entrypoints::run_liquidator(config, last_group, Arc::clone(&preferred_mints));
+
+        return entrypoints::run_liquidator(
+            config,
+            last_group,
+            Arc::clone(&preferred_mints),
+            stop_liquidator.clone(),
+        );
     }
 
     let blacklist = config.general_config.marginfi_groups_blacklist.clone();
@@ -65,7 +96,12 @@ pub fn main_entry() -> anyhow::Result<()> {
                     continue;
                 }
 
-                start_liquidator_in_separate_thread(&config, group, Arc::clone(&preferred_mints));
+                start_liquidator_in_separate_thread(
+                    &config,
+                    group,
+                    Arc::clone(&preferred_mints),
+                    stop_liquidator.clone(),
+                );
                 active_groups.insert(group);
             }
 
@@ -80,10 +116,12 @@ fn start_liquidator_in_separate_thread(
     config: &Eva01Config,
     group: Pubkey,
     preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
+    stop_liquidator: Arc<AtomicBool>,
 ) {
     let config = config.clone();
     thread::spawn(move || {
-        if let Err(e) = entrypoints::run_liquidator(config, group, preferred_mints) {
+        if let Err(e) = entrypoints::run_liquidator(config, group, preferred_mints, stop_liquidator)
+        {
             error!("Liquidator for group {:?} failed: {:?}", group, e);
             panic!("Fatal error in Liquidator!");
         }

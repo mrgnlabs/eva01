@@ -23,6 +23,7 @@ pub fn run_liquidator(
     mut config: Eva01Config,
     marginfi_group_id: Pubkey,
     preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
+    stop_liquidator: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     thread_info!("Starting liquidator for group: {:?}", marginfi_group_id);
     // TODO: re-enable. https://linear.app/marginfi/issue/LIQ-13/reenable-grafana-metrics-reporting
@@ -40,9 +41,6 @@ pub fn run_liquidator(
     // tokio::spawn(async move {
     //     warp::serve(metrics_route).run(([0, 0, 0, 0], 8080)).await;
     // });
-
-    // This is to stop liquidator when rebalancer asks for it
-    let stop_liquidator = Arc::new(AtomicBool::new(false));
 
     let wallet_pubkey = Keypair::from_bytes(&config.general_config.wallet_keypair)?.pubkey();
     thread_info!("Liquidator public key: {}", wallet_pubkey);
