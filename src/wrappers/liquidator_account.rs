@@ -69,7 +69,7 @@ pub struct LiquidatorAccount {
     program_id: Pubkey,
     group: Pubkey,
     rpc_client: RpcClient,
-    compute_unit_limit: u32,
+    cu_limit_ix: Instruction,
     pub cache: Arc<Cache>,
 }
 
@@ -122,7 +122,9 @@ impl LiquidatorAccount {
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
             rpc_client,
-            compute_unit_limit: config.compute_unit_limit,
+            cu_limit_ix: ComputeBudgetInstruction::set_compute_unit_limit(
+                config.compute_unit_limit,
+            ),
             cache,
         })
     }
@@ -137,7 +139,7 @@ impl LiquidatorAccount {
             program_id: self.program_id,
             group: self.group,
             rpc_client,
-            compute_unit_limit: self.compute_unit_limit,
+            cu_limit_ix: self.cu_limit_ix.clone(),
             cache: Arc::clone(&self.cache),
         })
     }
@@ -253,8 +255,6 @@ impl LiquidatorAccount {
             .copied()
             .collect::<Vec<_>>();
 
-        let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
-
         let total_observation_accounts = joined_observation_accounts.len();
 
         let liquidate_ix = make_liquidate_ix(
@@ -295,7 +295,7 @@ impl LiquidatorAccount {
 
         let msg = Message::try_compile(
             &signer_pk,
-            &[cu_limit_ix.clone(), liquidate_ix.clone()],
+            &[self.cu_limit_ix.clone(), liquidate_ix.clone()],
             luts,
             recent_blockhash,
         )
@@ -397,7 +397,7 @@ impl LiquidatorAccount {
 
         let tx: solana_sdk::transaction::Transaction =
             solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[withdraw_ix.clone()],
+                &[self.cu_limit_ix.clone(), withdraw_ix],
                 Some(&signer_pk),
                 &[&self.signer],
                 recent_blockhash,
