@@ -54,6 +54,7 @@ url = "2.5.2"
 warp = "0.3.7"
 prometheus = "0.13.4"
 indexmap = "2.9"
+tiny_http = "0.12"
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"

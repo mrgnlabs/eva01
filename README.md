@@ -10,7 +10,6 @@
 The [env.template](bin/env.template) file is a template for required and optional environment variables that are used by Eva.
 
 ## Deployment
-### Linux box
 1. Install dependencies
     * OS librarires: `sudo apt install build-essential libssl-dev pkg-config unzip`
     * Protoc:  https://grpc.io/docs/protoc-installation/#install-pre-compiled-binaries-any-os;
@@ -20,11 +19,8 @@ The [env.template](bin/env.template) file is a template for required and optiona
 
  > VSCode: create the VSCode launch configuration and add the configured `.env` to it.
 
-### Kubernetes
-tbd
 
 ## Run
-### Linux box
 1. Source the `.env` file. Example: `source src/eva01/bin/prod.env`
 1. Optionally Rotate logs: `mv  ~/log/liquidator.log  ~/log/liquidator.log.$(date +'%Y%m%dT%H%M%S')`
 1. Run the Liquidator: `nohup bash $LIQUIDATOR_SRC_PATH/bin/start.sh >> ~/log/liquidator.log 2>&1 &`
@@ -33,6 +29,3 @@ tbd
 The initial loading phase can take some time, depending on your RPC. Eva will load everything needed into the state, including all Marginfi Accounts. Expect the loading time to be between 1-3 minutes depending on the RPC.
 
 > Local Docker: Run `docker build -f <CONFIG FILE> -t eva:latest .` to build an image and `docker run --env-file docker.staging.env --rm -v <WALLET>:<WALLET> eva` to run it.
-
-### Kubernetes
-tbd

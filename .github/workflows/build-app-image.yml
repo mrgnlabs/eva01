@@ -21,7 +21,7 @@ jobs:
   build-and-push:
     name: Build & Push ${{ matrix.app }}
     if: ${{ github.event.inputs.environment == 'stage' }}
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     strategy:
       matrix: 
         app: ${{ fromJSON(github.event.inputs.apps) }}
@@ -39,6 +39,10 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Setup Docker Auth
+        run: |
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+          
       - name: Get short Git SHA
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT

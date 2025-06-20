@@ -65,6 +65,11 @@ impl Eva01Config {
             .parse()
             .expect("Invalid MIN_PROFIT number");
 
+        let healthcheck_port: u16 = std::env::var("HEALTHCHECK_PORT")
+            .expect("HEALTHCHECK_PORT environment variable is not set")
+            .parse()
+            .expect("Invalid HEALTHCHECK_PORT number");
+
         let general_config = GeneralConfig {
             rpc_url,
             yellowstone_endpoint,
@@ -81,6 +86,7 @@ impl Eva01Config {
             address_lookup_tables,
             solana_clock_refresh_interval,
             min_profit,
+            healthcheck_port,
         };
 
         general_config.validate()?;
@@ -161,6 +167,7 @@ pub struct GeneralConfig {
     pub address_lookup_tables: Vec<Pubkey>,
     pub solana_clock_refresh_interval: u64,
     pub min_profit: f64,
+    pub healthcheck_port: u16,
 }
 
 impl GeneralConfig {
@@ -203,7 +210,10 @@ impl std::fmt::Display for GeneralConfig {
                  - Marginfi API Key: {}\n\
                  - Marginfi API Arena Threshold: {}\n\
                  - Marginfi Groups Whitelist: {:?}\n\
-                 - Marginfi Groups Blacklist: {:?}\n",
+                 - Marginfi Groups Blacklist: {:?}\n
+                 - Address Lookup Tables: {:?}\n\
+                 - Solana Clock Refresh Interval: {}\n\
+                    - Healthcheck Port: {}",
             self.rpc_url,
             self.yellowstone_endpoint,
             self.yellowstone_x_token.as_deref().unwrap_or("None"),
@@ -216,6 +226,9 @@ impl std::fmt::Display for GeneralConfig {
             self.marginfi_api_arena_threshold.unwrap_or_default(),
             self.marginfi_groups_whitelist,
             self.marginfi_groups_blacklist,
+            self.address_lookup_tables,
+            self.solana_clock_refresh_interval,
+            self.healthcheck_port,
         )
     }
 }
@@ -317,6 +330,7 @@ mod tests {
         String,
         String,
         String,
+        String,
     ) {
         let keypair = serde_json::to_string(&Keypair::new().to_bytes().to_vec()).unwrap();
 
@@ -333,6 +347,7 @@ mod tests {
         let solana_clock_refresh_interval = "1000";
         let min_profit = "0.01";
         let isolated_banks = "true";
+        let healthcheck_port = "1234";
 
         set_env("RPC_URL", rpc_url);
         set_env("YELLOWSTONE_ENDPOINT", yellowstone_endpoint);
@@ -353,6 +368,7 @@ mod tests {
         );
         set_env("MIN_PROFIT", min_profit);
         set_env("ISOLATED_BANKS", isolated_banks);
+        set_env("HEALTHCHECK_PORT", healthcheck_port);
 
         (
             keypair,
@@ -368,6 +384,7 @@ mod tests {
             solana_clock_refresh_interval.to_string(),
             min_profit.to_string(),
             isolated_banks.to_string(),
+            healthcheck_port.to_string(),
         )
     }
 
@@ -429,6 +446,7 @@ mod tests {
             address_lookup_tables: vec![],
             solana_clock_refresh_interval: 0,
             min_profit: 0.01,
+            healthcheck_port: 0,
         };
         assert!(config.validate().is_ok());
 
@@ -456,6 +474,7 @@ mod tests {
             address_lookup_tables: vec![],
             solana_clock_refresh_interval: 0,
             min_profit: 0.01,
+            healthcheck_port: 0,
         };
         assert!(config.validate().is_err());
     }
@@ -479,6 +498,7 @@ mod tests {
             address_lookup_tables: vec![],
             solana_clock_refresh_interval: 0,
             min_profit: 0.01,
+            healthcheck_port: 0,
         };
         assert!(config.validate().is_err());
     }
