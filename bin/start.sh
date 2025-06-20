@@ -11,7 +11,7 @@ pushd $LIQUIDATOR_SRC_PATH > /dev/null
 
 export RUST_LOG=debug,hyper=info,h2::codec=info,eva01::geyser_processor=info,eva01::clock_manager=info
 export RUST_BACKTRACDE=full
-cargo run -- run $1
+cargo run
 
 popd > /dev/null
 
