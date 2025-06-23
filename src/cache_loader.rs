@@ -113,6 +113,7 @@ impl CacheLoader {
             marginfi_accounts_pubkeys.push(*new_liquidator_account);
         }
 
+        thread_info!("Loading marginfi accounts...");
         let marginfi_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
             &marginfi_accounts_pubkeys,
