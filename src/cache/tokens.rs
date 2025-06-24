@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::RwLock,
-};
+use std::{collections::HashMap, sync::RwLock};
 
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
@@ -12,7 +9,6 @@ use solana_sdk::{account::Account, pubkey::Pubkey};
 #[derive(Default)]
 pub struct TokensCache {
     tokens: RwLock<IndexMap<Pubkey, Account>>,
-    token_addresses: HashSet<Pubkey>,
     mint_to_token: HashMap<Pubkey, Pubkey>,
 }
 
@@ -27,7 +23,6 @@ impl TokensCache {
             .write()
             .map_err(|e| anyhow!("Failed to lock the token map for insert: {}", e))?
             .insert(token_address, token);
-        self.token_addresses.insert(token_address);
         self.mint_to_token.insert(mint_address, token_address);
         Ok(())
     }
