@@ -206,12 +206,6 @@ impl Rebalancer {
     }
 
     fn rebalance_accounts(&mut self) {
-        /*
-                if let Err(error) = self.swb_price_simulator.simulate_swb_prices() {
-                    thread_error!("Failed to simulate Swb prices! {}", error)
-                }
-        */
-        //TODO: It is called right after simulation. Confirm that it is really needed.
         if let Err(error) = self.crank_active_swb_oracles() {
             thread_error!(
                 "Failed to crank Swb Oracles for the Liquidator banks: {}",

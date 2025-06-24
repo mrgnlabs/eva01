@@ -30,9 +30,6 @@ mod cli;
 /// Configuration strectures for Eva01
 mod config;
 
-/// Crossbar client
-mod crossbar;
-
 /// Solana Clock manager
 mod clock_manager;
 

@@ -10,7 +10,7 @@ use switchboard_on_demand_client::PullFeedAccountData;
 
 use crate::{
     cache::Cache,
-    clock_manager, thread_debug, thread_error, thread_warn,
+    clock_manager, thread_error, thread_warn,
     utils::{find_oracle_keys, load_swb_pull_account_from_bytes},
 };
 
@@ -31,8 +31,6 @@ pub trait OracleWrapperTrait {
 pub struct OracleWrapper {
     pub address: Pubkey,
     pub price_adapter: OraclePriceFeedAdapter,
-    // Simulated price are only for swb pull oracles
-    pub simulated_price: Option<f64>,
 }
 
 impl OracleWrapperTrait for OracleWrapper {
@@ -40,7 +38,6 @@ impl OracleWrapperTrait for OracleWrapper {
         Self {
             address,
             price_adapter,
-            simulated_price: None,
         }
     }
     fn get_price_of_type(
@@ -48,15 +45,9 @@ impl OracleWrapperTrait for OracleWrapper {
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48> {
-        match self.simulated_price {
-            Some(price) => {
-                thread_debug!("USING SIMULATED PRICE!");
-                Ok(I80F48::from_num(price))
-            }
-            None => Ok(self
-                .price_adapter
-                .get_price_of_type(oracle_type, price_bias)?),
-        }
+        Ok(self
+            .price_adapter
+            .get_price_of_type(oracle_type, price_bias)?)
     }
 
     fn get_address(&self) -> Pubkey {
