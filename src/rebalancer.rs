@@ -181,13 +181,19 @@ impl Rebalancer {
         let active_swb_oracles: Vec<Pubkey> = active_banks
             .iter()
             .filter_map(|&bank_pk| {
-                self.cache.banks.get_bank(&bank_pk).and_then(|bank| {
-                    if matches!(bank.config.oracle_setup, OracleSetup::SwitchboardPull) {
-                        Some(bank.config)
-                    } else {
-                        None
-                    }
-                })
+                self.cache
+                    .banks
+                    .get_bank(&bank_pk)
+                    .and_then(|bank_wrapper| {
+                        if matches!(
+                            bank_wrapper.bank.config.oracle_setup,
+                            OracleSetup::SwitchboardPull
+                        ) {
+                            Some(bank_wrapper.bank.config)
+                        } else {
+                            None
+                        }
+                    })
             })
             .flat_map(|swb_bank_config| find_oracle_keys(&swb_bank_config))
             .collect();
@@ -336,7 +342,7 @@ impl Rebalancer {
         bank_pk: Pubkey,
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<()> {
-        let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(&bank_pk)?;
+        let bank_wrapper = self.cache.banks.try_get_bank(&bank_pk)?;
 
         thread_debug!(
             "Evaluating the {:?} Bank liability for the Liquidator account {:?}.",
@@ -345,7 +351,7 @@ impl Rebalancer {
         );
 
         // Get the balance for the liability bank and check if it's valid
-        let liab_balance_opt = lq_account.get_balance_for_bank(&bank);
+        let liab_balance_opt = lq_account.get_balance_for_bank(&bank_wrapper);
 
         if liab_balance_opt.is_none() || matches!(liab_balance_opt, Some((_, BalanceSide::Assets)))
         {
@@ -395,11 +401,9 @@ impl Rebalancer {
 
             let withdraw_amount = min(max_withdraw_amount, required_swap_token);
 
-            let swap_bank = self
-                .cache
-                .try_get_bank_wrapper::<OracleWrapper>(&self.swap_mint_bank_pk)?;
+            let swap_bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank_pk)?;
             self.liquidator_account.withdraw(
-                &swap_bank,
+                &swap_bank_wrapper,
                 withdraw_amount.to_num(),
                 Some(withdraw_all),
             )?;
@@ -420,20 +424,20 @@ impl Rebalancer {
             self.swap(
                 amount_to_swap.to_num(),
                 self.config.swap_mint,
-                bank.bank.mint,
+                bank_wrapper.bank.mint,
             )?;
         }
 
         thread_debug!("Repaying liability for bank {}", bank_pk);
 
         let token_balance = self
-            .get_token_balance_for_mint(&bank.bank.mint)
+            .get_token_balance_for_mint(&bank_wrapper.bank.mint)
             .unwrap_or_default();
 
         let repay_all = token_balance >= liab_balance;
 
         self.liquidator_account
-            .repay(&bank, token_balance.to_num(), Some(repay_all))?;
+            .repay(&bank_wrapper, token_balance.to_num(), Some(repay_all))?;
 
         Ok(())
     }
@@ -448,7 +452,7 @@ impl Rebalancer {
             &self.swap_mint_bank_pk
         );
 
-        let bank_wrapper = self.cache.try_get_bank_wrapper(&self.swap_mint_bank_pk)?;
+        let bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank_pk)?;
         if let Err(error) = self.liquidator_account.deposit(&bank_wrapper, amount) {
             thread_error!(
                 "Failed to deposit to the Bank ({:?}): {:?}",
@@ -503,9 +507,9 @@ impl Rebalancer {
                 self.cache
                     .banks
                     .get_bank(&balance.bank_pk)
-                    .is_some_and(|bank| {
+                    .is_some_and(|bank_wrapper| {
                         matches!(balance.get_side(), Some(BalanceSide::Assets))
-                            && bank.mint != self.config.swap_mint
+                            && bank_wrapper.bank.mint != self.config.swap_mint
                     })
             }))
     }
@@ -519,7 +523,7 @@ impl Rebalancer {
             match self.cache.try_get_token_wrapper::<OracleWrapper>(&mint_address, &token_address) {
                 Ok(wrapper) => {
                     // Ignore the swap token, usually USDC
-                    if wrapper.bank.bank.mint == self.config.swap_mint {
+                    if wrapper.bank_wrapper.bank.mint == self.config.swap_mint {
                         continue;
                     }
 
@@ -527,7 +531,7 @@ impl Rebalancer {
                     if value > self.config.token_account_dust_threshold {
                         drained_amount += self.swap(
                             wrapper.get_amount().to_num(),
-                            wrapper.bank.bank.mint,
+                            wrapper.bank_wrapper.bank.mint,
                             self.config.swap_mint,
                         )?;
                     } else {
@@ -556,8 +560,8 @@ impl Rebalancer {
         bank_pk: &Pubkey,
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<Pubkey> {
-        let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
-        let balance = lq_account.get_balance_for_bank(&bank);
+        let bank_wrapper = self.cache.banks.try_get_bank(bank_pk)?;
+        let balance = lq_account.get_balance_for_bank(&bank_wrapper);
 
         if !matches!(&balance, Some((_, BalanceSide::Assets))) {
             return Err(anyhow!("No assets to withdraw from the bank"));
@@ -569,11 +573,11 @@ impl Rebalancer {
         let amount = withdraw_amount.to_num::<u64>();
 
         self.liquidator_account
-            .withdraw(&bank, amount, Some(withdrawl_all))?;
+            .withdraw(&bank_wrapper, amount, Some(withdrawl_all))?;
 
-        self.swap(amount, bank.bank.mint, self.config.swap_mint)?;
+        self.swap(amount, bank_wrapper.bank.mint, self.config.swap_mint)?;
 
-        Ok(bank.bank.mint)
+        Ok(bank_wrapper.bank.mint)
     }
 
     fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {
@@ -643,8 +647,7 @@ impl Rebalancer {
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<(I80F48, bool)> {
         let free_collateral = get_free_collateral(&self.cache, lq_account)?;
-        let balance = lq_account
-            .get_balance_for_bank(&self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?);
+        let balance = lq_account.get_balance_for_bank(&self.cache.banks.try_get_bank(bank_pk)?);
         Ok(match balance {
             Some((balance, BalanceSide::Assets)) => {
                 let value = self.get_value(
@@ -673,19 +676,31 @@ impl Rebalancer {
         requirement_type: RequirementType,
         side: BalanceSide,
     ) -> anyhow::Result<I80F48> {
-        let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
+        let bank_wrapper = self.cache.banks.try_get_bank(bank_pk)?;
+        let oracle_wrapper = OracleWrapper::build(&self.cache, bank_pk)?;
 
         let value = match side {
             BalanceSide::Assets => {
-                let baws =
-                    BankAccountWithPriceFeedEva::load(&lq_account.lending_account, &self.cache)?;
+                let baws = BankAccountWithPriceFeedEva::<OracleWrapper>::load(
+                    &lq_account.lending_account,
+                    &self.cache,
+                )?;
                 let emode_config = build_emode_config(&baws)?;
 
-                calc_weighted_bank_assets(&bank, amount.to_num(), requirement_type, &emode_config)?
+                calc_weighted_bank_assets(
+                    &bank_wrapper,
+                    &oracle_wrapper,
+                    amount.to_num(),
+                    requirement_type,
+                    &emode_config,
+                )?
             }
-            BalanceSide::Liabilities => {
-                calc_weighted_bank_liabs(&bank, amount.to_num(), requirement_type)?
-            }
+            BalanceSide::Liabilities => calc_weighted_bank_liabs(
+                &bank_wrapper,
+                &oracle_wrapper,
+                amount.to_num(),
+                requirement_type,
+            )?,
         };
         Ok(value)
     }
@@ -704,14 +719,15 @@ impl Rebalancer {
         bank_pk: &Pubkey,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48> {
-        let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?;
-        let price = bank.oracle_adapter.get_price_of_type(
+        let bank_wrapper = self.cache.banks.try_get_bank(bank_pk)?;
+        let oracle_wrapper = OracleWrapper::build(&self.cache, bank_pk)?;
+        let price = oracle_wrapper.get_price_of_type(
             marginfi::state::price::OraclePriceType::RealTime,
             price_bias,
         )?;
 
         let amount_ui = value / price;
 
-        Ok(amount_ui * EXP_10_I80F48[bank.bank.mint_decimals as usize])
+        Ok(amount_ui * EXP_10_I80F48[bank_wrapper.bank.mint_decimals as usize])
     }
 }

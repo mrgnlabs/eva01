@@ -216,11 +216,11 @@ impl Liquidator {
         let max_liab_coverage_value = self.get_max_borrow_for_bank(&liab_bank_pk)?;
 
         // Asset
-        let asset_bank_wrapper = self
-            .cache
-            .try_get_bank_wrapper::<OracleWrapper>(&asset_bank_pk)?;
+        let asset_bank_wrapper = self.cache.banks.try_get_bank(&asset_bank_pk)?;
+        let asset_oracle_wrapper = OracleWrapper::build(&self.cache, &asset_bank_pk)?;
 
         let liquidation_asset_amount_capacity = asset_bank_wrapper.calc_amount(
+            &asset_oracle_wrapper,
             max_liab_coverage_value,
             BalanceSide::Assets,
             RequirementType::Initial,
@@ -253,7 +253,8 @@ impl Liquidator {
 
         let free_collateral = get_free_collateral(&self.cache, lq_account)?;
 
-        let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?;
+        let bank = self.cache.banks.try_get_bank(bank_pk)?;
+        let oracle_wrapper = OracleWrapper::build(&self.cache, bank_pk)?;
 
         let (asset_amount, _) = self.get_balance_for_bank(lq_account, bank_pk)?;
         thread_debug!(
@@ -264,7 +265,12 @@ impl Liquidator {
 
         let untied_collateral_for_bank = min(
             free_collateral,
-            bank.calc_value(asset_amount, BalanceSide::Assets, RequirementType::Initial)?,
+            bank.calc_value(
+                &oracle_wrapper,
+                asset_amount,
+                BalanceSide::Assets,
+                RequirementType::Initial,
+            )?,
         );
         thread_debug!(
             "Liquidator Untied collateral for bank: {:?}",
@@ -274,12 +280,10 @@ impl Liquidator {
         let asset_weight: I80F48 = bank.bank.config.asset_weight_init.into();
         let liab_weight: I80F48 = bank.bank.config.asset_weight_init.into();
 
-        let lower_price = bank
-            .oracle_adapter
+        let lower_price = oracle_wrapper
             .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low))?;
 
-        let higher_price = bank
-            .oracle_adapter
+        let higher_price = oracle_wrapper
             .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::High))?;
 
         let token_decimals = bank.bank.mint_decimals as usize;
@@ -298,6 +302,7 @@ impl Liquidator {
             ui_amount * EXP_10_I80F48[token_decimals]
         };
         let max_borrow_value = bank.calc_value(
+            &oracle_wrapper,
             max_borrow_amount,
             BalanceSide::Liabilities,
             RequirementType::Initial,
@@ -369,15 +374,13 @@ impl Liquidator {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
 
-        let asset_bank = self
-            .cache
-            .try_get_bank_wrapper::<OracleWrapper>(asset_bank_pk)?;
-        let liab_bank = self
-            .cache
-            .try_get_bank_wrapper::<OracleWrapper>(liab_bank_pk)?;
+        let asset_bank_wrapper = self.cache.banks.try_get_bank(asset_bank_pk)?;
+        let asset_oracle_wrapper = OracleWrapper::build(&self.cache, asset_bank_pk)?;
+        let liab_bank_wrapper = self.cache.banks.try_get_bank(liab_bank_pk)?;
+        let liab_oracle_wrapper = OracleWrapper::build(&self.cache, liab_bank_pk)?;
 
-        let asset_weight_maint: I80F48 = asset_bank.bank.config.asset_weight_maint.into();
-        let liab_weight_maint: I80F48 = liab_bank.bank.config.liability_weight_maint.into();
+        let asset_weight_maint: I80F48 = asset_bank_wrapper.bank.config.asset_weight_maint.into();
+        let liab_weight_maint: I80F48 = liab_bank_wrapper.bank.config.liability_weight_maint.into();
 
         let liquidation_discount = fixed_macro::types::I80F48!(0.95);
 
@@ -394,13 +397,15 @@ impl Liquidator {
         let (asset_amount, _) = self.get_balance_for_bank(account, asset_bank_pk)?;
         let (_, liab_amount) = self.get_balance_for_bank(account, liab_bank_pk)?;
 
-        let asset_value = asset_bank.calc_value(
+        let asset_value = asset_bank_wrapper.calc_value(
+            &asset_oracle_wrapper,
             asset_amount,
             BalanceSide::Assets,
             RequirementType::Maintenance,
         )?;
 
-        let liab_value = liab_bank.calc_value(
+        let liab_value = liab_bank_wrapper.calc_value(
+            &liab_oracle_wrapper,
             liab_amount,
             BalanceSide::Liabilities,
             RequirementType::Maintenance,
@@ -413,7 +418,8 @@ impl Liquidator {
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
 
-        let max_liquidatable_asset_amount = asset_bank.calc_amount(
+        let max_liquidatable_asset_amount = asset_bank_wrapper.calc_amount(
+            &asset_oracle_wrapper,
             max_liquidatable_value,
             BalanceSide::Assets,
             RequirementType::Maintenance,
@@ -424,8 +430,8 @@ impl Liquidator {
             Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
             Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", 
             account.address, total_weighted_assets, total_weighted_liabilities, maintenance_health,
-            asset_bank.address, asset_bank.bank.config.asset_weight_maint, asset_amount, asset_value,
-            liab_bank.address, liab_bank.bank.config.liability_weight_maint, liab_amount, liab_value,
+            asset_bank_wrapper.address, asset_bank_wrapper.bank.config.asset_weight_maint, asset_amount, asset_value,
+            liab_bank_wrapper.address, liab_bank_wrapper.bank.config.liability_weight_maint, liab_amount, liab_value,
             max_liquidatable_value,max_liquidatable_asset_amount, liquidator_profit);
 
         Ok((max_liquidatable_asset_amount, liquidator_profit))
@@ -438,7 +444,7 @@ impl Liquidator {
         account: &MarginfiAccountWrapper,
         bank_pk: &Pubkey,
     ) -> Result<(I80F48, I80F48)> {
-        let bank = self
+        let bank_wrapper = self
             .cache
             .banks
             .get_bank(bank_pk)
@@ -451,11 +457,17 @@ impl Liquidator {
             .find(|b| b.bank_pk == *bank_pk && b.is_active())
             .map(|b| match b.get_side()? {
                 BalanceSide::Assets => {
-                    let amount = bank.get_asset_amount(b.asset_shares.into()).ok()?;
+                    let amount = bank_wrapper
+                        .bank
+                        .get_asset_amount(b.asset_shares.into())
+                        .ok()?;
                     Some((amount, I80F48::ZERO))
                 }
                 BalanceSide::Liabilities => {
-                    let amount = bank.get_liability_amount(b.liability_shares.into()).ok()?;
+                    let amount = bank_wrapper
+                        .bank
+                        .get_liability_amount(b.liability_shares.into())
+                        .ok()?;
                     Some((I80F48::ZERO, amount))
                 }
             })
@@ -474,41 +486,53 @@ impl Liquidator {
         let mut values: Vec<(I80F48, Pubkey)> = Vec::new();
 
         for (shares_amount, bank_pk) in shares {
-            let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(&bank_pk)?;
+            let bank_wrapper = self.cache.banks.try_get_bank(&bank_pk)?;
+            let oracle_wrapper = OracleWrapper::build(&self.cache, &bank_pk)?;
 
             if !self.config.isolated_banks
-                && matches!(bank.bank.config.risk_tier, RiskTier::Isolated)
+                && matches!(bank_wrapper.bank.config.risk_tier, RiskTier::Isolated)
             {
                 continue;
             }
 
             if !matches!(
-                bank.bank.config.operational_state,
+                bank_wrapper.bank.config.operational_state,
                 BankOperationalState::Operational
             ) {
                 continue;
             }
 
             // TODO: add Banks to Geyser!!!
-            if bank.bank.check_utilization_ratio().is_err() {
+            if bank_wrapper.bank.check_utilization_ratio().is_err() {
                 thread_debug!("Skipping bankrupt bank from evaluation: {}", bank_pk);
                 continue;
             }
 
             let value = match balance_side {
                 BalanceSide::Liabilities => {
-                    let liabilities = bank
+                    let liabilities = bank_wrapper
                         .bank
                         .get_liability_amount(shares_amount)
                         .map_err(|e| anyhow!("Couldn't calculate liability amount for: {}", e))?;
-                    bank.calc_value(liabilities, BalanceSide::Liabilities, requirement_type)?
+                    let oracle_wrapper = OracleWrapper::build(&self.cache, &bank_pk)?;
+                    bank_wrapper.calc_value(
+                        &oracle_wrapper,
+                        liabilities,
+                        BalanceSide::Liabilities,
+                        requirement_type,
+                    )?
                 }
                 BalanceSide::Assets => {
-                    let assets = bank
+                    let assets = bank_wrapper
                         .bank
                         .get_asset_amount(shares_amount)
                         .map_err(|e| anyhow!("Couldn't calculate asset amount for: {}", e))?;
-                    bank.calc_value(assets, BalanceSide::Assets, requirement_type)?
+                    bank_wrapper.calc_value(
+                        &oracle_wrapper,
+                        assets,
+                        BalanceSide::Assets,
+                        requirement_type,
+                    )?
                 }
             };
 

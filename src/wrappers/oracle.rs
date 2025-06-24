@@ -15,7 +15,10 @@ use crate::{
 };
 
 pub trait OracleWrapperTrait {
-    fn new(address: Pubkey, price_adapter: Option<OraclePriceFeedAdapter>) -> Self;
+    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self;
+    fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self>
+    where
+        Self: Sized;
     fn get_price_of_type(
         &self,
         oracle_type: OraclePriceType,
@@ -33,10 +36,10 @@ pub struct OracleWrapper {
 }
 
 impl OracleWrapperTrait for OracleWrapper {
-    fn new(address: Pubkey, price_adapter: Option<OraclePriceFeedAdapter>) -> Self {
+    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
         Self {
             address,
-            price_adapter: price_adapter.unwrap(),
+            price_adapter,
             simulated_price: None,
         }
     }
@@ -59,69 +62,54 @@ impl OracleWrapperTrait for OracleWrapper {
     fn get_address(&self) -> Pubkey {
         self.address
     }
-}
+    fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self> {
+        let bank_wrapper = cache.banks.try_get_bank(bank_address)?;
+        let oracle_addresses = find_oracle_keys(&bank_wrapper.bank.config);
 
-pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
-    cache: &Cache,
-    bank_address: &Pubkey,
-) -> Result<T> {
-    let bank = cache.banks.try_get_bank(bank_address)?;
-    let oracle_addresses = find_oracle_keys(&bank.config);
-
-    let mut result: Option<T> = None;
-    match bank.config.oracle_setup {
-        OracleSetup::SwitchboardPull => {
-            for (oracle_address, oracle_account) in
-                cache.oracles.try_get_accounts(&oracle_addresses)?
-            {
-                let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
-                offsets_data.copy_from_slice(
-                    &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
-                );
-                match load_swb_pull_account_from_bytes(&offsets_data) {
-                    Result::Ok(swb_feed) => {
-                        let price_adapter =
-                            OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
-                                feed: Box::new((&swb_feed).into()),
-                            });
-                        let oracle_wrapper = T::new(oracle_address, Some(price_adapter.clone()));
-                        result = Some(oracle_wrapper);
-                        break;
-                    }
-                    Err(e) => {
-                        thread_warn!(
+        let mut result: Option<Self> = None;
+        match bank_wrapper.bank.config.oracle_setup {
+            OracleSetup::SwitchboardPull => {
+                for (oracle_address, oracle_account) in
+                    cache.oracles.try_get_accounts(&oracle_addresses)?
+                {
+                    let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
+                    offsets_data.copy_from_slice(
+                        &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
+                    );
+                    match load_swb_pull_account_from_bytes(&offsets_data) {
+                        Result::Ok(swb_feed) => {
+                            let price_adapter =
+                                OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
+                                    feed: Box::new((&swb_feed).into()),
+                                });
+                            let oracle_wrapper = Self::new(oracle_address, price_adapter);
+                            result = Some(oracle_wrapper);
+                            break;
+                        }
+                        Err(e) => {
+                            thread_warn!(
                             "Failed to deserialize Switchboard Pull account data for Oracle {:?} : {}",
                             oracle_address,
                             e
                         );
-                        continue;
+                            continue;
+                        }
                     }
                 }
             }
-        }
-        OracleSetup::PythPushOracle => {
-            #[cfg(test)]
-            {
-                return crate::wrappers::bank::test_utils::get_pyth_pull_oracle_wrapper(
-                    bank_address,
-                );
-            }
-
-            #[cfg(not(test))]
-            {
+            OracleSetup::PythPushOracle => {
                 for (oracle_address, oracle_account) in
                     cache.oracles.try_get_accounts(&oracle_addresses)?
                 {
                     let mut oracle_tuple = (oracle_address, oracle_account);
                     let oracle_account_info = oracle_tuple.into_account_info();
                     match OraclePriceFeedAdapter::try_from_bank_config(
-                        &bank.config,
+                        &bank_wrapper.bank.config,
                         &[oracle_account_info],
                         &clock_manager::get_clock(&cache.clock)?,
                     ) {
                         Result::Ok(price_adapter) => {
-                            let oracle_wrapper =
-                                T::new(oracle_address, Some(price_adapter.clone()));
+                            let oracle_wrapper = Self::new(oracle_address, price_adapter);
                             result = Some(oracle_wrapper);
                             break;
                         }
@@ -137,58 +125,58 @@ pub fn try_build_oracle_wrapper<T: OracleWrapperTrait + Clone>(
                     }
                 }
             }
-        }
-        OracleSetup::StakedWithPythPush => {
-            if oracle_addresses.len() != 3 {
-                return Err(anyhow!(
+            OracleSetup::StakedWithPythPush => {
+                if oracle_addresses.len() != 3 {
+                    return Err(anyhow!(
                         "StakedWithPythPush setup requires exactly 3 oracle keys, but found {} for the Bank {:?}.",
                         oracle_addresses.len(), bank_address
                     ));
+                }
+
+                let bank_oracle_address = *oracle_addresses.first().unwrap();
+                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
+                let bank_oracle_account_info =
+                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
+
+                let mint_oracle_address = *oracle_addresses.get(1).unwrap();
+                let mut mint_oracle = cache.oracles.try_get_account(&mint_oracle_address)?;
+                let mint_oracle_account_info =
+                    (&mint_oracle_address, &mut mint_oracle).into_account_info();
+
+                let sol_pool_oracle_address = *oracle_addresses.get(2).unwrap();
+                let mut sol_pool_oracle = cache.oracles.try_get_account(&mint_oracle_address)?;
+                let sol_pool_account_info =
+                    (&sol_pool_oracle_address, &mut sol_pool_oracle).into_account_info();
+
+                let adapter = OraclePriceFeedAdapter::try_from_bank_config(
+                    &bank_wrapper.bank.config,
+                    &[
+                        bank_oracle_account_info,
+                        mint_oracle_account_info,
+                        sol_pool_account_info,
+                    ],
+                    &clock_manager::get_clock(&cache.clock)?,
+                )?;
+
+                let oracle_wrapper = Self::new(bank_oracle_address, adapter);
+                result = Some(oracle_wrapper);
             }
-
-            let bank_oracle_address = *oracle_addresses.first().unwrap();
-            let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
-            let bank_oracle_account_info =
-                (&bank_oracle_address, &mut bank_oracle).into_account_info();
-
-            let mint_oracle_address = *oracle_addresses.get(1).unwrap();
-            let mut mint_oracle = cache.oracles.try_get_account(&mint_oracle_address)?;
-            let mint_oracle_account_info =
-                (&mint_oracle_address, &mut mint_oracle).into_account_info();
-
-            let sol_pool_oracle_address = *oracle_addresses.get(2).unwrap();
-            let mut sol_pool_oracle = cache.oracles.try_get_account(&mint_oracle_address)?;
-            let sol_pool_account_info =
-                (&sol_pool_oracle_address, &mut sol_pool_oracle).into_account_info();
-
-            let adapter = OraclePriceFeedAdapter::try_from_bank_config(
-                &bank.config,
-                &[
-                    bank_oracle_account_info,
-                    mint_oracle_account_info,
-                    sol_pool_account_info,
-                ],
-                &clock_manager::get_clock(&cache.clock)?,
-            )?;
-
-            let oracle_wrapper = T::new(bank_oracle_address, Some(adapter.clone()));
-            result = Some(oracle_wrapper);
+            _ => {
+                thread_error!(
+                    "Unsupported Oracle setup for the Bank {:?} : {:?}",
+                    bank_address,
+                    bank_wrapper.bank.config.oracle_setup
+                )
+            }
         }
-        _ => {
-            thread_error!(
-                "Unsupported Oracle setup for the Bank {:?} : {:?}",
-                bank_address,
-                bank.config.oracle_setup
-            )
-        }
-    }
 
-    match result {
-        Some(wrapper) => Ok(wrapper),
-        None => Err(anyhow!(
-            "No valid oracle wrapper found for the Bank {:?}",
-            bank_address
-        )),
+        match result {
+            Some(wrapper) => Ok(wrapper),
+            None => Err(anyhow!(
+                "No valid oracle wrapper found for the Bank {:?}",
+                bank_address
+            )),
+        }
     }
 }
 
@@ -222,6 +210,14 @@ pub mod test_utils {
     }
 
     impl TestOracleWrapper {
+        pub fn new(address: Pubkey, price: f64, bias: f64) -> Self {
+            Self {
+                price,
+                bias,
+                address,
+            }
+        }
+
         pub fn test_sol() -> Self {
             Self {
                 price: 200.0,
@@ -248,11 +244,28 @@ pub mod test_utils {
     }
 
     impl OracleWrapperTrait for TestOracleWrapper {
-        fn new(address: Pubkey, _: Option<OraclePriceFeedAdapter>) -> Self {
-            TestOracleWrapper {
-                price: 42.0,
-                bias: 5.0,
-                address: address,
+        fn new(_: Pubkey, _: OraclePriceFeedAdapter) -> Self {
+            panic!("The new method is not implemented for TestOracleWrapper.");
+        }
+
+        fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self> {
+            let bank_wrapper = cache.banks.try_get_bank(bank_address)?;
+            if matches!(
+                bank_wrapper.bank.config.oracle_setup,
+                OracleSetup::SwitchboardPull
+                    | OracleSetup::PythPushOracle
+                    | OracleSetup::StakedWithPythPush
+            ) {
+                Ok(TestOracleWrapper::new(
+                    bank_wrapper.bank.config.oracle_keys[0],
+                    100.0,
+                    5.0,
+                ))
+            } else {
+                panic!(
+                    "Unsupported Oracle type {:?}",
+                    bank_wrapper.bank.config.oracle_setup
+                )
             }
         }
 
@@ -291,7 +304,7 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use crate::cache::test_utils::create_test_cache;
-    use crate::wrappers::bank::test_utils::TestBankWrapper;
+    use crate::wrappers::bank::test_utils::test_usdc;
 
     use super::test_utils::*;
     use super::*;
@@ -325,7 +338,7 @@ mod tests {
     fn test_try_build_oracle_wrapper() {
         let oracle_key = Pubkey::new_unique();
 
-        let mut usdc_bank_wrapper = TestBankWrapper::test_usdc();
+        let mut usdc_bank_wrapper = test_usdc();
         usdc_bank_wrapper.bank.config.oracle_setup = OracleSetup::SwitchboardPull;
         usdc_bank_wrapper.bank.config.oracle_keys[0] = oracle_key.clone();
 
@@ -343,7 +356,7 @@ mod tests {
             .unwrap();
 
         let oracle_wrapper: TestOracleWrapper =
-            try_build_oracle_wrapper(&cache, &usdc_bank_wrapper.address).unwrap();
+            TestOracleWrapper::build(&cache, &usdc_bank_wrapper.address).unwrap();
 
         assert_eq!(oracle_wrapper.get_address(), oracle_key);
     }

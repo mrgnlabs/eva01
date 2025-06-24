@@ -30,7 +30,9 @@ use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 use crate::{
     cache::Cache,
     wrappers::{
-        bank::BankWrapper, marginfi_account::MarginfiAccountWrapper, oracle::OracleWrapperTrait,
+        bank::BankWrapper,
+        marginfi_account::MarginfiAccountWrapper,
+        oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
 use std::cmp::max;
@@ -179,16 +181,17 @@ pub fn account_update_to_account(account_update: &SubscribeUpdateAccountInfo) ->
     Ok(account)
 }
 
-pub struct BankAccountWithPriceFeedEva<'a> {
+pub struct BankAccountWithPriceFeedEva<'a, T: OracleWrapperTrait> {
     pub bank: BankWrapper,
+    pub oracle: T,
     balance: &'a Balance,
 }
 
-impl<'a> BankAccountWithPriceFeedEva<'a> {
+impl<'a, T: OracleWrapperTrait> BankAccountWithPriceFeedEva<'a, T> {
     pub fn load(
         lending_account: &'a LendingAccount,
         cache: &Arc<Cache>,
-    ) -> Result<Vec<BankAccountWithPriceFeedEva<'a>>> {
+    ) -> Result<Vec<BankAccountWithPriceFeedEva<'a, T>>> {
         let active_balances = lending_account
             .balances
             .iter()
@@ -196,8 +199,13 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
 
         active_balances
             .map(move |balance| {
-                let bank = cache.try_get_bank_wrapper(&balance.bank_pk)?;
-                Ok(BankAccountWithPriceFeedEva { bank, balance })
+                let bank_wrapper = cache.banks.try_get_bank(&balance.bank_pk)?;
+                let oracle_wrapper = T::build(cache, &balance.bank_pk)?;
+                Ok(BankAccountWithPriceFeedEva {
+                    bank: bank_wrapper,
+                    oracle: oracle_wrapper,
+                    balance,
+                })
             })
             .collect::<Result<Vec<_>>>()
     }
@@ -243,7 +251,13 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
                     .get_asset_amount(self.balance.asset_shares.into())
                     .map_err(Error::from)?;
 
-                calc_weighted_bank_assets(&self.bank, amount, requirement_type, emode_config)
+                calc_weighted_bank_assets(
+                    &self.bank,
+                    &self.oracle,
+                    amount,
+                    requirement_type,
+                    emode_config,
+                )
             }
             RiskTier::Isolated => Ok(I80F48::ZERO),
         }
@@ -255,7 +269,7 @@ impl<'a> BankAccountWithPriceFeedEva<'a> {
         let liability_amount = bank
             .get_liability_amount(self.balance.liability_shares.into())
             .map_err(|err| anyhow!("Failed to calculate liability amount: {}", err))?;
-        calc_weighted_bank_liabs(&self.bank, liability_amount, requirement_type)
+        calc_weighted_bank_liabs(&self.bank, &self.oracle, liability_amount, requirement_type)
     }
 }
 
@@ -264,7 +278,7 @@ pub fn calc_total_weighted_assets_liabs(
     account: &MarginfiAccountWrapper,
     requirement_type: RequirementType,
 ) -> Result<(I80F48, I80F48)> {
-    let baws = BankAccountWithPriceFeedEva::load(&account.lending_account, cache)?;
+    let baws = BankAccountWithPriceFeedEva::<OracleWrapper>::load(&account.lending_account, cache)?;
     let emode_config = build_emode_config(&baws)?;
 
     let mut total_assets = I80F48::ZERO;
@@ -279,7 +293,9 @@ pub fn calc_total_weighted_assets_liabs(
     Ok((total_assets, total_liabs))
 }
 
-pub fn build_emode_config(baws: &Vec<BankAccountWithPriceFeedEva>) -> Result<EmodeConfig> {
+pub fn build_emode_config<T: OracleWrapperTrait + Clone>(
+    baws: &Vec<BankAccountWithPriceFeedEva<T>>,
+) -> Result<EmodeConfig> {
     let configs = baws
         .iter()
         .filter(|baw| !baw.balance.is_empty(BalanceSide::Liabilities))
@@ -308,11 +324,11 @@ pub fn find_bank_liquidity_vault_authority(bank_pk: &Pubkey, program_id: &Pubkey
 
 pub fn calc_weighted_bank_assets(
     bank: &BankWrapper,
+    oracle_wrapper: &impl OracleWrapperTrait,
     amount: I80F48,
     requirement_type: RequirementType,
     emode_config: &EmodeConfig,
 ) -> Result<I80F48> {
-    let oracle_adapter = &bank.oracle_adapter;
     let mut asset_weight = calculate_bank_asset_weight(&bank.bank, emode_config, requirement_type);
 
     let price_bias = if matches!(requirement_type, RequirementType::Equity) {
@@ -322,7 +338,7 @@ pub fn calc_weighted_bank_assets(
     };
 
     let lower_price =
-        oracle_adapter.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+        oracle_wrapper.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
 
     if matches!(requirement_type, RequirementType::Initial) {
         if let Some(discount) = bank
@@ -372,6 +388,7 @@ fn calculate_bank_asset_weight(
 #[inline(always)]
 pub fn calc_weighted_bank_liabs(
     bank: &BankWrapper,
+    oracle_wrapper: &impl OracleWrapperTrait,
     amount: I80F48,
     requirement_type: RequirementType,
 ) -> Result<I80F48> {
@@ -386,9 +403,8 @@ pub fn calc_weighted_bank_liabs(
         Some(PriceBias::High)
     };
 
-    let higher_price = bank
-        .oracle_adapter
-        .get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+    let higher_price =
+        oracle_wrapper.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
 
     Ok(calc_value(
         amount,
@@ -398,12 +414,6 @@ pub fn calc_weighted_bank_liabs(
     )?)
 }
 
-#[cfg(test)]
-pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
-    vec![bank_config.oracle_keys[0]]
-}
-
-#[cfg(not(test))]
 pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
     use marginfi::{
         constants::{PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID, PYTH_PUSH_PYTH_SPONSORED_SHARD_ID},

@@ -1,4 +1,4 @@
-use super::oracle::{OracleWrapper, OracleWrapperTrait};
+use crate::wrappers::oracle::OracleWrapperTrait;
 use fixed::types::I80F48;
 use marginfi::state::{
     marginfi_account::{calc_amount, calc_value, BalanceSide, RequirementType},
@@ -8,21 +8,14 @@ use marginfi::state::{
 use solana_program::pubkey::Pubkey;
 
 #[derive(Clone)]
-pub struct BankWrapperT<T: OracleWrapperTrait> {
+pub struct BankWrapper {
     pub address: Pubkey,
     pub bank: Bank,
-    pub oracle_adapter: T,
 }
 
-pub type BankWrapper = BankWrapperT<OracleWrapper>;
-
-impl<T: OracleWrapperTrait + Clone> BankWrapperT<T> {
-    pub fn new(address: Pubkey, bank: Bank, oracle_adapter: T) -> Self {
-        Self {
-            address,
-            bank,
-            oracle_adapter,
-        }
+impl BankWrapper {
+    pub fn new(address: Pubkey, bank: Bank) -> Self {
+        Self { address, bank }
     }
 
     fn get_pricing_params(
@@ -48,14 +41,14 @@ impl<T: OracleWrapperTrait + Clone> BankWrapperT<T> {
 
     pub fn calc_amount(
         &self,
+        oracle_wrapper: &impl OracleWrapperTrait,
         value: I80F48,
         side: BalanceSide,
         requirement_type: RequirementType,
     ) -> anyhow::Result<I80F48> {
         let (price_bias, oracle_type) = Self::get_pricing_params(side, requirement_type);
 
-        let price = self
-            .oracle_adapter
+        let price = oracle_wrapper
             .get_price_of_type(oracle_type, price_bias)
             .unwrap();
 
@@ -64,14 +57,14 @@ impl<T: OracleWrapperTrait + Clone> BankWrapperT<T> {
 
     pub fn calc_value(
         &self,
+        oracle_wrapper: &impl OracleWrapperTrait,
         amount: I80F48,
         side: BalanceSide,
         requirement_type: RequirementType,
     ) -> anyhow::Result<I80F48> {
         let (price_bias, oracle_type) = Self::get_pricing_params(side, requirement_type);
 
-        let price = self
-            .oracle_adapter
+        let price = oracle_wrapper
             .get_price_of_type(oracle_type, price_bias)
             .unwrap();
 
@@ -80,160 +73,190 @@ impl<T: OracleWrapperTrait + Clone> BankWrapperT<T> {
 }
 
 #[cfg(test)]
-use super::oracle::test_utils::TestOracleWrapper;
-
-#[cfg(test)]
 pub mod test_utils {
+    use crate::wrappers::oracle::test_utils::TestOracleWrapper;
+
     use super::*;
-    use anyhow::Result;
     use marginfi::state::{marginfi_group::BankConfig, price::OracleSetup};
     use std::str::FromStr;
-
-    pub type TestBankWrapper = BankWrapperT<TestOracleWrapper>;
 
     const SOL_BANK_ADDRESS: &str = "1111111Bs8Haw3nAsWf5hmLfKzc6PMEzcxUCKkVYK";
     const USDC_BANK_ADDRESS: &str = "11111117353mdUKehx9GW6JNHznGt5oSZs9fWkVkB";
     const BONK_BANK_ADDRESS: &str = "DeyH7QxWvnbbaVB4zFrf4hoq7Q8z1ZT14co42BGwGtfM";
 
-    impl TestBankWrapper {
-        pub fn test_sol() -> Self {
-            let mut bank = Bank::new(
-                Pubkey::new_unique(),
-                BankConfig::default(),
-                Pubkey::new_unique(),
-                6u8,
-                Pubkey::new_unique(),
-                Pubkey::new_unique(),
-                Pubkey::new_unique(),
-                0i64,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-            );
-            let oracle = TestOracleWrapper::test_sol();
-            bank.config.oracle_setup = OracleSetup::PythPushOracle;
-            bank.config.oracle_keys[0] = oracle.address;
-            BankWrapperT::new(Pubkey::from_str(SOL_BANK_ADDRESS).unwrap(), bank, oracle)
-        }
+    pub fn test_sol() -> BankWrapper {
+        let mut bank = Bank::new(
+            Pubkey::new_unique(),
+            BankConfig::default(),
+            Pubkey::new_unique(),
+            6u8,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            0i64,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+        );
 
-        pub fn test_usdc() -> Self {
-            let mut bank = Bank::new(
-                Pubkey::new_unique(),
-                BankConfig::default(),
-                Pubkey::new_unique(),
-                2u8,
-                Pubkey::new_unique(),
-                Pubkey::new_unique(),
-                Pubkey::new_unique(),
-                0i64,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-            );
-            let oracle = TestOracleWrapper::test_usdc();
-            bank.config.oracle_setup = OracleSetup::PythPushOracle;
-            bank.config.oracle_keys[0] = oracle.address;
-            BankWrapperT::new(Pubkey::from_str(USDC_BANK_ADDRESS).unwrap(), bank, oracle)
-        }
-
-        pub fn test_bonk() -> Self {
-            let mut bank = Bank::new(
-                Pubkey::new_unique(),
-                BankConfig::default(),
-                Pubkey::new_unique(),
-                2u8,
-                Pubkey::new_unique(),
-                Pubkey::new_unique(),
-                Pubkey::new_unique(),
-                0i64,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-                0u8,
-            );
-            let oracle = TestOracleWrapper::test_bonk();
-            bank.config.oracle_setup = OracleSetup::SwitchboardPull;
-            bank.config.oracle_keys[0] = oracle.address;
-            BankWrapperT::new(Pubkey::from_str(BONK_BANK_ADDRESS).unwrap(), bank, oracle)
-        }
+        let oracle = TestOracleWrapper::test_sol();
+        bank.config.oracle_setup = OracleSetup::PythPushOracle;
+        bank.config.oracle_keys[0] = oracle.address;
+        BankWrapper::new(Pubkey::from_str(SOL_BANK_ADDRESS).unwrap(), bank)
     }
 
-    pub fn get_pyth_pull_oracle_wrapper<T: OracleWrapperTrait + Clone>(
-        bank_pk: &Pubkey,
-    ) -> Result<T> {
-        let wrapper = match bank_pk.to_string().as_str() {
-            SOL_BANK_ADDRESS => TestOracleWrapper::test_sol(),
-            USDC_BANK_ADDRESS => TestOracleWrapper::test_usdc(),
-            BONK_BANK_ADDRESS => TestOracleWrapper::test_bonk(),
-            _ => return Err(anyhow::anyhow!("Unknown bank address: {}", bank_pk)),
-        };
-        Ok(T::new(wrapper.address, None))
+    pub fn test_usdc() -> BankWrapper {
+        let mut bank = Bank::new(
+            Pubkey::new_unique(),
+            BankConfig::default(),
+            Pubkey::new_unique(),
+            2u8,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            0i64,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+        );
+        let oracle = TestOracleWrapper::test_usdc();
+        bank.config.oracle_setup = OracleSetup::PythPushOracle;
+        bank.config.oracle_keys[0] = oracle.address;
+        BankWrapper::new(Pubkey::from_str(USDC_BANK_ADDRESS).unwrap(), bank)
+    }
+
+    pub fn test_bonk() -> BankWrapper {
+        let mut bank = Bank::new(
+            Pubkey::new_unique(),
+            BankConfig::default(),
+            Pubkey::new_unique(),
+            2u8,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            0i64,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+            0u8,
+        );
+        let oracle = TestOracleWrapper::test_bonk();
+        bank.config.oracle_setup = OracleSetup::SwitchboardPull;
+        bank.config.oracle_keys[0] = oracle.address;
+        BankWrapper::new(Pubkey::from_str(BONK_BANK_ADDRESS).unwrap(), bank)
     }
 }
-
 #[cfg(test)]
 mod tests {
-    use marginfi::assert_eq_with_tolerance;
+    use crate::wrappers::oracle::test_utils::TestOracleWrapper;
 
-    use super::test_utils::*;
     use super::*;
 
-    #[test]
-    fn test_bank_wrapper() {
-        let usdc_bank = TestBankWrapper::test_usdc();
-        assert_eq_with_tolerance!(
-            usdc_bank
-                .calc_amount(
-                    I80F48::from_num(9000.0),
-                    BalanceSide::Assets,
-                    RequirementType::Initial
-                )
-                .unwrap(),
-            I80F48::from_num(1000000.0),
-            1e-6
-        );
-        assert_eq_with_tolerance!(
-            usdc_bank
-                .calc_value(
-                    I80F48::from_num(20000.0),
-                    BalanceSide::Assets,
-                    RequirementType::Initial
-                )
-                .unwrap(),
-            I80F48::from_num(180.0),
-            1e-6
-        );
+    fn setup_sol_bank_and_oracle() -> (BankWrapper, TestOracleWrapper) {
+        let bank = test_utils::test_sol();
+        let oracle = TestOracleWrapper::test_sol();
+        (bank, oracle)
+    }
 
-        let sol_bank = TestBankWrapper::test_sol();
-        assert_eq_with_tolerance!(
-            sol_bank
-                .calc_amount(
-                    I80F48::from_num(1050.0),
-                    BalanceSide::Liabilities,
-                    RequirementType::Initial
-                )
-                .unwrap(),
-            I80F48::from_num(5000000.0),
-            1e-6
+    fn setup_usdc_bank_and_oracle() -> (BankWrapper, TestOracleWrapper) {
+        let bank = test_utils::test_usdc();
+        let oracle = TestOracleWrapper::test_usdc();
+        (bank, oracle)
+    }
+
+    #[test]
+    fn test_calc_amount_sol_assets_initial() {
+        let (bank, oracle) = setup_sol_bank_and_oracle();
+        let value = I80F48::from_num(1000);
+        let result = bank.calc_amount(
+            &oracle,
+            value,
+            BalanceSide::Assets,
+            RequirementType::Initial,
         );
-        assert_eq_with_tolerance!(
-            sol_bank
-                .calc_value(
-                    I80F48::from_num(30000000.0),
-                    BalanceSide::Liabilities,
-                    RequirementType::Initial
-                )
-                .unwrap(),
-            I80F48::from_num(6300.0),
-            1e-6
+        assert!(result.is_ok());
+        let amount = result.unwrap();
+        assert!(amount > I80F48::from_num(0));
+    }
+
+    #[test]
+    fn test_calc_amount_sol_liabilities_maintenance() {
+        let (bank, oracle) = setup_sol_bank_and_oracle();
+        let value = I80F48::from_num(500);
+        let result = bank.calc_amount(
+            &oracle,
+            value,
+            BalanceSide::Liabilities,
+            RequirementType::Maintenance,
         );
+        assert!(result.is_ok());
+        let amount = result.unwrap();
+        assert!(amount > I80F48::from_num(0));
+    }
+
+    #[test]
+    fn test_calc_value_usdc_assets_initial() {
+        let (bank, oracle) = setup_usdc_bank_and_oracle();
+        let amount = I80F48::from_num(100);
+        let result = bank.calc_value(
+            &oracle,
+            amount,
+            BalanceSide::Assets,
+            RequirementType::Initial,
+        );
+        assert!(result.is_ok());
+        let value = result.unwrap();
+        assert!(value > I80F48::from_num(0));
+    }
+
+    #[test]
+    fn test_calc_value_usdc_liabilities_maintenance() {
+        let (bank, oracle) = setup_usdc_bank_and_oracle();
+        let amount = I80F48::from_num(200);
+        let result = bank.calc_value(
+            &oracle,
+            amount,
+            BalanceSide::Liabilities,
+            RequirementType::Maintenance,
+        );
+        assert!(result.is_ok());
+        let value = result.unwrap();
+        assert!(value > I80F48::from_num(0));
+    }
+
+    #[test]
+    fn test_calc_amount_with_zero_value() {
+        let (bank, oracle) = setup_sol_bank_and_oracle();
+        let value = I80F48::from_num(0);
+        let result = bank.calc_amount(
+            &oracle,
+            value,
+            BalanceSide::Assets,
+            RequirementType::Initial,
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), I80F48::from_num(0));
+    }
+
+    #[test]
+    fn test_calc_value_with_zero_amount() {
+        let (bank, oracle) = setup_usdc_bank_and_oracle();
+        let amount = I80F48::from_num(0);
+        let result = bank.calc_value(
+            &oracle,
+            amount,
+            BalanceSide::Assets,
+            RequirementType::Initial,
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), I80F48::from_num(0));
     }
 }

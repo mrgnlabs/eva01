@@ -19,11 +19,7 @@ use tokens::TokensCache;
 
 use crate::{
     utils::accessor,
-    wrappers::{
-        bank::BankWrapperT,
-        oracle::{try_build_oracle_wrapper, OracleWrapperTrait},
-        token_account::TokenAccountWrapperT,
-    },
+    wrappers::{oracle::OracleWrapperTrait, token_account::TokenAccountWrapper},
 };
 
 pub struct Cache {
@@ -67,33 +63,20 @@ impl Cache {
         self.luts.push(lut)
     }
 
-    pub fn try_get_bank_wrapper<T: OracleWrapperTrait + Clone>(
-        &self,
-        bank_pk: &Pubkey,
-    ) -> Result<BankWrapperT<T>> {
-        let bank = self.banks.try_get_bank(bank_pk)?;
-        match try_build_oracle_wrapper(self, bank_pk) {
-            Ok(oracle) => Ok(BankWrapperT::new(*bank_pk, bank, oracle)),
-            Err(e) => Err(anyhow::anyhow!(
-                "Failed to build oracle wrapper for bank {}: {}",
-                bank_pk,
-                e
-            )),
-        }
-    }
-
-    pub fn try_get_token_wrapper<T: OracleWrapperTrait + Clone>(
+    pub fn try_get_token_wrapper<T: OracleWrapperTrait>(
         &self,
         mint_address: &Pubkey,
         token_address: &Pubkey,
-    ) -> Result<TokenAccountWrapperT<T>> {
+    ) -> Result<TokenAccountWrapper<T>> {
         let token_account = self.tokens.try_get_account(token_address)?;
         let bank_address = self.banks.try_get_account_for_mint(mint_address)?;
-        let bank_wrapper = self.try_get_bank_wrapper(&bank_address)?;
+        let bank_wrapper = self.banks.try_get_bank(&bank_address)?;
+        let oracle_wrapper = T::build(self, &bank_address)?;
 
-        Ok(TokenAccountWrapperT {
+        Ok(TokenAccountWrapper {
             balance: accessor::amount(&token_account.data),
-            bank: bank_wrapper,
+            bank_wrapper,
+            oracle_wrapper,
         })
     }
 
@@ -120,13 +103,11 @@ pub mod test_utils {
 
     use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
 
-    use crate::wrappers::{
-        bank::test_utils::TestBankWrapper, oracle::test_utils::create_empty_oracle_account,
-    };
+    use crate::wrappers::{bank::BankWrapper, oracle::test_utils::create_empty_oracle_account};
 
     use super::Cache;
 
-    pub fn create_test_cache(bank_wrappers: &Vec<TestBankWrapper>) -> Cache {
+    pub fn create_test_cache(bank_wrappers: &Vec<BankWrapper>) -> Cache {
         let mut cache = Cache::new(
             Pubkey::new_unique(),
             Pubkey::new_unique(),
@@ -151,7 +132,7 @@ pub mod test_utils {
             let oracle_account = create_empty_oracle_account();
             cache
                 .oracles
-                .try_insert(bank_wrapper.oracle_adapter.address.clone(), oracle_account)
+                .try_insert(bank_wrapper.bank.config.oracle_keys[0], oracle_account)
                 .unwrap();
         }
 
