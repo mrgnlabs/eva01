@@ -73,6 +73,7 @@ mod tests {
     fn test_token_account() {
         let sol_acc = TestTokenAccountWrapper::test_sol();
         assert_eq!(sol_acc.get_amount(), I80F48::from_num(10000000.0));
+        assert_eq!(sol_acc.get_value().unwrap(), I80F48::from_num(2000.0));
 
         let usdc_acc: TestTokenAccountWrapper = TestTokenAccountWrapper::test_usdc();
         assert_eq!(usdc_acc.get_amount(), I80F48::from_num(100000.0));
