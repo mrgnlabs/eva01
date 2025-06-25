@@ -74,7 +74,7 @@ impl Cache {
         let oracle_wrapper = T::build(self, &bank_address)?;
 
         Ok(TokenAccountWrapper {
-            balance: accessor::amount(&token_account.data),
+            balance: accessor::amount(&token_account.data)?,
             bank_wrapper,
             oracle_wrapper,
         })

@@ -138,15 +138,17 @@ pub fn batch_get_multiple_accounts(
     Ok(accounts)
 }
 
-// Field parsers to save compute. All account validation is assumed to be done
-// outside these methods.
 pub mod accessor {
     use super::*;
 
-    pub fn amount(bytes: &[u8]) -> u64 {
+    pub fn amount(bytes: &[u8]) -> Result<u64> {
+        if bytes.len() < 72 {
+            return Err(anyhow!("Invalid data length: {}", bytes.len()));
+        }
+
         let mut amount_bytes = [0u8; 8];
         amount_bytes.copy_from_slice(&bytes[64..72]);
-        u64::from_le_bytes(amount_bytes)
+        Ok(u64::from_le_bytes(amount_bytes))
     }
 
     #[allow(dead_code)]
@@ -615,4 +617,46 @@ pub fn check_asset_tags_matching(bank: &Bank, lending_account: &LendingAccount) 
     }
 
     !(has_default_asset && has_staked_asset)
+}
+#[cfg(test)]
+mod tests {
+
+    use super::accessor;
+    use solana_program::pubkey::Pubkey;
+
+    #[test]
+    fn test_accessor_amount_valid() {
+        // 72 bytes, with bytes 64..72 set to a known u64 value (e.g., 0x0102030405060708)
+        let mut data = vec![0u8; 72];
+        let value: u64 = 0x0102030405060708;
+        data[64..72].copy_from_slice(&value.to_le_bytes());
+        let result = accessor::amount(&data).unwrap();
+        assert_eq!(result, value);
+    }
+
+    #[test]
+    fn test_accessor_amount_invalid_length() {
+        // Less than 72 bytes should error
+        let data = vec![0u8; 50];
+        let result = accessor::amount(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accessor_amount_all_zeros() {
+        // 72 bytes, all zeros, should return 0
+        let data = vec![0u8; 72];
+        let result = accessor::amount(&data).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_accessor_mint() {
+        // 32 bytes for mint, rest can be anything
+        let mut data = vec![0u8; 40];
+        let mint_bytes: [u8; 32] = [1; 32];
+        data[..32].copy_from_slice(&mint_bytes);
+        let mint = accessor::mint(&data);
+        assert_eq!(mint, Pubkey::new_from_array(mint_bytes));
+    }
 }

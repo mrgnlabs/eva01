@@ -166,9 +166,7 @@ impl Rebalancer {
 
         Ok(!self.stop_liquidator.load(Ordering::Relaxed)
             && self.run_rebalance.load(Ordering::Relaxed)
-            && (self.has_tokens_in_token_accounts()?
-                || self.has_non_preferred_deposits(&lq_account)?
-                || lq_account.has_liabs()))
+            && (self.has_non_preferred_deposits(&lq_account)? || lq_account.has_liabs()))
     }
 
     fn crank_active_swb_oracles(&self) -> anyhow::Result<()> {
@@ -460,6 +458,9 @@ impl Rebalancer {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    // This function evaluates all loaded tokens, but it should only look at the Liquidator's token accounts.
+    // Addressed in https://linear.app/p0dotxyz/issue/LIQ-20/the-token-balances-check-is-broken
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
         for (mint_address, token_address) in self
             .cache
@@ -705,10 +706,27 @@ impl Rebalancer {
 
     fn get_token_balance_for_mint(&self, mint_address: &Pubkey) -> Option<I80F48> {
         let token_account_address = self.cache.tokens.get_token_for_mint(mint_address)?;
-        self.cache
-            .tokens
-            .get_account(&token_account_address)
-            .map(|account| I80F48::from_num(utils::accessor::amount(account.data())))
+        match self.cache.tokens.try_get_account(&token_account_address) {
+            Ok(account) => match utils::accessor::amount(account.data()) {
+                Ok(amount) => Some(I80F48::from_num(amount)),
+                Err(error) => {
+                    thread_error!(
+                        "Failed to obtain balance amount for the Token {}: {}",
+                        token_account_address,
+                        error
+                    );
+                    None
+                }
+            },
+            Err(error) => {
+                thread_error!(
+                    "Failed to get the Token account {}: {}",
+                    token_account_address,
+                    error
+                );
+                None
+            }
+        }
     }
 
     pub fn get_amount(
