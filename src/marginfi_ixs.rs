@@ -167,13 +167,15 @@ pub fn make_liquidate_ix(
     let mut accounts = accounts_raw.to_account_metas(Some(true));
 
     thread_info!(
-        r#"LendingAccountLiquidate: ( group: {:?}, 
+        r#"LendingAccountLiquidate: ( 
+        group: {:?}, 
         liquidator_marginfi_account: {:?}, 
         liquidatee_marginfi_account: {:?}, 
         asset_bank: {:?}, 
         asset_bank_oracle: {:?}, 
         liab_bank: {:?}, 
-        liab_bank_oracle: {:?} )"#,
+        liab_bank_oracle: {:?} 
+        )"#,
         accounts_raw.group,
         accounts_raw.liquidator_marginfi_account,
         accounts_raw.liquidatee_marginfi_account,

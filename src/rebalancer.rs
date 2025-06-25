@@ -142,13 +142,13 @@ impl Rebalancer {
                 }
                 Err(error) => {
                     thread_error!(
-                        "Failed to check if the Liquidator account needs to be rebalanced: {}",
+                        "Failed to check if the Liquidator account {} needs to be rebalanced: {}",
+                        &self.liquidator_account.liquidator_address,
                         error
                     );
-                    continue;
+                    self.run_rebalance.store(false, Ordering::Relaxed);
                 }
             }
-
             thread::sleep(Duration::from_secs(10));
         }
         thread_info!("The Rebalancer loop stopped.");
@@ -164,9 +164,11 @@ impl Rebalancer {
 
         self.should_stop_liquidator(&lq_account)?;
 
-        Ok(self.has_tokens_in_token_accounts()?
-            || self.has_non_preferred_deposits(&lq_account)?
-            || lq_account.has_liabs())
+        Ok(!self.stop_liquidator.load(Ordering::Relaxed)
+            && self.run_rebalance.load(Ordering::Relaxed)
+            && (self.has_tokens_in_token_accounts()?
+                || self.has_non_preferred_deposits(&lq_account)?
+                || lq_account.has_liabs()))
     }
 
     fn crank_active_swb_oracles(&self) -> anyhow::Result<()> {
@@ -475,14 +477,16 @@ impl Rebalancer {
                         }
                     }
                     Err(error) => thread_error!(
-                        "Failed compute the Liquidator's Token {} value! {}",
+                        "Failed compute the Liquidator's Token {} value for mint {}: {}",
                         token_address,
+                        mint_address,
                         error
                     ),
                 },
-                Err(error) => thread_trace!(
-                    "Skipping evaluation of the Liquidator's Token {}. Cause: {}",
+                Err(error) => thread_debug!(
+                    "Skipping evaluation of the Liquidator's Token {} for mint {}. Cause: {}",
                     token_address,
+                    mint_address,
                     error
                 ),
             }
