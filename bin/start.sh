@@ -7,17 +7,11 @@ else
     echo "LIQUIDATOR_SRC_PATH is set to: $LIQUIDATOR_SRC_PATH"
 fi
 
-if [ -z "$1" ]; then
-    echo "The Configuration file argument is missing."
-    exit 1
-fi
-echo "Configuration file: $1"
-
 pushd $LIQUIDATOR_SRC_PATH > /dev/null
 
 export RUST_LOG=debug,hyper=info,h2::codec=info,eva01::geyser_processor=info,eva01::clock_manager=info
 export RUST_BACKTRACDE=full
-cargo run -- run $1
+cargo run
 
 popd > /dev/null
 
