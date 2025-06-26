@@ -3,35 +3,36 @@ use std::collections::{HashMap, HashSet};
 use marginfi::state::marginfi_group::Bank;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::utils::find_oracle_keys;
+use crate::{utils::find_oracle_keys, wrappers::bank::BankWrapper};
 use anyhow::{anyhow, Result};
 #[derive(Default)]
 pub struct BanksCache {
-    banks: HashMap<Pubkey, Bank>,
+    banks: HashMap<Pubkey, BankWrapper>,
     mint_to_bank: HashMap<Pubkey, Pubkey>,
 }
 
 impl BanksCache {
     pub fn insert(&mut self, bank_address: Pubkey, bank: Bank) {
-        self.banks.insert(bank_address, bank);
+        self.banks
+            .insert(bank_address, BankWrapper::new(bank_address, bank));
         self.mint_to_bank.insert(bank.mint, bank_address);
     }
 
-    pub fn try_get_bank(&self, address: &Pubkey) -> Result<Bank> {
+    pub fn try_get_bank(&self, address: &Pubkey) -> Result<BankWrapper> {
         self.banks
             .get(address)
             .ok_or(anyhow!("Failed to find the Bank {} in Cache!", address))
-            .copied()
+            .cloned()
     }
 
-    pub fn get_bank(&self, address: &Pubkey) -> Option<Bank> {
+    pub fn get_bank(&self, address: &Pubkey) -> Option<BankWrapper> {
         self.try_get_bank(address).ok()
     }
 
     pub fn get_oracles(&self) -> HashSet<Pubkey> {
         self.banks
             .iter()
-            .flat_map(|(_, bank)| find_oracle_keys(&bank.config))
+            .flat_map(|(_, bank)| find_oracle_keys(&bank.bank.config))
             .collect()
     }
 
@@ -48,7 +49,7 @@ impl BanksCache {
     pub fn get_mints(&self) -> Vec<Pubkey> {
         self.banks
             .values()
-            .map(|bank| bank.mint)
+            .map(|bank| bank.bank.mint)
             .collect::<Vec<_>>()
     }
 
@@ -86,8 +87,8 @@ pub mod test_utils {
             total_asset_shares: I80F48!(10_000_000_000_000).into(),
             last_update: current_timestamp,
             config: BankConfig {
-                oracle_setup: OracleSetup::PythPushOracle,
-                oracle_keys: [Pubkey::default(); MAX_ORACLE_KEYS],
+                oracle_setup: OracleSetup::SwitchboardPull,
+                oracle_keys: [Pubkey::new_unique(); MAX_ORACLE_KEYS],
                 asset_weight_init: I80F48!(0.5).into(),
                 asset_weight_maint: I80F48!(0.75).into(),
                 liability_weight_init: I80F48!(1.5).into(),
@@ -123,7 +124,7 @@ pub mod tests {
         let retrieved_bank = cache.get_bank(&bank_address);
 
         assert!(retrieved_bank.is_some());
-        assert_eq!(retrieved_bank.unwrap().mint, bank.mint);
+        assert_eq!(retrieved_bank.unwrap().address, bank_address);
     }
 
     #[test]
@@ -136,7 +137,7 @@ pub mod tests {
         let result = cache.try_get_bank(&bank_address);
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().mint, bank.mint);
+        assert_eq!(result.unwrap().address, bank_address);
     }
 
     #[test]

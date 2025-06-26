@@ -15,6 +15,7 @@ use crate::{
 use anyhow::{anyhow, Result};
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 
+use crate::wrappers::oracle::OracleWrapperTrait;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     address_lookup_table::AddressLookupTableAccount,
@@ -162,12 +163,18 @@ impl LiquidatorAccount {
 
         let asset_bank_wrapper = self
             .cache
-            .try_get_bank_wrapper(asset_bank)
+            .banks
+            .try_get_bank(asset_bank)
+            .map_err(LiquidationError::from_anyhow_error)?;
+        let asset_oracle_wrapper = OracleWrapper::build(&self.cache, asset_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
 
         let liab_bank_wrapper = self
             .cache
-            .try_get_bank_wrapper(liab_bank)
+            .banks
+            .try_get_bank(liab_bank)
+            .map_err(LiquidationError::from_anyhow_error)?;
+        let liab_oracle_wrapper = OracleWrapper::build(&self.cache, liab_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
 
         let signer_pk = self.signer.pubkey();
@@ -188,7 +195,7 @@ impl LiquidatorAccount {
                 .banks
                 .try_get_bank(bank_pk)
                 .map_err(LiquidationError::from_anyhow_error)?;
-            if !check_asset_tags_matching(&bank_to_validate_against, lending_account) {
+            if !check_asset_tags_matching(&bank_to_validate_against.bank, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
                 thread_debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
@@ -262,7 +269,9 @@ impl LiquidatorAccount {
             self.group,
             self.liquidator_address,
             &asset_bank_wrapper,
+            asset_oracle_wrapper.address,
             &liab_bank_wrapper,
+            liab_oracle_wrapper.address,
             signer_pk,
             liquidatee_account_address,
             self.cache

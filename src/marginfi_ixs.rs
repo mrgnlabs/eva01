@@ -140,7 +140,9 @@ pub fn make_liquidate_ix(
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     asset_bank: &BankWrapper,
+    asset_bank_oracle: Pubkey,
     liab_bank: &BankWrapper,
+    liab_bank_oracle: Pubkey,
     signer: Pubkey,
     liquidatee_marginfi_account: Pubkey,
     token_program: Pubkey,
@@ -165,23 +167,28 @@ pub fn make_liquidate_ix(
     let mut accounts = accounts_raw.to_account_metas(Some(true));
 
     thread_info!(
-        "LendingAccountLiquidate: ( group: {:?}, liquidator_marginfi_account: {:?}, signer: {:?}, liquidatee_marginfi_account: {:?}, bank_liquidity_vault_authority: {:?}, bank_liquidity_vault: {:?}, bank_insurance_vault: {:?}, token_program: {:?}, asset_bank: {:?}, liab_bank: {:?} )",
+        r#"LendingAccountLiquidate: ( 
+        group: {:?}, 
+        liquidator_marginfi_account: {:?}, 
+        liquidatee_marginfi_account: {:?}, 
+        asset_bank: {:?}, 
+        asset_bank_oracle: {:?}, 
+        liab_bank: {:?}, 
+        liab_bank_oracle: {:?} 
+        )"#,
         accounts_raw.group,
         accounts_raw.liquidator_marginfi_account,
-        accounts_raw.authority,
         accounts_raw.liquidatee_marginfi_account,
-        accounts_raw.bank_liquidity_vault_authority,
-        accounts_raw.bank_liquidity_vault,
-        accounts_raw.bank_insurance_vault,
-        accounts_raw.token_program,
         accounts_raw.asset_bank,
-        accounts_raw.liab_bank
+        asset_bank_oracle,
+        accounts_raw.liab_bank,
+        liab_bank_oracle,
     );
     maybe_add_bank_mint(&mut accounts, liab_bank.bank.mint, &token_program);
 
     accounts.extend([
-        AccountMeta::new_readonly(asset_bank.oracle_adapter.address, false),
-        AccountMeta::new_readonly(liab_bank.oracle_adapter.address, false),
+        AccountMeta::new_readonly(asset_bank_oracle, false),
+        AccountMeta::new_readonly(liab_bank_oracle, false),
     ]);
 
     accounts.extend(

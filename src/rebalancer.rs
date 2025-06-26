@@ -142,13 +142,13 @@ impl Rebalancer {
                 }
                 Err(error) => {
                     thread_error!(
-                        "Failed to check if the Liquidator account needs to be rebalanced: {}",
+                        "Failed to check if the Liquidator account {} needs to be rebalanced: {}",
+                        &self.liquidator_account.liquidator_address,
                         error
                     );
-                    continue;
+                    self.run_rebalance.store(false, Ordering::Relaxed);
                 }
             }
-
             thread::sleep(Duration::from_secs(10));
         }
         thread_info!("The Rebalancer loop stopped.");
@@ -164,9 +164,9 @@ impl Rebalancer {
 
         self.should_stop_liquidator(&lq_account)?;
 
-        Ok(self.has_tokens_in_token_accounts()?
-            || self.has_non_preferred_deposits(&lq_account)?
-            || lq_account.has_liabs())
+        Ok(!self.stop_liquidator.load(Ordering::Relaxed)
+            && self.run_rebalance.load(Ordering::Relaxed)
+            && (self.has_non_preferred_deposits(&lq_account)? || lq_account.has_liabs()))
     }
 
     fn crank_active_swb_oracles(&self) -> anyhow::Result<()> {
@@ -181,13 +181,19 @@ impl Rebalancer {
         let active_swb_oracles: Vec<Pubkey> = active_banks
             .iter()
             .filter_map(|&bank_pk| {
-                self.cache.banks.get_bank(&bank_pk).and_then(|bank| {
-                    if matches!(bank.config.oracle_setup, OracleSetup::SwitchboardPull) {
-                        Some(bank.config)
-                    } else {
-                        None
-                    }
-                })
+                self.cache
+                    .banks
+                    .get_bank(&bank_pk)
+                    .and_then(|bank_wrapper| {
+                        if matches!(
+                            bank_wrapper.bank.config.oracle_setup,
+                            OracleSetup::SwitchboardPull
+                        ) {
+                            Some(bank_wrapper.bank.config)
+                        } else {
+                            None
+                        }
+                    })
             })
             .flat_map(|swb_bank_config| find_oracle_keys(&swb_bank_config))
             .collect();
@@ -200,12 +206,6 @@ impl Rebalancer {
     }
 
     fn rebalance_accounts(&mut self) {
-        /*
-                if let Err(error) = self.swb_price_simulator.simulate_swb_prices() {
-                    thread_error!("Failed to simulate Swb prices! {}", error)
-                }
-        */
-        //TODO: It is called right after simulation. Confirm that it is really needed.
         if let Err(error) = self.crank_active_swb_oracles() {
             thread_error!(
                 "Failed to crank Swb Oracles for the Liquidator banks: {}",
@@ -336,7 +336,7 @@ impl Rebalancer {
         bank_pk: Pubkey,
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<()> {
-        let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(&bank_pk)?;
+        let bank_wrapper = self.cache.banks.try_get_bank(&bank_pk)?;
 
         thread_debug!(
             "Evaluating the {:?} Bank liability for the Liquidator account {:?}.",
@@ -345,7 +345,7 @@ impl Rebalancer {
         );
 
         // Get the balance for the liability bank and check if it's valid
-        let liab_balance_opt = lq_account.get_balance_for_bank(&bank);
+        let liab_balance_opt = lq_account.get_balance_for_bank(&bank_wrapper);
 
         if liab_balance_opt.is_none() || matches!(liab_balance_opt, Some((_, BalanceSide::Assets)))
         {
@@ -395,11 +395,9 @@ impl Rebalancer {
 
             let withdraw_amount = min(max_withdraw_amount, required_swap_token);
 
-            let swap_bank = self
-                .cache
-                .try_get_bank_wrapper::<OracleWrapper>(&self.swap_mint_bank_pk)?;
+            let swap_bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank_pk)?;
             self.liquidator_account.withdraw(
-                &swap_bank,
+                &swap_bank_wrapper,
                 withdraw_amount.to_num(),
                 Some(withdraw_all),
             )?;
@@ -420,20 +418,20 @@ impl Rebalancer {
             self.swap(
                 amount_to_swap.to_num(),
                 self.config.swap_mint,
-                bank.bank.mint,
+                bank_wrapper.bank.mint,
             )?;
         }
 
         thread_debug!("Repaying liability for bank {}", bank_pk);
 
         let token_balance = self
-            .get_token_balance_for_mint(&bank.bank.mint)
+            .get_token_balance_for_mint(&bank_wrapper.bank.mint)
             .unwrap_or_default();
 
         let repay_all = token_balance >= liab_balance;
 
         self.liquidator_account
-            .repay(&bank, token_balance.to_num(), Some(repay_all))?;
+            .repay(&bank_wrapper, token_balance.to_num(), Some(repay_all))?;
 
         Ok(())
     }
@@ -448,7 +446,7 @@ impl Rebalancer {
             &self.swap_mint_bank_pk
         );
 
-        let bank_wrapper = self.cache.try_get_bank_wrapper(&self.swap_mint_bank_pk)?;
+        let bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank_pk)?;
         if let Err(error) = self.liquidator_account.deposit(&bank_wrapper, amount) {
             thread_error!(
                 "Failed to deposit to the Bank ({:?}): {:?}",
@@ -460,6 +458,9 @@ impl Rebalancer {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    // This function evaluates all loaded tokens, but it should only look at the Liquidator's token accounts.
+    // Addressed in https://linear.app/p0dotxyz/issue/LIQ-20/the-token-balances-check-is-broken
     fn has_tokens_in_token_accounts(&self) -> Result<bool> {
         for (mint_address, token_address) in self
             .cache
@@ -477,14 +478,16 @@ impl Rebalancer {
                         }
                     }
                     Err(error) => thread_error!(
-                        "Failed compute the Liquidator's Token {} value! {}",
+                        "Failed compute the Liquidator's Token {} value for mint {}: {}",
                         token_address,
+                        mint_address,
                         error
                     ),
                 },
-                Err(error) => thread_trace!(
-                    "Skipping evaluation of the Liquidator's Token {}. Cause: {}",
+                Err(error) => thread_debug!(
+                    "Skipping evaluation of the Liquidator's Token {} for mint {}. Cause: {}",
                     token_address,
+                    mint_address,
                     error
                 ),
             }
@@ -503,9 +506,9 @@ impl Rebalancer {
                 self.cache
                     .banks
                     .get_bank(&balance.bank_pk)
-                    .is_some_and(|bank| {
+                    .is_some_and(|bank_wrapper| {
                         matches!(balance.get_side(), Some(BalanceSide::Assets))
-                            && bank.mint != self.config.swap_mint
+                            && bank_wrapper.bank.mint != self.config.swap_mint
                     })
             }))
     }
@@ -519,7 +522,7 @@ impl Rebalancer {
             match self.cache.try_get_token_wrapper::<OracleWrapper>(&mint_address, &token_address) {
                 Ok(wrapper) => {
                     // Ignore the swap token, usually USDC
-                    if wrapper.bank.bank.mint == self.config.swap_mint {
+                    if wrapper.bank_wrapper.bank.mint == self.config.swap_mint {
                         continue;
                     }
 
@@ -527,7 +530,7 @@ impl Rebalancer {
                     if value > self.config.token_account_dust_threshold {
                         drained_amount += self.swap(
                             wrapper.get_amount().to_num(),
-                            wrapper.bank.bank.mint,
+                            wrapper.bank_wrapper.bank.mint,
                             self.config.swap_mint,
                         )?;
                     } else {
@@ -556,8 +559,8 @@ impl Rebalancer {
         bank_pk: &Pubkey,
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<Pubkey> {
-        let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
-        let balance = lq_account.get_balance_for_bank(&bank);
+        let bank_wrapper = self.cache.banks.try_get_bank(bank_pk)?;
+        let balance = lq_account.get_balance_for_bank(&bank_wrapper);
 
         if !matches!(&balance, Some((_, BalanceSide::Assets))) {
             return Err(anyhow!("No assets to withdraw from the bank"));
@@ -569,11 +572,11 @@ impl Rebalancer {
         let amount = withdraw_amount.to_num::<u64>();
 
         self.liquidator_account
-            .withdraw(&bank, amount, Some(withdrawl_all))?;
+            .withdraw(&bank_wrapper, amount, Some(withdrawl_all))?;
 
-        self.swap(amount, bank.bank.mint, self.config.swap_mint)?;
+        self.swap(amount, bank_wrapper.bank.mint, self.config.swap_mint)?;
 
-        Ok(bank.bank.mint)
+        Ok(bank_wrapper.bank.mint)
     }
 
     fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {
@@ -643,8 +646,7 @@ impl Rebalancer {
         lq_account: &MarginfiAccountWrapper,
     ) -> anyhow::Result<(I80F48, bool)> {
         let free_collateral = get_free_collateral(&self.cache, lq_account)?;
-        let balance = lq_account
-            .get_balance_for_bank(&self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?);
+        let balance = lq_account.get_balance_for_bank(&self.cache.banks.try_get_bank(bank_pk)?);
         Ok(match balance {
             Some((balance, BalanceSide::Assets)) => {
                 let value = self.get_value(
@@ -673,29 +675,58 @@ impl Rebalancer {
         requirement_type: RequirementType,
         side: BalanceSide,
     ) -> anyhow::Result<I80F48> {
-        let bank = self.cache.try_get_bank_wrapper(bank_pk)?;
+        let bank_wrapper = self.cache.banks.try_get_bank(bank_pk)?;
+        let oracle_wrapper = OracleWrapper::build(&self.cache, bank_pk)?;
 
         let value = match side {
             BalanceSide::Assets => {
-                let baws =
-                    BankAccountWithPriceFeedEva::load(&lq_account.lending_account, &self.cache)?;
+                let baws = BankAccountWithPriceFeedEva::<OracleWrapper>::load(
+                    &lq_account.lending_account,
+                    &self.cache,
+                )?;
                 let emode_config = build_emode_config(&baws)?;
 
-                calc_weighted_bank_assets(&bank, amount.to_num(), requirement_type, &emode_config)?
+                calc_weighted_bank_assets(
+                    &bank_wrapper,
+                    &oracle_wrapper,
+                    amount.to_num(),
+                    requirement_type,
+                    &emode_config,
+                )?
             }
-            BalanceSide::Liabilities => {
-                calc_weighted_bank_liabs(&bank, amount.to_num(), requirement_type)?
-            }
+            BalanceSide::Liabilities => calc_weighted_bank_liabs(
+                &bank_wrapper,
+                &oracle_wrapper,
+                amount.to_num(),
+                requirement_type,
+            )?,
         };
         Ok(value)
     }
 
     fn get_token_balance_for_mint(&self, mint_address: &Pubkey) -> Option<I80F48> {
         let token_account_address = self.cache.tokens.get_token_for_mint(mint_address)?;
-        self.cache
-            .tokens
-            .get_account(&token_account_address)
-            .map(|account| I80F48::from_num(utils::accessor::amount(account.data())))
+        match self.cache.tokens.try_get_account(&token_account_address) {
+            Ok(account) => match utils::accessor::amount(account.data()) {
+                Ok(amount) => Some(I80F48::from_num(amount)),
+                Err(error) => {
+                    thread_error!(
+                        "Failed to obtain balance amount for the Token {}: {}",
+                        token_account_address,
+                        error
+                    );
+                    None
+                }
+            },
+            Err(error) => {
+                thread_error!(
+                    "Failed to get the Token account {}: {}",
+                    token_account_address,
+                    error
+                );
+                None
+            }
+        }
     }
 
     pub fn get_amount(
@@ -704,14 +735,15 @@ impl Rebalancer {
         bank_pk: &Pubkey,
         price_bias: Option<PriceBias>,
     ) -> anyhow::Result<I80F48> {
-        let bank = self.cache.try_get_bank_wrapper::<OracleWrapper>(bank_pk)?;
-        let price = bank.oracle_adapter.get_price_of_type(
+        let bank_wrapper = self.cache.banks.try_get_bank(bank_pk)?;
+        let oracle_wrapper = OracleWrapper::build(&self.cache, bank_pk)?;
+        let price = oracle_wrapper.get_price_of_type(
             marginfi::state::price::OraclePriceType::RealTime,
             price_bias,
         )?;
 
         let amount_ui = value / price;
 
-        Ok(amount_ui * EXP_10_I80F48[bank.bank.mint_decimals as usize])
+        Ok(amount_ui * EXP_10_I80F48[bank_wrapper.bank.mint_decimals as usize])
     }
 }

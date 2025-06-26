@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::RwLock,
-};
+use std::{collections::HashMap, sync::RwLock};
 
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
@@ -12,7 +9,6 @@ use solana_sdk::{account::Account, pubkey::Pubkey};
 #[derive(Default)]
 pub struct TokensCache {
     tokens: RwLock<IndexMap<Pubkey, Account>>,
-    token_addresses: HashSet<Pubkey>,
     mint_to_token: HashMap<Pubkey, Pubkey>,
 }
 
@@ -27,7 +23,6 @@ impl TokensCache {
             .write()
             .map_err(|e| anyhow!("Failed to lock the token map for insert: {}", e))?
             .insert(token_address, token);
-        self.token_addresses.insert(token_address);
         self.mint_to_token.insert(mint_address, token_address);
         Ok(())
     }
@@ -39,12 +34,6 @@ impl TokensCache {
             .get(address)
             .cloned()
             .ok_or(anyhow!("Failed to find Token {}!", &address))
-    }
-
-    pub fn get_account(&self, address: &Pubkey) -> Option<Account> {
-        self.try_get_account(address)
-            .map_err(|err| error!("{}", err))
-            .ok()
     }
 
     pub fn get_non_preferred_mints(&self, preferred_mints: Vec<Pubkey>) -> Vec<(Pubkey, Pubkey)> {
@@ -114,7 +103,7 @@ mod tests {
             .try_insert(token_address, account.clone(), mint_address)
             .unwrap();
 
-        let retrieved_account = cache.get_account(&token_address).unwrap();
+        let retrieved_account = cache.try_get_account(&token_address).unwrap();
         assert_eq!(retrieved_account, account);
     }
 
@@ -165,7 +154,7 @@ mod tests {
             .try_update_account(token_address, updated_account.clone())
             .unwrap();
 
-        let retrieved_account = cache.get_account(&token_address).unwrap();
+        let retrieved_account = cache.try_get_account(&token_address).unwrap();
         assert_eq!(retrieved_account, updated_account);
     }
 

@@ -96,7 +96,8 @@ impl GeyserProcessor {
 #[cfg(test)]
 mod tests {
     use crate::{
-        cache::test_utils::create_test_cache, wrappers::bank::test_utils::TestBankWrapper,
+        cache::test_utils::create_test_cache,
+        wrappers::bank::test_utils::{test_sol, test_usdc},
     };
 
     use super::*;
@@ -153,8 +154,8 @@ mod tests {
         let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let sol_bank = TestBankWrapper::test_sol();
-        let usdc_bank = TestBankWrapper::test_usdc();
+        let sol_bank = test_sol();
+        let usdc_bank = test_usdc();
         let mut cache = create_test_cache(&vec![sol_bank.clone(), usdc_bank.clone()]);
 
         let token_address = Pubkey::new_unique();
