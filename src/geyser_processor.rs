@@ -16,7 +16,6 @@ use std::sync::{
 pub struct GeyserProcessor {
     geyser_rx: Receiver<GeyserUpdate>,
     run_liquidation: Arc<AtomicBool>,
-    run_rebalance: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     cache: Arc<Cache>,
 }
@@ -25,14 +24,12 @@ impl GeyserProcessor {
     pub fn new(
         geyser_rx: Receiver<GeyserUpdate>,
         run_liquidation: Arc<AtomicBool>,
-        run_rebalance: Arc<AtomicBool>,
         stop: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
         Ok(Self {
             geyser_rx,
             run_liquidation,
-            run_rebalance,
             stop,
             cache,
         })
@@ -69,7 +66,6 @@ impl GeyserProcessor {
                 self.cache.oracles.try_update(&msg.address, msg_account)?;
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
-                self.run_rebalance.store(true, Ordering::Relaxed);
             }
             AccountType::Marginfi => {
                 let marginfi_account =
@@ -79,14 +75,11 @@ impl GeyserProcessor {
                 })?;
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
-                self.run_rebalance.store(true, Ordering::Relaxed);
             }
             AccountType::Token => {
                 self.cache
                     .tokens
                     .try_update_account(msg.address, msg.account)?;
-
-                self.run_rebalance.store(true, Ordering::Relaxed);
             }
         }
         Ok(())
@@ -109,14 +102,12 @@ mod tests {
     fn test_geyser_processor_new() {
         let (_, receiver) = unbounded();
         let run_liquidation = Arc::new(AtomicBool::new(false));
-        let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let cache = Arc::new(create_test_cache(&Vec::new()));
 
         let processor = GeyserProcessor::new(
             receiver,
             run_liquidation.clone(),
-            run_rebalance.clone(),
             stop.clone(),
             cache.clone(),
         );
@@ -128,14 +119,12 @@ mod tests {
     fn test_geyser_processor_start_stop() {
         let (_, receiver) = unbounded();
         let run_liquidation = Arc::new(AtomicBool::new(false));
-        let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let cache = Arc::new(create_test_cache(&Vec::new()));
 
         let processor = GeyserProcessor::new(
             receiver,
             run_liquidation.clone(),
-            run_rebalance.clone(),
             stop.clone(),
             cache.clone(),
         )
@@ -151,7 +140,6 @@ mod tests {
     fn test_process_update_token() {
         let (_, receiver) = unbounded();
         let run_liquidation = Arc::new(AtomicBool::new(false));
-        let run_rebalance = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
 
         let sol_bank = test_sol();
@@ -169,7 +157,6 @@ mod tests {
         let processor = GeyserProcessor::new(
             receiver,
             run_liquidation.clone(),
-            run_rebalance.clone(),
             stop.clone(),
             cache.clone(),
         )
