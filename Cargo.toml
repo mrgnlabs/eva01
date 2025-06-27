@@ -55,6 +55,8 @@ warp = "0.3.7"
 prometheus = "0.13.4"
 indexmap = "2.9"
 tiny_http = "0.12"
+signal-hook = "0.3.18"
+ctrlc = "3.4.7"
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"

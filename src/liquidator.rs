@@ -1,7 +1,8 @@
 use crate::{
     cache::Cache,
-    config::{GeneralConfig, LiquidatorCfg},
-    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
+    config::Eva01Config,
+    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
+    rebalancer::Rebalancer,
     thread_debug, thread_error, thread_info, thread_trace,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
     wrappers::{
@@ -32,8 +33,9 @@ use std::{sync::atomic::Ordering, thread};
 
 #[allow(dead_code)]
 pub struct Liquidator {
-    liquidator_account: LiquidatorAccount,
-    config: LiquidatorCfg,
+    liquidator_account: Arc<LiquidatorAccount>,
+    rebalancer: Rebalancer,
+    support_isolated_banks: bool,
     min_profit: f64,
     run_liquidation: Arc<AtomicBool>,
     stop_liquidator: Arc<AtomicBool>,
@@ -51,20 +53,23 @@ pub struct PreparedLiquidatableAccount {
 
 impl Liquidator {
     pub fn new(
-        general_config: GeneralConfig,
-        liquidator_config: LiquidatorCfg,
-        liquidator_account: LiquidatorAccount,
+        config: Eva01Config,
+        liquidator_account: Arc<LiquidatorAccount>,
         run_liquidation: Arc<AtomicBool>,
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
-        let swb_cranker = SwbCranker::new(&general_config)?;
+        let swb_cranker = SwbCranker::new(&config.general_config)?;
+
+        let rebalancer =
+            Rebalancer::new(config.clone(), liquidator_account.clone(), cache.clone())?;
 
         Ok(Liquidator {
-            config: liquidator_config,
-            min_profit: general_config.min_profit,
-            run_liquidation,
             liquidator_account,
+            rebalancer,
+            support_isolated_banks: config.liquidator_config.isolated_banks,
+            min_profit: config.general_config.min_profit,
+            run_liquidation,
             stop_liquidator,
             cache,
             swb_cranker,
@@ -72,10 +77,21 @@ impl Liquidator {
     }
 
     pub fn start(&mut self) -> Result<()> {
+        // Fund the liquidator account, if needed
+        if !self.liquidator_account.has_funds()? {
+            self.rebalancer.fund_liquidator_account()?;
+        }
+
+        // Initial rebalancing
+        if let Err(error) = self.rebalancer.run() {
+            thread_error!("Initial rebalancing failed: {:?}", error);
+        }
+
         thread_info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             if self.run_liquidation.load(Ordering::Relaxed) {
-                thread_debug!("Running the Liquidation process...");
+                let lq_attempts = LIQUIDATION_ATTEMPTS.get();
+                thread_info!("Running the Liquidation process...");
                 self.run_liquidation.store(false, Ordering::Relaxed);
 
                 if let Ok(mut accounts) = self.evaluate_all_accounts() {
@@ -89,7 +105,7 @@ impl Liquidator {
                             Ok(acc_opt) => {
                                 if let Some(acc) = acc_opt {
                                     let start = Instant::now();
-                                    if let Err(e) = self.liquidator_account.liquidate(
+                                    if let Err(e) = &self.liquidator_account.liquidate(
                                         &acc.liquidatee_account,
                                         &acc.asset_bank,
                                         &acc.liab_bank,
@@ -103,14 +119,14 @@ impl Liquidator {
                                         );
                                         FAILED_LIQUIDATIONS.inc();
                                         ERROR_COUNT.inc();
-                                        stale_swb_oracles.extend(e.keys);
+                                        stale_swb_oracles.extend(&e.keys);
                                     }
                                     let duration = start.elapsed().as_secs_f64();
                                     LIQUIDATION_LATENCY.observe(duration);
                                 }
                             }
                             Err(e) => {
-                                thread_trace!(
+                                thread_debug!(
                                     "The account {:?} has failed the liquidation evaluation: {:?}",
                                     candidate.liquidatee_account.address,
                                     e
@@ -130,7 +146,14 @@ impl Liquidator {
                     };
                 }
 
-                thread_debug!("The Liquidation process is complete.");
+                thread_info!("The Liquidation process is complete.");
+
+                if (LIQUIDATION_ATTEMPTS.get() - lq_attempts) > 0f64 {
+                    if let Err(error) = self.rebalancer.run() {
+                        thread_error!("Rebalancing failed: {:?}", error);
+                        ERROR_COUNT.inc();
+                    }
+                }
             } else {
                 thread::sleep(Duration::from_secs(1))
             }
@@ -360,8 +383,11 @@ impl Liquidator {
         asset_bank_pk: &Pubkey,
         liab_bank_pk: &Pubkey,
     ) -> Result<(I80F48, I80F48)> {
-        let (total_weighted_assets, total_weighted_liabilities) =
-            calc_total_weighted_assets_liabs(&self.cache, account, RequirementType::Maintenance)?;
+        let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
+            &self.cache,
+            &account.lending_account,
+            RequirementType::Maintenance,
+        )?;
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         thread_trace!(
             "Account {} maintenance_health = {:?}",
@@ -487,7 +513,7 @@ impl Liquidator {
             let bank_wrapper = self.cache.banks.try_get_bank(&bank_pk)?;
             let oracle_wrapper = OracleWrapper::build(&self.cache, &bank_pk)?;
 
-            if !self.config.isolated_banks
+            if !self.support_isolated_banks
                 && matches!(bank_wrapper.bank.config.risk_tier, RiskTier::Isolated)
             {
                 continue;
