@@ -75,9 +75,9 @@ pub fn run_liquidator(
     let mints = cache.mints.get_mints();
     if !mints
         .iter()
-        .any(|&mint| mint == &config.rebalancer_config.swap_mint)
+        .any(|mint| mint == &config.rebalancer_config.swap_mint)
     {
-        config.rebalancer_config.swap_mint = *mints[0]; // TODO: come up with a smarter logic for choosing the preferred asset
+        config.rebalancer_config.swap_mint = mints[0]; // TODO: come up with a smarter logic for choosing the preferred asset
         thread_info!("Configured preferred asset not found in cache, using the first one from cache as preferred: {}", config.rebalancer_config.swap_mint);
     }
 

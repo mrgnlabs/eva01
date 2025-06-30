@@ -25,8 +25,8 @@ impl MintsCache {
             .cloned()
     }
 
-    pub fn get_mints(&self) -> Vec<&Pubkey> {
-        self.mints.keys().collect()
+    pub fn get_mints(&self) -> Vec<Pubkey> {
+        self.mints.keys().cloned().collect()
     }
 
     pub fn get_tokens(&self) -> Vec<Pubkey> {

@@ -42,7 +42,7 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_deposits(&self, banks_to_exclude: &[Pubkey]) -> Vec<Pubkey> {
+    pub fn get_assets(&self, banks_to_exclude: &[Pubkey]) -> Vec<Pubkey> {
         self.lending_account
             .balances
             .iter()
@@ -297,7 +297,7 @@ mod tests {
             healthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), usdc_bank.address)]
         );
-        assert_eq!(healthy.get_deposits(&[]), vec![sol_bank.address]);
+        assert_eq!(healthy.get_assets(&[]), vec![sol_bank.address]);
         let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
@@ -328,7 +328,7 @@ mod tests {
             unhealthy.get_liabilities_shares(),
             vec![(I80F48::from_num(100), sol_bank.address)]
         );
-        assert_eq!(unhealthy.get_deposits(&[]), vec![usdc_bank.address]);
+        assert_eq!(unhealthy.get_assets(&[]), vec![usdc_bank.address]);
         let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {

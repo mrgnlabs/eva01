@@ -83,7 +83,7 @@ impl Liquidator {
         }
 
         // Initial rebalancing
-        if let Err(error) = self.rebalancer.run() {
+        if let Err(error) = self.rebalancer.run(true) {
             thread_error!("Initial rebalancing failed: {:?}", error);
         }
 
@@ -149,7 +149,7 @@ impl Liquidator {
                 thread_info!("The Liquidation process is complete.");
 
                 if LIQUIDATION_ATTEMPTS.get() > lq_attempts {
-                    if let Err(error) = self.rebalancer.run() {
+                    if let Err(error) = self.rebalancer.run(false) {
                         thread_error!("Rebalancing failed: {:?}", error);
                         ERROR_COUNT.inc();
                     }
