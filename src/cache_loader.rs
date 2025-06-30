@@ -302,9 +302,9 @@ impl CacheLoader {
                 let mint = cache.mints.try_get_account(&mint_account)?;
                 let signer_pk = cache.signer_pk;
                 let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(
-                    &signer_pk, 
-                    &signer_pk, 
-                    &mint_account, 
+                    &signer_pk,
+                    &signer_pk,
+                    &mint_account,
                     &mint.account.owner
                 );
                 instructions.push(ix);
