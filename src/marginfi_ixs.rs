@@ -237,7 +237,6 @@ pub fn initialize_marginfi_account(
     marginfi_group: Pubkey,
     signer_keypair: &Keypair,
 ) -> anyhow::Result<Pubkey> {
-    //TODO: confirm that it should not be PDA
     let marginfi_account_key = Keypair::new();
 
     let ix = make_create_ix(

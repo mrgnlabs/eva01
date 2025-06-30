@@ -41,7 +41,6 @@ const MIN_LIQUIDATIONS_COUNT: u64 = 10;
 
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
-#[allow(dead_code)]
 pub struct Rebalancer {
     signer: Keypair,
     liquidator_account: Arc<LiquidatorAccount>,

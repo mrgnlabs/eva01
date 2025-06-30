@@ -148,7 +148,7 @@ impl Liquidator {
 
                 thread_info!("The Liquidation process is complete.");
 
-                if (LIQUIDATION_ATTEMPTS.get() - lq_attempts) > 0f64 {
+                if LIQUIDATION_ATTEMPTS.get() > lq_attempts {
                     if let Err(error) = self.rebalancer.run() {
                         thread_error!("Rebalancing failed: {:?}", error);
                         ERROR_COUNT.inc();
