@@ -82,9 +82,7 @@ impl Liquidator {
         }
 
         // Initial rebalancing
-        if let Err(error) = self.rebalancer.run(true) {
-            thread_error!("Initial rebalancing failed: {:?}", error);
-        }
+        self.rebalancer.run(true)?;
 
         thread_info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
