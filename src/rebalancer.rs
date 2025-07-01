@@ -160,7 +160,7 @@ impl Rebalancer {
 
     fn needs_to_be_rebalanced(&mut self, lq_acc: &MarginfiAccountWrapper) -> Result<bool> {
         Ok(self.has_non_preferred_tokens()?
-            || self.has_non_preferred_assets(&lq_acc.lending_account)?
+            || self.has_non_preferred_deposits(&lq_acc.lending_account)?
             || lq_acc.has_liabs())
     }
 
@@ -469,7 +469,7 @@ impl Rebalancer {
         Ok(false)
     }
 
-    fn has_non_preferred_assets(&self, lq_account: &LendingAccount) -> Result<bool> {
+    fn has_non_preferred_deposits(&self, lq_account: &LendingAccount) -> Result<bool> {
         Ok(lq_account
             .balances
             .iter()
