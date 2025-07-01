@@ -235,7 +235,7 @@ impl Rebalancer {
         }
 
         let mut mints = ward!(self
-            .sell_non_preferred_assets()
+            .sell_non_preferred_deposits()
             .map_err(|e| thread_error!("Failed to sell non preferred assets! {}", e))
             .ok());
         thread_debug!("Sold assets for {:?} non-preferred mints.", mints.len());
@@ -265,7 +265,7 @@ impl Rebalancer {
         }
     }
 
-    fn sell_non_preferred_assets(&mut self) -> Result<Vec<Pubkey>> {
+    fn sell_non_preferred_deposits(&mut self) -> Result<Vec<Pubkey>> {
         let liquidator_account = self
             .cache
             .marginfi_accounts
