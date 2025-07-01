@@ -385,7 +385,7 @@ impl Rebalancer {
             self.get_amount(liab_usd_value, &self.swap_mint_bank, Some(PriceBias::Low))?;
 
         let withdraw_amount = if required_swap_token.is_positive() {
-            // The withdral_all flag is purposefully ignored here.
+            // The withdraw_all flag is purposefully ignored here.
             // It is possible that the amount of collateral could be temporarily less than the required swap token amount
             // due to the liquidated liabilities
             let (max_withdraw_amount, _) =
