@@ -424,10 +424,11 @@ impl LiquidatorAccount {
             );
 
         thread_debug!(
-            "Withdrawing {:?} unscaled Mint {} tokens from the Liquidator Account {:?}",
+            "Withdrawing {:?} unscaled tokens of the Mint {} from the Liquidator account {:?}, Bank {:?}, ",
             amount,
             mint,
-            token_account
+            token_account,
+            self.preferred_mint_bank
         );
 
         let res = self
@@ -442,11 +443,7 @@ impl LiquidatorAccount {
             )
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        thread_debug!(
-            "Withdrawal result for Liquidator account {:?} (without preflight check): {:?} ",
-            marginfi_account,
-            res
-        );
+        thread_debug!("Withdrawal txn: {:?} ", res);
         Ok(())
     }
 
@@ -479,7 +476,12 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        thread_debug!("Repaying {:?}, token account {:?}", amount, token_account);
+        thread_debug!(
+            "Repaying {:?} unscaled tokens to the bank {}, token account {:?}",
+            amount,
+            bank.address,
+            token_account
+        );
 
         let res = self
             .rpc_client
@@ -492,7 +494,7 @@ impl LiquidatorAccount {
                 },
             );
         thread_debug!(
-            "Repaying result for account {:?} (without preflight check): {:?} ",
+            "The repaying result for account {:?} (without preflight check): {:?} ",
             marginfi_account,
             res
         );

@@ -372,10 +372,12 @@ impl Rebalancer {
         }
 
         thread_debug!(
-            "The {:?} unscaled Liability tokens of Bank {:?} need to be repaid with {:?} USD.",
+            "The {:?} unscaled Liability tokens of the Bank {:?} need to be repaid with {:?} tokens of the preferred asset Bank {:?}, Mint {:?}.",
             liab_balance,
             bank_pk,
-            liab_usd_value
+            liab_usd_value,
+            self.swap_mint_bank,
+            self.swap_mint
         );
 
         // Get the amount of swap token needed to repay the liability
@@ -383,7 +385,10 @@ impl Rebalancer {
             self.get_amount(liab_usd_value, &self.swap_mint_bank, Some(PriceBias::Low))?;
 
         let withdraw_amount = if required_swap_token.is_positive() {
-            let (max_withdraw_amount, withdraw_all) =
+            // The withdral_all flag is purposefully ignored here.
+            // It is possible that the amount of collateral could be temporarily less than the required swap token amount
+            // due to the liquidated liabilities
+            let (max_withdraw_amount, _) =
                 self.get_max_withdraw_for_bank(&self.swap_mint_bank, lq_account)?;
 
             let withdraw_amount = min(max_withdraw_amount, required_swap_token);
@@ -392,7 +397,7 @@ impl Rebalancer {
             self.liquidator_account.withdraw(
                 &swap_bank_wrapper,
                 withdraw_amount.to_num(),
-                Some(withdraw_all),
+                Some(false),
             )?;
 
             withdraw_amount
@@ -403,10 +408,10 @@ impl Rebalancer {
         let amount_to_swap = min(liab_balance + withdraw_amount, required_swap_token);
         if amount_to_swap.is_positive() {
             thread_debug!(
-                "Repaying {:?} unscaled Liability tokens of the Bank {:?} from the Bank {:?}",
+                "Swapping the {:?} unscaled tokens of the Mint {:?} to the tokens of the Bank {:?} ",
                 amount_to_swap,
+                self.swap_mint,
                 bank_pk,
-                self.swap_mint_bank,
             );
             self.swap(
                 amount_to_swap.to_num(),
@@ -415,7 +420,7 @@ impl Rebalancer {
             )?;
         }
 
-        thread_debug!("Repaying liability for bank {}", bank_pk);
+        thread_debug!("Repaying liability for the Bank {}", bank_pk);
 
         let token_balance = self
             .get_token_balance_for_mint(&bank_wrapper.bank.mint)
