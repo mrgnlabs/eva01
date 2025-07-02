@@ -105,8 +105,6 @@ impl Eva01Config {
             .parse()
             .expect("Invalid TOKEN_ACCOUNT_DUST_THRESHOLD number");
 
-        let preferred_mints: Vec<Pubkey> = parse_pubkey_list("PREFERRED_MINTS")?;
-
         let swap_mint = Pubkey::from_str(
             &std::env::var("SWAP_MINT").expect("SWAP_MINT environment variable is not set"),
         )
@@ -122,7 +120,6 @@ impl Eva01Config {
 
         let rebalancer_config = RebalancerCfg {
             token_account_dust_threshold: I80F48::from_num(token_account_dust_threshold),
-            preferred_mints,
             swap_mint,
             jup_swap_api_url,
             slippage_bps,
@@ -253,7 +250,6 @@ impl std::fmt::Display for LiquidatorCfg {
 #[derive(Debug, Default, Clone)]
 pub struct RebalancerCfg {
     pub token_account_dust_threshold: I80F48,
-    pub preferred_mints: Vec<Pubkey>,
     pub swap_mint: Pubkey,
     pub jup_swap_api_url: String,
     pub slippage_bps: u16,
@@ -266,12 +262,10 @@ impl std::fmt::Display for RebalancerCfg {
             "Rebalancer Config: \n\
                 - Token account dust threshold: {}\n\
                 - Swap mint: {}\n\
-                - Preferred mints: {:?}\n\
                 - Jup Swap Api URL: {}\n\
                 - Slippage bps: {}\n",
             self.token_account_dust_threshold,
             self.swap_mint,
-            self.preferred_mints,
             self.jup_swap_api_url,
             self.slippage_bps,
         )

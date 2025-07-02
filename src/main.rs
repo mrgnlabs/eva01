@@ -1,5 +1,13 @@
 use env_logger::Builder;
-use std::{backtrace::Backtrace, error::Error};
+use signal_hook::consts::{SIGINT, SIGTERM};
+use std::{
+    backtrace::Backtrace,
+    error::Error,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 /// Prometheus metrics
 mod metrics;
@@ -58,8 +66,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::process::exit(1);
     }));
 
+    // Register signal handlers for graceful shutdown
+    let stop = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGINT, stop.clone()).unwrap();
+    signal_hook::flag::register(SIGTERM, stop.clone()).unwrap();
+
+    let stop_hook = Arc::clone(&stop);
+    ctrlc::set_handler(move || {
+        stop_hook.store(true, Ordering::SeqCst);
+        println!("Received stop signal");
+    })
+    .expect("Error setting Ctrl-C handler");
+
     // Main entrypoint
-    crate::cli::main_entry()?;
+    crate::cli::main_entry(stop)?;
 
     Ok(())
 }

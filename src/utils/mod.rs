@@ -277,10 +277,10 @@ impl<'a, T: OracleWrapperTrait> BankAccountWithPriceFeedEva<'a, T> {
 
 pub fn calc_total_weighted_assets_liabs(
     cache: &Arc<Cache>,
-    account: &MarginfiAccountWrapper,
+    account: &LendingAccount,
     requirement_type: RequirementType,
 ) -> Result<(I80F48, I80F48)> {
-    let baws = BankAccountWithPriceFeedEva::<OracleWrapper>::load(&account.lending_account, cache)?;
+    let baws = BankAccountWithPriceFeedEva::<OracleWrapper>::load(account, cache)?;
     let emode_config = build_emode_config(&baws)?;
 
     let mut total_assets = I80F48::ZERO;
@@ -307,8 +307,11 @@ pub fn build_emode_config<T: OracleWrapperTrait + Clone>(
 }
 
 pub fn get_free_collateral(cache: &Arc<Cache>, account: &MarginfiAccountWrapper) -> Result<I80F48> {
-    let (assets, liabs) =
-        calc_total_weighted_assets_liabs(cache, account, RequirementType::Initial)?;
+    let (assets, liabs) = calc_total_weighted_assets_liabs(
+        cache,
+        &account.lending_account,
+        RequirementType::Initial,
+    )?;
     if assets > liabs {
         Ok(assets - liabs)
     } else {

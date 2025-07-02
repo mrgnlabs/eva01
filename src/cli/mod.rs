@@ -23,7 +23,7 @@ pub mod entrypoints;
 pub mod setup;
 
 /// Main entrypoint for Eva
-pub fn main_entry() -> anyhow::Result<()> {
+pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
     let config = Eva01Config::new()?;
     let preferred_mints = Arc::new(RwLock::new(HashSet::new()));
     info!("Starting eva01 liquidator! {}", &config);
@@ -32,14 +32,11 @@ pub fn main_entry() -> anyhow::Result<()> {
     // and spawn a new liquidator for each except the ones listed in the blacklist.
     // Note that it is not allowed to have both whitelist and blacklist at the same time!
 
-    // This is to stop liquidator when rebalancer asks for it
-    let stop_liquidator = Arc::new(AtomicBool::new(false));
-
     let health_state = Arc::new(Mutex::new(HealthState::Initializing));
     let healthcheck_server = HealthCheckServer::new(
         config.general_config.healthcheck_port,
         health_state.clone(),
-        stop_liquidator.clone(),
+        stop.clone(),
     );
     thread::spawn(move || healthcheck_server.start());
 
@@ -56,7 +53,7 @@ pub fn main_entry() -> anyhow::Result<()> {
                 &config,
                 group,
                 Arc::clone(&preferred_mints),
-                stop_liquidator.clone(),
+                stop.clone(),
             );
         }
 
@@ -64,7 +61,7 @@ pub fn main_entry() -> anyhow::Result<()> {
             config,
             last_group,
             Arc::clone(&preferred_mints),
-            stop_liquidator.clone(),
+            stop.clone(),
         );
     }
 
@@ -100,7 +97,7 @@ pub fn main_entry() -> anyhow::Result<()> {
                     &config,
                     group,
                     Arc::clone(&preferred_mints),
-                    stop_liquidator.clone(),
+                    stop.clone(),
                 );
                 active_groups.insert(group);
             }

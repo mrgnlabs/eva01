@@ -55,13 +55,9 @@ impl CacheLoader {
         })
     }
 
-    pub fn load_cache(
-        &self,
-        cache: &mut Cache,
-        new_liquidator_account: &Option<Pubkey>,
-    ) -> anyhow::Result<()> {
+    pub fn load_cache(&self, cache: &mut Cache) -> anyhow::Result<()> {
         self.load_luts(cache)?;
-        self.load_marginfi_accounts(cache, new_liquidator_account)?;
+        self.load_marginfi_accounts(cache)?;
         self.load_banks(cache)?;
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
@@ -98,20 +94,13 @@ impl CacheLoader {
         Ok(())
     }
 
-    fn load_marginfi_accounts(
-        &self,
-        cache: &mut Cache,
-        new_liquidator_account: &Option<Pubkey>,
-    ) -> anyhow::Result<()> {
+    fn load_marginfi_accounts(&self, cache: &mut Cache) -> anyhow::Result<()> {
         thread_info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
-        let mut marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
+        let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
             &cache.marginfi_program_id,
             &cache.marginfi_group_address,
         )?;
-        if let Some(new_liquidator_account) = new_liquidator_account {
-            marginfi_accounts_pubkeys.push(*new_liquidator_account);
-        }
 
         thread_info!("Loading marginfi accounts...");
         let marginfi_accounts = batch_get_multiple_accounts(
@@ -312,7 +301,12 @@ impl CacheLoader {
                 let mint_account = cache.mints.try_get_mint_for_token(token_address)?;
                 let mint = cache.mints.try_get_account(&mint_account)?;
                 let signer_pk = cache.signer_pk;
-                let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(&signer_pk, &signer_pk, &mint_account, &mint.account.owner);
+                let ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(
+                    &signer_pk,
+                    &signer_pk,
+                    &mint_account,
+                    &mint.account.owner
+                );
                 instructions.push(ix);
             }
 

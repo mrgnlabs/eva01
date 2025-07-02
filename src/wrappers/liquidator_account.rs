@@ -13,6 +13,7 @@ use crate::{
     wrappers::oracle::OracleWrapper,
 };
 use anyhow::{anyhow, Result};
+use marginfi::state::marginfi_account::BalanceSide;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 
 use crate::wrappers::oracle::OracleWrapperTrait;
@@ -69,6 +70,7 @@ pub struct LiquidatorAccount {
     pub signer: Keypair,
     program_id: Pubkey,
     group: Pubkey,
+    preferred_mint_bank: Pubkey,
     rpc_client: RpcClient,
     cu_limit_ix: Instruction,
     pub cache: Arc<Cache>,
@@ -78,8 +80,8 @@ impl LiquidatorAccount {
     pub fn new(
         config: &GeneralConfig,
         marginfi_group_id: Pubkey,
+        preferred_mint: Pubkey,
         cache: Arc<Cache>,
-        new_liquidator_account: &mut Option<Pubkey>,
     ) -> Result<Self> {
         let signer = Keypair::from_bytes(&config.wallet_keypair)?;
         let rpc_client = RpcClient::new(config.rpc_url.clone());
@@ -91,16 +93,13 @@ impl LiquidatorAccount {
             marginfi_group_id,
         )?;
         thread_info!(
-            "Found {} MarginFi accounts for the provided signer",
-            accounts.len()
+            "Found {} MarginFi accounts for the provided signer: {:?}",
+            accounts.len(),
+            accounts
         );
-        for account in accounts.iter() {
-            thread_info!("MarginFi account: {:?}", account);
-        }
 
         let liquidator_address = if accounts.is_empty() {
             thread_info!("No MarginFi account found for the provided signer. Creating it...");
-
             let liquidator_marginfi_account = initialize_marginfi_account(
                 &rpc_client,
                 config.marginfi_program_id,
@@ -108,20 +107,28 @@ impl LiquidatorAccount {
                 &signer,
             )?;
 
-            thread::sleep(Duration::from_secs(20));
-
-            *new_liquidator_account = Some(liquidator_marginfi_account);
+            while cache
+                .marginfi_accounts
+                .try_get_account(&liquidator_marginfi_account)
+                .is_err()
+            {
+                thread_info!("Waiting for the new account info to arrive...");
+                thread::sleep(Duration::from_secs(5));
+            }
 
             liquidator_marginfi_account
         } else {
             accounts[0]
         };
 
+        let preferred_mint_bank = cache.banks.try_get_account_for_mint(&preferred_mint)?;
+
         Ok(Self {
             liquidator_address,
             signer,
             program_id: config.marginfi_program_id,
             group: marginfi_group_id,
+            preferred_mint_bank,
             rpc_client,
             cu_limit_ix: ComputeBudgetInstruction::set_compute_unit_limit(
                 config.compute_unit_limit,
@@ -130,23 +137,27 @@ impl LiquidatorAccount {
         })
     }
 
-    pub fn clone(&self) -> Result<Self> {
-        let rpc_url = self.rpc_client.url();
-        let rpc_client = RpcClient::new(rpc_url.clone());
+    pub fn has_funds(&self) -> Result<bool> {
+        let account = self
+            .cache
+            .marginfi_accounts
+            .try_get_account(&self.liquidator_address)?;
 
-        Ok(Self {
-            liquidator_address: self.liquidator_address,
-            signer: Keypair::from_bytes(&self.signer.to_bytes())?,
-            program_id: self.program_id,
-            group: self.group,
-            rpc_client,
-            cu_limit_ix: self.cu_limit_ix.clone(),
-            cache: Arc::clone(&self.cache),
-        })
+        let preferred_mint_bank = self.cache.banks.try_get_bank(&self.preferred_mint_bank)?;
+
+        let validation_result =
+            account
+                .get_balance_for_bank(&preferred_mint_bank)
+                .map(|(balance, side)| match side {
+                    BalanceSide::Assets => balance > 0,
+                    _ => true,
+                });
+
+        Ok(validation_result.unwrap_or(false))
     }
 
     pub fn liquidate(
-        &mut self,
+        &self,
         liquidatee_account: &MarginfiAccountWrapper,
         asset_bank: &Pubkey,
         liab_bank: &Pubkey,
@@ -413,10 +424,11 @@ impl LiquidatorAccount {
             );
 
         thread_debug!(
-            "Withdrawing {:?} unscaled Mint {} tokens from the Liquidator Account {:?}",
+            "Withdrawing {:?} unscaled tokens of the Mint {} from the Liquidator account {:?}, Bank {:?}, ",
             amount,
             mint,
-            token_account
+            token_account,
+            self.preferred_mint_bank
         );
 
         let res = self
@@ -431,11 +443,7 @@ impl LiquidatorAccount {
             )
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        thread_debug!(
-            "Withdrawal result for Liquidator account {:?} (without preflight check): {:?} ",
-            marginfi_account,
-            res
-        );
+        thread_debug!("Withdrawal txn: {:?} ", res);
         Ok(())
     }
 
@@ -468,7 +476,12 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        thread_debug!("Repaying {:?}, token account {:?}", amount, token_account);
+        thread_debug!(
+            "Repaying {:?} unscaled tokens to the bank {}, token account {:?}",
+            amount,
+            bank.address,
+            token_account
+        );
 
         let res = self
             .rpc_client
@@ -481,7 +494,7 @@ impl LiquidatorAccount {
                 },
             );
         thread_debug!(
-            "Repaying result for account {:?} (without preflight check): {:?} ",
+            "The repaying result for account {:?} (without preflight check): {:?} ",
             marginfi_account,
             res
         );

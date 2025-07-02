@@ -97,6 +97,7 @@ impl GeyserService {
         thread_info!("Staring GeyserService.");
 
         let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().copied().collect();
+        let tls_config = ClientTlsConfig::new().with_native_roots();
 
         while !self.stop.load(Ordering::Relaxed) {
             thread_info!("Connecting to Geyser...");
@@ -107,7 +108,7 @@ impl GeyserService {
             let mut client = self.tokio_rt.block_on(
                 GeyserGrpcClient::build_from_shared(self.endpoint.clone())?
                     .x_token(self.x_token.clone())?
-                    .tls_config(ClientTlsConfig::new().with_native_roots())?
+                    .tls_config(tls_config.clone())?
                     .connect(),
             )?;
 
