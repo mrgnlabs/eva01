@@ -88,6 +88,15 @@ impl OraclesCache {
             })?
             .len())
     }
+
+    //Handy for obtaining the most current oracles configuration. Requires the `print_oracles` feature to be enabled.
+    #[cfg(feature = "print_oracles")]
+    pub fn print_oracles_info(&self) {
+        println!("Address, Owner");
+        for (address, account) in self.accounts.read().unwrap().iter() {
+            println!("{}, {}", address, account.owner);
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

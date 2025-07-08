@@ -56,6 +56,24 @@ impl BanksCache {
     pub fn len(&self) -> usize {
         self.banks.len()
     }
+
+    //Handy for printing the most current banks configuration. Requires the `print_banks` feature to be enabled.
+    #[cfg(feature = "print_banks")]
+    pub fn print_banks_info(&self) {
+        println!("Group, Bank, State, Risk-Tier, Mint, Oracle_Type, Oracles");
+        for bank in self.banks.values() {
+            println!(
+                "{:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}",
+                bank.bank.group,
+                bank.address,
+                bank.bank.config.operational_state,
+                bank.bank.config.risk_tier,
+                bank.bank.mint,
+                bank.bank.config.oracle_setup,
+                find_oracle_keys(&bank.bank.config)
+            );
+        }
+    }
 }
 
 #[cfg(test)]

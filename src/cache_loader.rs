@@ -62,6 +62,17 @@ impl CacheLoader {
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
         self.load_tokens(cache)?;
+
+        #[cfg(feature = "print_oracles")]
+        {
+            cache.oracles.print_oracles_info();
+        }
+
+        #[cfg(feature = "print_banks")]
+        {
+            cache.banks.print_banks_info();
+        }
+
         Ok(())
     }
 
