@@ -49,7 +49,11 @@ impl BankWrapper {
         let (price_bias, oracle_type) = Self::get_pricing_params(side, requirement_type);
 
         let price = oracle_wrapper
-            .get_price_of_type(oracle_type, price_bias)
+            .get_price_of_type(
+                oracle_type,
+                price_bias,
+                self.bank.config.oracle_max_confidence,
+            )
             .unwrap();
 
         Ok(calc_amount(value, price, self.bank.mint_decimals)?)
@@ -65,7 +69,11 @@ impl BankWrapper {
         let (price_bias, oracle_type) = Self::get_pricing_params(side, requirement_type);
 
         let price = oracle_wrapper
-            .get_price_of_type(oracle_type, price_bias)
+            .get_price_of_type(
+                oracle_type,
+                price_bias,
+                self.bank.config.oracle_max_confidence,
+            )
             .unwrap();
 
         Ok(calc_value(amount, price, self.bank.mint_decimals, None)?)

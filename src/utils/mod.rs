@@ -254,7 +254,7 @@ impl<'a, T: OracleWrapperTrait> BankAccountWithPriceFeedEva<'a, T> {
                     .map_err(Error::from)?;
 
                 calc_weighted_bank_assets(
-                    &self.bank,
+                    bank,
                     &self.oracle,
                     amount,
                     requirement_type,
@@ -271,7 +271,7 @@ impl<'a, T: OracleWrapperTrait> BankAccountWithPriceFeedEva<'a, T> {
         let liability_amount = bank
             .get_liability_amount(self.balance.liability_shares.into())
             .map_err(|err| anyhow!("Failed to calculate liability amount: {}", err))?;
-        calc_weighted_bank_liabs(&self.bank, &self.oracle, liability_amount, requirement_type)
+        calc_weighted_bank_liabs(bank, &self.oracle, liability_amount, requirement_type)
     }
 }
 
@@ -301,8 +301,7 @@ pub fn build_emode_config<T: OracleWrapperTrait + Clone>(
     let configs = baws
         .iter()
         .filter(|baw| !baw.balance.is_empty(BalanceSide::Liabilities))
-        .map(|baw| baw.bank.bank.emode.emode_config)
-        .collect();
+        .map(|baw| baw.bank.bank.emode.emode_config);
     Ok(reconcile_emode_configs(configs))
 }
 
@@ -328,13 +327,13 @@ pub fn find_bank_liquidity_vault_authority(bank_pk: &Pubkey, program_id: &Pubkey
 }
 
 pub fn calc_weighted_bank_assets(
-    bank: &BankWrapper,
+    bank: &Bank,
     oracle_wrapper: &impl OracleWrapperTrait,
     amount: I80F48,
     requirement_type: RequirementType,
     emode_config: &EmodeConfig,
 ) -> Result<I80F48> {
-    let mut asset_weight = calculate_bank_asset_weight(&bank.bank, emode_config, requirement_type);
+    let mut asset_weight = calculate_bank_asset_weight(bank, emode_config, requirement_type);
 
     let price_bias = if matches!(requirement_type, RequirementType::Equity) {
         None
@@ -342,14 +341,14 @@ pub fn calc_weighted_bank_assets(
         Some(PriceBias::Low)
     };
 
-    let lower_price =
-        oracle_wrapper.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+    let lower_price = oracle_wrapper.get_price_of_type(
+        requirement_type.get_oracle_price_type(),
+        price_bias,
+        bank.config.oracle_max_confidence,
+    )?;
 
     if matches!(requirement_type, RequirementType::Initial) {
-        if let Some(discount) = bank
-            .bank
-            .maybe_get_asset_weight_init_discount(lower_price)?
-        {
+        if let Some(discount) = bank.maybe_get_asset_weight_init_discount(lower_price)? {
             asset_weight = asset_weight
                 .checked_mul(discount)
                 .ok_or_else(|| anyhow!("math error"))?;
@@ -359,7 +358,7 @@ pub fn calc_weighted_bank_assets(
     Ok(calc_value(
         amount,
         lower_price,
-        bank.bank.mint_decimals,
+        bank.mint_decimals,
         Some(asset_weight),
     )?)
 }
@@ -392,13 +391,12 @@ fn calculate_bank_asset_weight(
 
 #[inline(always)]
 pub fn calc_weighted_bank_liabs(
-    bank: &BankWrapper,
+    bank: &Bank,
     oracle_wrapper: &impl OracleWrapperTrait,
     amount: I80F48,
     requirement_type: RequirementType,
 ) -> Result<I80F48> {
     let liability_weight = bank
-        .bank
         .config
         .get_weight(requirement_type, BalanceSide::Liabilities);
 
@@ -408,46 +406,38 @@ pub fn calc_weighted_bank_liabs(
         Some(PriceBias::High)
     };
 
-    let higher_price =
-        oracle_wrapper.get_price_of_type(requirement_type.get_oracle_price_type(), price_bias)?;
+    let higher_price = oracle_wrapper.get_price_of_type(
+        requirement_type.get_oracle_price_type(),
+        price_bias,
+        bank.config.oracle_max_confidence,
+    )?;
 
     Ok(calc_value(
         amount,
         higher_price,
-        bank.bank.mint_decimals,
+        bank.mint_decimals,
         Some(liability_weight),
     )?)
 }
 
 pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
     use marginfi::{
-        constants::{PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID, PYTH_PUSH_PYTH_SPONSORED_SHARD_ID},
+        constants::{MARGINFI_SPONSORED_SHARD_ID, PYTH_SPONSORED_SHARD_ID},
         state::price::PythPushOraclePriceFeed,
     };
     match bank_config.oracle_setup {
         marginfi::state::price::OracleSetup::PythPushOracle => {
             let feed_id = bank_config.get_pyth_push_oracle_feed_id().unwrap();
             vec![
-                PythPushOraclePriceFeed::find_oracle_address(
-                    PYTH_PUSH_MARGINFI_SPONSORED_SHARD_ID,
-                    feed_id,
-                )
-                .0,
-                PythPushOraclePriceFeed::find_oracle_address(
-                    PYTH_PUSH_PYTH_SPONSORED_SHARD_ID,
-                    feed_id,
-                )
-                .0,
+                PythPushOraclePriceFeed::find_oracle_address(MARGINFI_SPONSORED_SHARD_ID, feed_id)
+                    .0,
+                PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id).0,
             ]
         }
         marginfi::state::price::OracleSetup::StakedWithPythPush => {
             let feed_id = bank_config.get_pyth_push_oracle_feed_id().unwrap();
             let oracle_addresses = vec![
-                PythPushOraclePriceFeed::find_oracle_address(
-                    PYTH_PUSH_PYTH_SPONSORED_SHARD_ID,
-                    feed_id,
-                )
-                .0,
+                PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id).0,
                 bank_config.oracle_keys[1],
                 bank_config.oracle_keys[2],
             ];

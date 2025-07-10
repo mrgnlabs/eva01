@@ -655,7 +655,7 @@ impl Rebalancer {
                 let emode_config = build_emode_config(&baws)?;
 
                 calc_weighted_bank_assets(
-                    &bank_wrapper,
+                    &bank_wrapper.bank,
                     &oracle_wrapper,
                     amount.to_num(),
                     requirement_type,
@@ -663,7 +663,7 @@ impl Rebalancer {
                 )?
             }
             BalanceSide::Liabilities => calc_weighted_bank_liabs(
-                &bank_wrapper,
+                &bank_wrapper.bank,
                 &oracle_wrapper,
                 amount.to_num(),
                 requirement_type,
@@ -708,6 +708,7 @@ impl Rebalancer {
         let price = oracle_wrapper.get_price_of_type(
             marginfi::state::price::OraclePriceType::RealTime,
             price_bias,
+            bank_wrapper.bank.config.oracle_max_confidence,
         )?;
 
         let amount_ui = value / price;
