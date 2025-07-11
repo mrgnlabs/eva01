@@ -75,14 +75,16 @@ impl Liquidator {
         })
     }
 
-    pub fn start(&mut self) -> Result<()> {
+    pub fn start(&mut self, run_initial_rebalancing: bool) -> Result<()> {
         // Fund the liquidator account, if needed
         if !self.liquidator_account.has_funds()? {
             self.rebalancer.fund_liquidator_account()?;
         }
 
         // Initial rebalancing
-        self.rebalancer.run(true)?;
+        if run_initial_rebalancing {
+            self.rebalancer.run(true)?;
+        }
 
         thread_info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {

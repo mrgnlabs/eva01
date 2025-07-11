@@ -23,6 +23,7 @@ pub fn run_liquidator(
     marginfi_group_id: Pubkey,
     preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
     stop_liquidator: Arc<AtomicBool>,
+    run_initial_rebalancing: bool,
 ) -> anyhow::Result<()> {
     thread_info!("Starting liquidator for group: {:?}", marginfi_group_id);
     // TODO: re-enable. https://linear.app/marginfi/issue/LIQ-13/reenable-grafana-metrics-reporting
@@ -128,10 +129,11 @@ pub fn run_liquidator(
 
     thread_info!("Starting services...");
 
-    thread::spawn(move || clock_manager.start());
+    let cloned_stop = stop_liquidator.clone();
+    thread::spawn(move || clock_manager.start(cloned_stop));
 
     thread::spawn(move || {
-        if let Err(e) = liquidator.start() {
+        if let Err(e) = liquidator.start(run_initial_rebalancing) {
             thread_error!("The Liquidator service failed! {:?}", e);
             panic!("Fatal error in the Liquidator service!");
         }
