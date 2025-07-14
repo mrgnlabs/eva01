@@ -25,6 +25,9 @@ pub mod entrypoints;
 /// A wizard-like setup menu for creating the liquidator configuration
 pub mod setup;
 
+const PROD_MARGINFI_ID: Pubkey =
+    Pubkey::from_str_const("MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA");
+
 /// Main entrypoint for Eva
 pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
     let config = Eva01Config::new()?;
@@ -77,20 +80,22 @@ pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
 
         let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
         while !stop.load(Ordering::Relaxed) {
-            let marginfi_groups =
-                if let Some(api_key) = config.general_config.marginfi_api_key.as_ref() {
-                    get_active_arena_pools(
-                        config.general_config.marginfi_api_url.as_ref().unwrap(),
-                        api_key,
-                        config.general_config.marginfi_api_arena_threshold.unwrap(),
-                    )?
-                } else {
-                    marginfi_groups_by_program(
-                        &rpc_client,
-                        config.general_config.marginfi_program_id,
-                        true,
-                    )?
-                };
+            let marginfi_groups = if config.general_config.marginfi_api_key.is_some()
+                && config.general_config.marginfi_program_id == PROD_MARGINFI_ID
+            {
+                // The API currently returns active pools only for the production program.
+                get_active_arena_pools(
+                    config.general_config.marginfi_api_url.as_ref().unwrap(),
+                    config.general_config.marginfi_api_key.as_ref().unwrap(),
+                    config.general_config.marginfi_api_arena_threshold.unwrap(),
+                )?
+            } else {
+                marginfi_groups_by_program(
+                    &rpc_client,
+                    config.general_config.marginfi_program_id,
+                    true,
+                )?
+            };
 
             for group in marginfi_groups {
                 if active_groups.contains(&group) {
