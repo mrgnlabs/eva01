@@ -423,11 +423,15 @@ pub fn calc_weighted_bank_liabs(
 pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
     use marginfi::{constants::PYTH_SPONSORED_SHARD_ID, state::price::PythPushOraclePriceFeed};
     match bank_config.oracle_setup {
-        marginfi::state::price::OracleSetup::PythPushOracle => {
+        marginfi::state::price::OracleSetup::PythPushOracle
+            if !bank_config.is_pyth_push_migrated() =>
+        {
             let feed_id = bank_config.get_pyth_push_oracle_feed_id().unwrap();
             vec![PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id).0]
         }
-        marginfi::state::price::OracleSetup::StakedWithPythPush => {
+        marginfi::state::price::OracleSetup::StakedWithPythPush
+            if !bank_config.is_pyth_push_migrated() =>
+        {
             let feed_id = bank_config.get_pyth_push_oracle_feed_id().unwrap();
             let oracle_addresses = vec![
                 PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id).0,
