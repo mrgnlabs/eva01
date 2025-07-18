@@ -611,7 +611,16 @@ pub fn check_asset_tags_matching(bank: &Bank, lending_account: &LendingAccount) 
 #[cfg(test)]
 mod tests {
 
+    use crate::utils::find_oracle_keys;
+
     use super::accessor;
+    use marginfi::{
+        constants::PYTH_SPONSORED_SHARD_ID,
+        state::{
+            marginfi_group::BankConfig,
+            price::{OracleSetup, PythPushOraclePriceFeed},
+        },
+    };
     use solana_program::pubkey::Pubkey;
 
     #[test]
@@ -648,5 +657,90 @@ mod tests {
         data[..32].copy_from_slice(&mint_bytes);
         let mint = accessor::mint(&data);
         assert_eq!(mint, Pubkey::new_from_array(mint_bytes));
+    }
+
+    #[test]
+    fn test_find_oracle_keys_pyth_pull() {
+        let mut config = BankConfig::default();
+        let mut keys = find_oracle_keys(&config);
+        assert_eq!(keys.len(), 0);
+
+        config.oracle_setup = OracleSetup::PythPushOracle;
+
+        let feed_id = Pubkey::new_unique();
+        config.oracle_keys[0] = feed_id;
+
+        keys = find_oracle_keys(&config);
+        assert_eq!(keys.len(), 1);
+
+        let feed_id_bytes: &[u8; 32] = feed_id.as_ref().try_into().unwrap();
+        assert_eq!(
+            keys[0],
+            PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id_bytes).0
+        );
+
+        // Migrate the bank and check again
+        config.config_flags = 1;
+
+        keys = find_oracle_keys(&config);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], feed_id);
+    }
+
+    #[test]
+    fn test_find_oracle_keys_staked_pyth_pull() {
+        let mut config = BankConfig::default();
+
+        config.oracle_setup = OracleSetup::StakedWithPythPush;
+
+        let feed_id = Pubkey::new_unique();
+        config.oracle_keys[0] = feed_id;
+        let spl_mint = Pubkey::new_unique();
+        config.oracle_keys[1] = spl_mint;
+        let spl_sol_pool = Pubkey::new_unique();
+        config.oracle_keys[2] = spl_sol_pool;
+
+        let mut keys = find_oracle_keys(&config);
+        assert_eq!(keys.len(), 3);
+
+        let feed_id_bytes: &[u8; 32] = feed_id.as_ref().try_into().unwrap();
+        assert_eq!(
+            keys[0],
+            PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id_bytes).0
+        );
+        assert_eq!(keys[1], spl_mint);
+        assert_eq!(keys[2], spl_sol_pool);
+
+        // Migrate the bank and check again
+        config.config_flags = 1;
+
+        keys = find_oracle_keys(&config);
+        assert_eq!(keys.len(), 3);
+        assert_eq!(keys[0], feed_id);
+        assert_eq!(keys[1], spl_mint);
+        assert_eq!(keys[2], spl_sol_pool);
+    }
+
+    #[test]
+    fn test_find_oracle_keys_swb() {
+        let mut config = BankConfig::default();
+        let mut keys = find_oracle_keys(&config);
+        assert_eq!(keys.len(), 0);
+
+        config.oracle_setup = OracleSetup::SwitchboardPull;
+
+        let feed_id = Pubkey::new_unique();
+        config.oracle_keys[0] = feed_id;
+
+        keys = find_oracle_keys(&config);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], feed_id);
+
+        // "Migrate" (no-op for Swb oracles) the bank and check again
+        config.config_flags = 1;
+
+        keys = find_oracle_keys(&config);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], feed_id);
     }
 }

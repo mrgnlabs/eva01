@@ -34,7 +34,7 @@ use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig}
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::ReadableAccount, signature::Keypair, transaction::VersionedTransaction};
 use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
-use std::{cmp::min, collections::HashSet, sync::Arc, thread, time::Duration, u32};
+use std::{cmp::min, collections::HashSet, sync::Arc, thread, time::Duration};
 use tokio::runtime::{Builder, Runtime};
 
 const MIN_LIQUIDATIONS_COUNT: u64 = 10;
