@@ -26,9 +26,11 @@ impl<T: OracleWrapperTrait> TokenAccountWrapper<T> {
                 .ok_or(anyhow::anyhow!("Division failed"))?
         };
 
-        let price = self
-            .oracle_wrapper
-            .get_price_of_type(marginfi::state::price::OraclePriceType::RealTime, None)?;
+        let price = self.oracle_wrapper.get_price_of_type(
+            marginfi::state::price::OraclePriceType::RealTime,
+            None,
+            self.bank_wrapper.bank.config.oracle_max_confidence,
+        )?;
 
         Ok(ui_amount * price)
     }

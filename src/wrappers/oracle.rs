@@ -23,6 +23,7 @@ pub trait OracleWrapperTrait {
         &self,
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
+        oracle_max_confidence: u32,
     ) -> anyhow::Result<I80F48>;
     fn get_address(&self) -> Pubkey;
 }
@@ -44,10 +45,11 @@ impl OracleWrapperTrait for OracleWrapper {
         &self,
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
+        oracle_max_confidence: u32,
     ) -> anyhow::Result<I80F48> {
         Ok(self
             .price_adapter
-            .get_price_of_type(oracle_type, price_bias)?)
+            .get_price_of_type(oracle_type, price_bias, oracle_max_confidence)?)
     }
 
     fn get_address(&self) -> Pubkey {
@@ -264,6 +266,7 @@ pub mod test_utils {
             &self,
             _: OraclePriceType,
             price_bias: Option<PriceBias>,
+            _: u32,
         ) -> anyhow::Result<I80F48> {
             match price_bias {
                 Some(PriceBias::Low) => Ok(I80F48::from_num(self.price - self.bias)),
@@ -306,19 +309,19 @@ mod tests {
 
         assert_eq!(
             oracle
-                .get_price_of_type(OraclePriceType::RealTime, None)
+                .get_price_of_type(OraclePriceType::RealTime, None, 0)
                 .unwrap(),
             I80F48::from_num(42.0)
         );
         assert_eq!(
             oracle
-                .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low))
+                .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low), 1)
                 .unwrap(),
             I80F48::from_num(37.0)
         );
         assert_eq!(
             oracle
-                .get_price_of_type(OraclePriceType::RealTime, Some(PriceBias::High))
+                .get_price_of_type(OraclePriceType::RealTime, Some(PriceBias::High), 2)
                 .unwrap(),
             I80F48::from_num(47.0)
         );

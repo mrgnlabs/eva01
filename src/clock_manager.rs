@@ -2,6 +2,7 @@ use bincode::deserialize;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::clock::Clock;
 use solana_sdk::sysvar::{self};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,9 +34,9 @@ impl ClockManager {
         })
     }
 
-    pub fn start(&mut self) {
+    pub fn start(&mut self, stop_liquidator: Arc<AtomicBool>) {
         thread_info!("Starting the ClockManager loop.");
-        loop {
+        while !stop_liquidator.load(Ordering::Relaxed) {
             std::thread::sleep(self.refresh_interval);
             thread_debug!("Updating the Solana Clock...");
             match fetch_clock(&self.rpc_client) {
