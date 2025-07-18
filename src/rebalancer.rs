@@ -34,7 +34,7 @@ use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig}
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::ReadableAccount, signature::Keypair, transaction::VersionedTransaction};
 use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
-use std::{cmp::min, collections::HashSet, sync::Arc, thread, time::Duration};
+use std::{cmp::min, collections::HashSet, sync::Arc, thread, time::Duration, u32};
 use tokio::runtime::{Builder, Runtime};
 
 const MIN_LIQUIDATIONS_COUNT: u64 = 10;
@@ -708,7 +708,7 @@ impl Rebalancer {
         let price = oracle_wrapper.get_price_of_type(
             marginfi::state::price::OraclePriceType::RealTime,
             price_bias,
-            bank_wrapper.bank.config.oracle_max_confidence,
+            u32::MAX,
         )?;
 
         let amount_ui = value / price;
