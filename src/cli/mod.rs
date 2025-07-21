@@ -1,6 +1,9 @@
 use std::{
     collections::HashSet,
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+    },
     thread::{self, sleep},
     time::Duration,
 };
@@ -21,6 +24,9 @@ pub mod entrypoints;
 
 /// A wizard-like setup menu for creating the liquidator configuration
 pub mod setup;
+
+const PROD_MARGINFI_ID: Pubkey =
+    Pubkey::from_str_const("MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA");
 
 /// Main entrypoint for Eva
 pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
@@ -62,6 +68,7 @@ pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
             last_group,
             Arc::clone(&preferred_mints),
             stop.clone(),
+            true,
         );
     }
 
@@ -72,21 +79,23 @@ pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         let mut active_groups = blacklist.into_iter().collect::<HashSet<Pubkey>>();
 
         let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
-        loop {
-            let marginfi_groups =
-                if let Some(api_key) = config.general_config.marginfi_api_key.as_ref() {
-                    get_active_arena_pools(
-                        config.general_config.marginfi_api_url.as_ref().unwrap(),
-                        api_key,
-                        config.general_config.marginfi_api_arena_threshold.unwrap(),
-                    )?
-                } else {
-                    marginfi_groups_by_program(
-                        &rpc_client,
-                        config.general_config.marginfi_program_id,
-                        true,
-                    )?
-                };
+        while !stop.load(Ordering::Relaxed) {
+            let marginfi_groups = if config.general_config.marginfi_api_key.is_some()
+                && config.general_config.marginfi_program_id == PROD_MARGINFI_ID
+            {
+                // The API currently returns active pools only for the production program.
+                get_active_arena_pools(
+                    config.general_config.marginfi_api_url.as_ref().unwrap(),
+                    config.general_config.marginfi_api_key.as_ref().unwrap(),
+                    config.general_config.marginfi_api_arena_threshold.unwrap(),
+                )?
+            } else {
+                marginfi_groups_by_program(
+                    &rpc_client,
+                    config.general_config.marginfi_program_id,
+                    true,
+                )?
+            };
 
             for group in marginfi_groups {
                 if active_groups.contains(&group) {
@@ -117,7 +126,8 @@ fn start_liquidator_in_separate_thread(
 ) {
     let config = config.clone();
     thread::spawn(move || {
-        if let Err(e) = entrypoints::run_liquidator(config, group, preferred_mints, stop_liquidator)
+        if let Err(e) =
+            entrypoints::run_liquidator(config, group, preferred_mints, stop_liquidator, false)
         {
             error!("Liquidator for group {:?} failed: {:?}", group, e);
             panic!("Fatal error in Liquidator!");

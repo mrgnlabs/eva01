@@ -75,14 +75,16 @@ impl Liquidator {
         })
     }
 
-    pub fn start(&mut self) -> Result<()> {
+    pub fn start(&mut self, run_initial_rebalancing: bool) -> Result<()> {
         // Fund the liquidator account, if needed
         if !self.liquidator_account.has_funds()? {
             self.rebalancer.fund_liquidator_account()?;
         }
 
         // Initial rebalancing
-        self.rebalancer.run(true)?;
+        if run_initial_rebalancing {
+            self.rebalancer.run(true)?;
+        }
 
         thread_info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
@@ -297,12 +299,19 @@ impl Liquidator {
 
         let asset_weight: I80F48 = bank.bank.config.asset_weight_init.into();
         let liab_weight: I80F48 = bank.bank.config.asset_weight_init.into();
+        let oracle_max_confidence = bank.bank.config.oracle_max_confidence;
 
-        let lower_price = oracle_wrapper
-            .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low))?;
+        let lower_price = oracle_wrapper.get_price_of_type(
+            OraclePriceType::TimeWeighted,
+            Some(PriceBias::Low),
+            oracle_max_confidence,
+        )?;
 
-        let higher_price = oracle_wrapper
-            .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::High))?;
+        let higher_price = oracle_wrapper.get_price_of_type(
+            OraclePriceType::TimeWeighted,
+            Some(PriceBias::High),
+            oracle_max_confidence,
+        )?;
 
         let token_decimals = bank.bank.mint_decimals as usize;
 
