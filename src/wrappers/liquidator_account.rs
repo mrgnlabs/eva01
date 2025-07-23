@@ -39,6 +39,10 @@ pub struct LiquidationError {
 }
 
 impl LiquidationError {
+    pub fn new(error: anyhow::Error, keys: Vec<Pubkey>) -> Self {
+        Self { error, keys }
+    }
+
     pub fn from_anyhow_error(error: anyhow::Error) -> Self {
         Self {
             error,
@@ -179,6 +183,12 @@ impl LiquidatorAccount {
             .map_err(LiquidationError::from_anyhow_error)?;
         let asset_oracle_wrapper = OracleWrapper::build(&self.cache, asset_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
+        if asset_oracle_wrapper.has_simulated_price() {
+            return Err(LiquidationError::new(
+                anyhow!("The Asset bank {} price is simulated", asset_bank),
+                vec![asset_oracle_wrapper.address],
+            ));
+        }
 
         let liab_bank_wrapper = self
             .cache
@@ -187,6 +197,12 @@ impl LiquidatorAccount {
             .map_err(LiquidationError::from_anyhow_error)?;
         let liab_oracle_wrapper = OracleWrapper::build(&self.cache, liab_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
+        if liab_oracle_wrapper.has_simulated_price() {
+            return Err(LiquidationError::new(
+                anyhow!("The Liability bank {} price is simulated", asset_bank),
+                vec![liab_oracle_wrapper.address],
+            ));
+        }
 
         let signer_pk = self.signer.pubkey();
         let liab_mint = liab_bank_wrapper.bank.mint;

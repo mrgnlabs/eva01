@@ -93,6 +93,10 @@ impl Liquidator {
                 thread_info!("Running the Liquidation process...");
                 self.run_liquidation.store(false, Ordering::Relaxed);
 
+                if let Err(err) = self.swb_cranker.simulate_stale_prices(&self.cache) {
+                    thread_error!("Failed to simulate stale Swb prices: {}", err);
+                }
+
                 if let Ok(mut accounts) = self.evaluate_all_accounts() {
                     // Accounts are sorted from the highest profit to the lowest
                     accounts.sort_by(|a, b| a.profit.cmp(&b.profit));

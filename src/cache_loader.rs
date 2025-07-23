@@ -222,7 +222,12 @@ impl CacheLoader {
     fn load_oracles(&self, cache: &mut Cache) -> anyhow::Result<()> {
         thread_info!("Loading Oracles...");
 
-        let oracle_addresses = cache.banks.get_oracles().into_iter().collect::<Vec<_>>();
+        let oracle_addresses = cache
+            .banks
+            .get_oracle_configs(None)
+            .into_iter()
+            .flat_map(|bank_oracle_data| bank_oracle_data.oracle_addresses)
+            .collect::<Vec<Pubkey>>();
         let oracle_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
             &oracle_addresses,
