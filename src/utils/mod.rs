@@ -341,7 +341,7 @@ pub fn calc_weighted_bank_assets(
         Some(PriceBias::Low)
     };
 
-    let lower_price = oracle_wrapper.get_price_of_type(
+    let lower_price = oracle_wrapper.get_actual_price_of_type(
         requirement_type.get_oracle_price_type(),
         price_bias,
         bank.config.oracle_max_confidence,
@@ -406,7 +406,7 @@ pub fn calc_weighted_bank_liabs(
         Some(PriceBias::High)
     };
 
-    let higher_price = oracle_wrapper.get_price_of_type(
+    let higher_price = oracle_wrapper.get_actual_price_of_type(
         requirement_type.get_oracle_price_type(),
         price_bias,
         bank.config.oracle_max_confidence,

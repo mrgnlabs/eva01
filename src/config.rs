@@ -1,6 +1,6 @@
 use crate::geyser::GeyserServiceConfig;
 use fixed::types::I80F48;
-use solana_sdk::pubkey::Pubkey;
+use solana_sdk::{genesis_config::ClusterType, pubkey::Pubkey};
 use std::str::FromStr;
 
 #[derive(Clone, Debug)]
@@ -13,6 +13,12 @@ pub struct Eva01Config {
 impl Eva01Config {
     pub fn new() -> anyhow::Result<Self> {
         //General configuration
+
+        let cluster_type: ClusterType = std::env::var("CLUSTER_TYPE")
+            .expect("CLUSTER_TYPE environment variable is not set")
+            .parse()
+            .expect("Invalid CLUSTER_TYPE");
+
         let rpc_url = std::env::var("RPC_URL").expect("RPC_URL environment variable is not set");
 
         let yellowstone_endpoint = std::env::var("YELLOWSTONE_ENDPOINT")
@@ -60,6 +66,20 @@ impl Eva01Config {
             .parse()
             .expect("Invalid SOLANA_CLOCK_REFRESH_INTERVAL number");
 
+        let swb_program_id = Pubkey::from_str(
+            &std::env::var("SWB_PROGRAM_ID")
+                .expect("SWB_PROGRAM_ID environment variable is not set"),
+        )
+        .expect("Invalid SWB_PROGRAM_ID Pubkey");
+
+        let swb_crossbar_url = std::env::var("SWB_CROSSBAR_URL")
+            .expect("SWB_CROSSBAR_URL environment variable is not set");
+
+        let swb_crossbar_verbose: bool = std::env::var("SWB_CROSSBAR_VERBOSE")
+            .unwrap_or("false".to_string())
+            .parse()
+            .expect("Invalid SWB_CROSSBAR_VERBOSE boolean");
+
         let min_profit: f64 = std::env::var("MIN_PROFIT")
             .expect("MIN_PROFIT environment variable is not set")
             .parse()
@@ -71,6 +91,7 @@ impl Eva01Config {
             .expect("Invalid HEALTHCHECK_PORT number");
 
         let general_config = GeneralConfig {
+            cluster_type,
             rpc_url,
             yellowstone_endpoint,
             yellowstone_x_token,
@@ -85,6 +106,9 @@ impl Eva01Config {
             marginfi_groups_blacklist,
             address_lookup_tables,
             solana_clock_refresh_interval,
+            swb_program_id,
+            swb_crossbar_url,
+            swb_crossbar_verbose,
             min_profit,
             healthcheck_port,
         };
@@ -149,6 +173,7 @@ impl std::fmt::Display for Eva01Config {
 /// General config that can be shared by liquidator, rebalancer and geyser
 #[derive(Debug, Clone)]
 pub struct GeneralConfig {
+    pub cluster_type: ClusterType,
     pub rpc_url: String,
     pub yellowstone_endpoint: String,
     pub yellowstone_x_token: Option<String>,
@@ -163,6 +188,9 @@ pub struct GeneralConfig {
     pub marginfi_groups_blacklist: Vec<Pubkey>,
     pub address_lookup_tables: Vec<Pubkey>,
     pub solana_clock_refresh_interval: u64,
+    pub swb_program_id: Pubkey,
+    pub swb_crossbar_url: String,
+    pub swb_crossbar_verbose: bool,
     pub min_profit: f64,
     pub healthcheck_port: u16,
 }
@@ -310,76 +338,29 @@ mod tests {
         env::remove_var(key);
     }
 
-    fn setup_general_env() -> (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    ) {
+    fn setup_general_env() {
+        set_env("CLUSTER_TYPE", "testnet");
+        set_env("RPC_URL", "http://dummy:1234");
+        set_env("YELLOWSTONE_ENDPOINT", "http://dummy:1234");
+        set_env("YELLOWSTONE_X_TOKEN", "token");
         let keypair = serde_json::to_string(&Keypair::new().to_bytes().to_vec()).unwrap();
-
-        let rpc_url = "http://dummy:1234";
-        let yellowstone_endpoint = "http://dummy:1234";
-        let yellowstone_x_token = "token";
-        let keypair = keypair;
-        let compute_unit_price_micro_lamports = "1000";
-        let compute_unit_limit = "200000";
-        let marginfi_program_id = Pubkey::new_unique().to_string();
-        let marginfi_groups_whitelist = Pubkey::new_unique().to_string();
-        let marginfi_groups_blacklist = "";
-        let address_lookup_tables = Pubkey::new_unique().to_string();
-        let solana_clock_refresh_interval = "1000";
-        let min_profit = "0.01";
-        let isolated_banks = "true";
-        let healthcheck_port = "1234";
-
-        set_env("RPC_URL", rpc_url);
-        set_env("YELLOWSTONE_ENDPOINT", yellowstone_endpoint);
-        set_env("YELLOWSTONE_X_TOKEN", yellowstone_x_token);
         set_env("WALLET_KEYPAIR", &keypair);
+        set_env("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS", "1000");
+        set_env("COMPUTE_UNIT_LIMIT", "200000");
+        set_env("MARGINFI_PROGRAM_ID", &Pubkey::new_unique().to_string());
         set_env(
-            "COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
-            compute_unit_price_micro_lamports,
+            "MARGINFI_GROUPS_WHITELIST",
+            &Pubkey::new_unique().to_string(),
         );
-        set_env("COMPUTE_UNIT_LIMIT", compute_unit_limit);
-        set_env("MARGINFI_PROGRAM_ID", &marginfi_program_id);
-        set_env("MARGINFI_GROUPS_WHITELIST", &marginfi_groups_whitelist);
-        set_env("MARGINFI_GROUPS_BLACKLIST", &marginfi_groups_blacklist);
-        set_env("ADDRESS_LOOKUP_TABLES", &address_lookup_tables);
-        set_env(
-            "SOLANA_CLOCK_REFRESH_INTERVAL",
-            solana_clock_refresh_interval,
-        );
-        set_env("MIN_PROFIT", min_profit);
-        set_env("ISOLATED_BANKS", isolated_banks);
-        set_env("HEALTHCHECK_PORT", healthcheck_port);
-
-        (
-            keypair,
-            rpc_url.to_string(),
-            yellowstone_endpoint.to_string(),
-            yellowstone_x_token.to_string(),
-            compute_unit_price_micro_lamports.to_string(),
-            compute_unit_limit.to_string(),
-            marginfi_program_id.to_string(),
-            marginfi_groups_whitelist.to_string(),
-            marginfi_groups_blacklist.to_string(),
-            address_lookup_tables.to_string(),
-            solana_clock_refresh_interval.to_string(),
-            min_profit.to_string(),
-            isolated_banks.to_string(),
-            healthcheck_port.to_string(),
-        )
+        set_env("MARGINFI_GROUPS_BLACKLIST", "");
+        set_env("ADDRESS_LOOKUP_TABLES", &Pubkey::new_unique().to_string());
+        set_env("SOLANA_CLOCK_REFRESH_INTERVAL", "1000");
+        set_env("MIN_PROFIT", "0.01");
+        set_env("ISOLATED_BANKS", "true");
+        set_env("HEALTHCHECK_PORT", "1234");
+        set_env("SWB_PROGRAM_ID", &Pubkey::new_unique().to_string());
+        set_env("SWB_CROSSBAR_URL", "http://dummy/swb");
+        set_env("SWB_CROSSBAR_VERBOSE", "false");
     }
 
     fn setup_rebalancer_env() {
@@ -425,8 +406,9 @@ mod tests {
     #[serial]
     fn test_general_config_validate_whitelist_only() {
         let mut config = GeneralConfig {
-            rpc_url: "".to_string(),
-            yellowstone_endpoint: "".to_string(),
+            cluster_type: ClusterType::Development,
+            rpc_url: "http://dummy/rpc".to_string(),
+            yellowstone_endpoint: "http://dummy/yellowstone".to_string(),
             yellowstone_x_token: None,
             wallet_keypair: Vec::<u8>::new(),
             compute_unit_price_micro_lamports: 0,
@@ -438,7 +420,10 @@ mod tests {
             marginfi_groups_whitelist: vec![Pubkey::default()],
             marginfi_groups_blacklist: vec![],
             address_lookup_tables: vec![],
+            swb_program_id: Pubkey::new_unique(),
             solana_clock_refresh_interval: 0,
+            swb_crossbar_url: "http://dummy/swb".to_string(),
+            swb_crossbar_verbose: false,
             min_profit: 0.01,
             healthcheck_port: 0,
         };
@@ -453,6 +438,7 @@ mod tests {
     #[serial]
     fn test_general_config_validate_both_set() {
         let config = GeneralConfig {
+            cluster_type: ClusterType::Development,
             rpc_url: "".to_string(),
             yellowstone_endpoint: "".to_string(),
             yellowstone_x_token: None,
@@ -467,6 +453,9 @@ mod tests {
             marginfi_groups_blacklist: vec![Pubkey::default()],
             address_lookup_tables: vec![],
             solana_clock_refresh_interval: 0,
+            swb_program_id: Pubkey::new_unique(),
+            swb_crossbar_url: "http://dummy/swb".to_string(),
+            swb_crossbar_verbose: false,
             min_profit: 0.01,
             healthcheck_port: 0,
         };
@@ -477,6 +466,7 @@ mod tests {
     #[serial]
     fn test_general_config_validate_none_set() {
         let config = GeneralConfig {
+            cluster_type: ClusterType::Development,
             rpc_url: "".to_string(),
             yellowstone_endpoint: "".to_string(),
             yellowstone_x_token: None,
@@ -491,6 +481,9 @@ mod tests {
             marginfi_groups_blacklist: vec![],
             address_lookup_tables: vec![],
             solana_clock_refresh_interval: 0,
+            swb_program_id: Pubkey::new_unique(),
+            swb_crossbar_url: "http://dummy/swb".to_string(),
+            swb_crossbar_verbose: false,
             min_profit: 0.01,
             healthcheck_port: 0,
         };

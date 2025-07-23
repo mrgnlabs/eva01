@@ -13,6 +13,11 @@ pub struct BankWrapper {
     pub bank: Bank,
 }
 
+pub struct BankOracleConfig {
+    pub oracle_addresses: Vec<Pubkey>,
+    pub oracle_max_age: u16,
+}
+
 impl BankWrapper {
     pub fn new(address: Pubkey, bank: Bank) -> Self {
         Self { address, bank }

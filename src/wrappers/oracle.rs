@@ -15,11 +15,34 @@ use crate::{
 };
 
 pub trait OracleWrapperTrait {
-    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self;
+    fn new(
+        address: Pubkey,
+        price_adapter: OraclePriceFeedAdapter,
+        simulated_price: Option<I80F48>,
+    ) -> Self;
     fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self>
     where
         Self: Sized;
+
+    fn get_simulated_price(&self) -> Option<I80F48>;
+
+    fn has_simulated_price(&self) -> bool {
+        self.get_simulated_price().is_some()
+    }
+
     fn get_price_of_type(
+        &self,
+        oracle_type: OraclePriceType,
+        price_bias: Option<PriceBias>,
+        oracle_max_confidence: u32,
+    ) -> anyhow::Result<I80F48> {
+        match self.get_simulated_price() {
+            Some(price) => Ok(price),
+            None => self.get_actual_price_of_type(oracle_type, price_bias, oracle_max_confidence),
+        }
+    }
+
+    fn get_actual_price_of_type(
         &self,
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
@@ -32,16 +55,27 @@ pub trait OracleWrapperTrait {
 pub struct OracleWrapper {
     pub address: Pubkey,
     pub price_adapter: OraclePriceFeedAdapter,
+    pub simulated_price: Option<I80F48>,
 }
 
 impl OracleWrapperTrait for OracleWrapper {
-    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
+    fn new(
+        address: Pubkey,
+        price_adapter: OraclePriceFeedAdapter,
+        simulated_price: Option<I80F48>,
+    ) -> Self {
         Self {
             address,
             price_adapter,
+            simulated_price,
         }
     }
-    fn get_price_of_type(
+
+    fn get_simulated_price(&self) -> Option<I80F48> {
+        self.simulated_price
+    }
+
+    fn get_actual_price_of_type(
         &self,
         oracle_type: OraclePriceType,
         price_bias: Option<PriceBias>,
@@ -55,6 +89,7 @@ impl OracleWrapperTrait for OracleWrapper {
     fn get_address(&self) -> Pubkey {
         self.address
     }
+
     fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self> {
         let bank_wrapper = cache.banks.try_get_bank(bank_address)?;
         let oracle_addresses = find_oracle_keys(&bank_wrapper.bank.config);
@@ -75,7 +110,12 @@ impl OracleWrapperTrait for OracleWrapper {
                                 OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
                                     feed: Box::new((&swb_feed).into()),
                                 });
-                            let oracle_wrapper = Self::new(oracle_address, price_adapter);
+                            let simulated_price = cache
+                                .oracles
+                                .try_get_simulated_price(&oracle_address)?
+                                .and_then(I80F48::checked_from_num);
+                            let oracle_wrapper =
+                                Self::new(oracle_address, price_adapter, simulated_price);
                             result = Some(oracle_wrapper);
                             break;
                         }
@@ -102,7 +142,7 @@ impl OracleWrapperTrait for OracleWrapper {
                         &clock_manager::get_clock(&cache.clock)?,
                     ) {
                         Result::Ok(price_adapter) => {
-                            let oracle_wrapper = Self::new(oracle_address, price_adapter);
+                            let oracle_wrapper = Self::new(oracle_address, price_adapter, None);
                             result = Some(oracle_wrapper);
                             break;
                         }
@@ -151,7 +191,7 @@ impl OracleWrapperTrait for OracleWrapper {
                     &clock_manager::get_clock(&cache.clock)?,
                 )?;
 
-                let oracle_wrapper = Self::new(bank_oracle_address, adapter);
+                let oracle_wrapper = Self::new(bank_oracle_address, adapter, None);
                 result = Some(oracle_wrapper);
             }
             _ => {
@@ -237,7 +277,7 @@ pub mod test_utils {
     }
 
     impl OracleWrapperTrait for TestOracleWrapper {
-        fn new(_: Pubkey, _: OraclePriceFeedAdapter) -> Self {
+        fn new(_: Pubkey, _: OraclePriceFeedAdapter, _: Option<I80F48>) -> Self {
             panic!("The new method is not implemented for TestOracleWrapper.");
         }
 
@@ -262,7 +302,11 @@ pub mod test_utils {
             }
         }
 
-        fn get_price_of_type(
+        fn get_simulated_price(&self) -> Option<I80F48> {
+            None
+        }
+
+        fn get_actual_price_of_type(
             &self,
             _: OraclePriceType,
             price_bias: Option<PriceBias>,
@@ -309,19 +353,19 @@ mod tests {
 
         assert_eq!(
             oracle
-                .get_price_of_type(OraclePriceType::RealTime, None, 0)
+                .get_actual_price_of_type(OraclePriceType::RealTime, None, 0)
                 .unwrap(),
             I80F48::from_num(42.0)
         );
         assert_eq!(
             oracle
-                .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low), 1)
+                .get_actual_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low), 1)
                 .unwrap(),
             I80F48::from_num(37.0)
         );
         assert_eq!(
             oracle
-                .get_price_of_type(OraclePriceType::RealTime, Some(PriceBias::High), 2)
+                .get_actual_price_of_type(OraclePriceType::RealTime, Some(PriceBias::High), 2)
                 .unwrap(),
             I80F48::from_num(47.0)
         );
@@ -353,5 +397,29 @@ mod tests {
             TestOracleWrapper::build(&cache, &usdc_bank_wrapper.address).unwrap();
 
         assert_eq!(oracle_wrapper.get_address(), oracle_key);
+    }
+
+    #[test]
+    fn test_test_oracle_wrapper_biases() {
+        let oracle = TestOracleWrapper::new(Pubkey::new_unique(), 50.0, 7.0);
+
+        assert_eq!(
+            oracle
+                .get_actual_price_of_type(OraclePriceType::RealTime, None, 0)
+                .unwrap(),
+            I80F48::from_num(50.0)
+        );
+        assert_eq!(
+            oracle
+                .get_actual_price_of_type(OraclePriceType::RealTime, Some(PriceBias::Low), 0)
+                .unwrap(),
+            I80F48::from_num(43.0)
+        );
+        assert_eq!(
+            oracle
+                .get_actual_price_of_type(OraclePriceType::RealTime, Some(PriceBias::High), 0)
+                .unwrap(),
+            I80F48::from_num(57.0)
+        );
     }
 }

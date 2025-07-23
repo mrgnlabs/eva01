@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Result};
+use fixed::types::I80F48;
 use solana_sdk::{account::Account, pubkey::Pubkey};
 use std::{collections::HashMap, sync::RwLock};
 
 #[derive(Default)]
 pub struct OraclesCache {
     accounts: RwLock<HashMap<Pubkey, Account>>,
+    simulated_prices: RwLock<HashMap<Pubkey, f64>>,
 }
 
 impl OraclesCache {
@@ -13,6 +15,16 @@ impl OraclesCache {
             .write()
             .map_err(|e| anyhow!("Failed to lock the Oracle accounts map for insert! {}", e))?
             .insert(address, account);
+
+        self.simulated_prices
+            .write()
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to lock the Oracle simulated prices map for insert! {}",
+                    e
+                )
+            })?
+            .remove(&address);
 
         Ok(())
     }
@@ -27,6 +39,32 @@ impl OraclesCache {
                 )
             })?
             .insert(*address, account);
+
+        self.simulated_prices
+            .write()
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to lock the Oracle simulated prices map for insert! {}",
+                    e
+                )
+            })?
+            .remove(address);
+        Ok(())
+    }
+
+    pub fn try_update_simulated_prices(
+        &self,
+        simulated_prices: HashMap<Pubkey, f64>,
+    ) -> Result<()> {
+        self.simulated_prices
+            .write()
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to lock the Oracle simulated prices map for update! {}",
+                    e
+                )
+            })?
+            .extend(simulated_prices);
         Ok(())
     }
 
@@ -45,6 +83,20 @@ impl OraclesCache {
                 &address
             ))
             .cloned()
+    }
+
+    pub fn try_get_simulated_price(&self, address: &Pubkey) -> Result<Option<I80F48>> {
+        Ok(self
+            .simulated_prices
+            .read()
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to lock the Oracle simulated prices map for for search! {}",
+                    e
+                )
+            })?
+            .get(address)
+            .and_then(|price| I80F48::checked_from_num(*price)))
     }
 
     pub fn try_get_accounts(&self, addresses: &[Pubkey]) -> Result<Vec<(Pubkey, Account)>> {
@@ -149,5 +201,82 @@ mod tests {
         assert_eq!(addresses.len(), 2);
         assert!(addresses.contains(&address1));
         assert!(addresses.contains(&address2));
+    }
+
+    #[test]
+    fn test_try_update_simulated_prices_and_get_simulated_price() {
+        let cache = OraclesCache::default();
+        let address1 = Pubkey::new_unique();
+        let address2 = Pubkey::new_unique();
+
+        let mut simulated_prices = HashMap::new();
+        simulated_prices.insert(address1, 123.45_f64);
+        simulated_prices.insert(address2, 67.89_f64);
+
+        cache.try_update_simulated_prices(simulated_prices.clone()).unwrap();
+
+        let price1 = cache.try_get_simulated_price(&address1).unwrap();
+        let price2 = cache.try_get_simulated_price(&address2).unwrap();
+
+        assert_eq!(price1.unwrap().to_num::<f64>(), 123.45_f64);
+        assert_eq!(price2.unwrap().to_num::<f64>(), 67.89_f64);
+    }
+
+    #[test]
+    fn test_try_update_simulated_prices_overwrite() {
+        let cache = OraclesCache::default();
+        let address = Pubkey::new_unique();
+
+        let mut simulated_prices = HashMap::new();
+        simulated_prices.insert(address, 10.0_f64);
+        cache.try_update_simulated_prices(simulated_prices).unwrap();
+
+        let mut new_prices = HashMap::new();
+        new_prices.insert(address, 20.0_f64);
+        cache.try_update_simulated_prices(new_prices).unwrap();
+
+        let price = cache.try_get_simulated_price(&address).unwrap();
+        assert_eq!(price.unwrap().to_num::<f64>(), 20.0_f64);
+    }
+
+    #[test]
+    fn test_try_get_simulated_price_none() {
+        let cache = OraclesCache::default();
+        let address = Pubkey::new_unique();
+        let price = cache.try_get_simulated_price(&address).unwrap();
+        assert!(price.is_none());
+    }
+
+    #[test]
+    fn test_try_update_and_remove_simulated_price_on_account_update() {
+        let mut cache = OraclesCache::default();
+        let address = Pubkey::new_unique();
+
+        // Insert simulated price
+        let mut simulated_prices = HashMap::new();
+        simulated_prices.insert(address, 42.0_f64);
+        cache.try_update_simulated_prices(simulated_prices).unwrap();
+        assert!(cache.try_get_simulated_price(&address).unwrap().is_some());
+
+        // Insert account, which should remove simulated price
+        cache.try_insert(address, Account::default()).unwrap();
+        assert!(cache.try_get_simulated_price(&address).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_try_update_and_remove_simulated_price_on_account_update_existing() {
+        let mut cache = OraclesCache::default();
+        let address = Pubkey::new_unique();
+
+        cache.try_insert(address, Account::default()).unwrap();
+
+        let mut simulated_prices = HashMap::new();
+        simulated_prices.insert(address, 99.0_f64);
+        cache.try_update_simulated_prices(simulated_prices).unwrap();
+        assert!(cache.try_get_simulated_price(&address).unwrap().is_some());
+
+        // Update account, which should remove simulated price
+        cache.try_update(&address, Account::default()).unwrap();
+        assert!(cache.try_get_simulated_price(&address).unwrap().is_none());
     }
 }

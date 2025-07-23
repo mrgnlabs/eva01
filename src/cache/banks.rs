@@ -1,9 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use marginfi::state::marginfi_group::Bank;
+use marginfi::state::price::OracleSetup;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::{utils::find_oracle_keys, wrappers::bank::BankWrapper};
+use crate::{
+    utils::find_oracle_keys,
+    wrappers::bank::{BankOracleConfig, BankWrapper},
+};
 use anyhow::{anyhow, Result};
 #[derive(Default)]
 pub struct BanksCache {
@@ -29,10 +33,22 @@ impl BanksCache {
         self.try_get_bank(address).ok()
     }
 
-    pub fn get_oracles(&self) -> HashSet<Pubkey> {
+    pub fn get_oracle_configs(&self, oracle_type: Option<OracleSetup>) -> Vec<BankOracleConfig> {
+        let predicate = |bank: &BankWrapper| match oracle_type {
+            Some(ref t) => bank.bank.config.oracle_setup == *t,
+            None => true,
+        };
+
         self.banks
-            .iter()
-            .flat_map(|(_, bank)| find_oracle_keys(&bank.bank.config))
+            .values()
+            .filter(|bank| predicate(bank))
+            .map(|bank| {
+                let oracles = find_oracle_keys(&bank.bank.config);
+                BankOracleConfig {
+                    oracle_addresses: oracles,
+                    oracle_max_age: bank.bank.config.oracle_max_age,
+                }
+            })
             .collect()
     }
 
@@ -159,19 +175,6 @@ pub mod tests {
     }
 
     #[test]
-    fn test_get_oracles() {
-        let mut cache = BanksCache::default();
-        let bank_address = Pubkey::new_unique();
-        let bank = create_test_bank(Pubkey::new_unique());
-
-        cache.insert(bank_address, bank);
-        let oracles = cache.get_oracles();
-
-        assert_eq!(oracles.len(), 1);
-        assert_eq!(oracles.iter().next().unwrap(), &bank.config.oracle_keys[0]);
-    }
-
-    #[test]
     fn test_try_get_account_for_mint() {
         let mut cache = BanksCache::default();
         let bank_address = Pubkey::new_unique();
@@ -214,5 +217,88 @@ pub mod tests {
         cache.insert(bank_address, bank);
 
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_get_oracle_configs_with_and_without_filter() {
+        let mut cache = BanksCache::default();
+
+        let bank_address1 = Pubkey::new_unique();
+        let bank_address2 = Pubkey::new_unique();
+        let mint1 = Pubkey::new_unique();
+        let mint2 = Pubkey::new_unique();
+
+        // Bank 1: SwitchboardPull
+        let mut bank1 = create_test_bank(mint1);
+        bank1.config.oracle_setup = OracleSetup::SwitchboardPull;
+
+        // Bank 2: PythPushOracle
+        let mut bank2 = create_test_bank(mint2);
+        bank2.config.oracle_setup = OracleSetup::PythPushOracle;
+        cache.insert(bank_address1, bank1);
+        cache.insert(bank_address2, bank2);
+
+        // No filter: should return both configs
+        let configs = cache.get_oracle_configs(None);
+        assert_eq!(configs.len(), 2);
+
+        // Filter: SwitchboardPull
+        let configs_switchboard = cache.get_oracle_configs(Some(OracleSetup::SwitchboardPull));
+        assert_eq!(configs_switchboard.len(), 1);
+        assert_eq!(
+            configs_switchboard[0].oracle_addresses.len(),
+            bank1.config.oracle_keys.len()
+        );
+        assert_eq!(
+            configs_switchboard[0].oracle_max_age,
+            bank1.config.oracle_max_age
+        );
+
+        // Filter: PythPushOracle
+        let configs_pyth = cache.get_oracle_configs(Some(OracleSetup::PythPushOracle));
+        assert_eq!(configs_pyth.len(), 1);
+        assert_eq!(configs_pyth[0].oracle_max_age, bank2.config.oracle_max_age);
+
+        // Filter: Unused OracleSetup
+        let configs_none = cache.get_oracle_configs(Some(OracleSetup::None));
+        assert_eq!(configs_none.len(), 0);
+    }
+
+    #[test]
+    fn test_try_get_bank_returns_error_for_missing_bank() {
+        let cache = BanksCache::default();
+        let missing_address = Pubkey::new_unique();
+        let result = cache.try_get_bank(&missing_address);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_get_account_for_mint_returns_error_for_missing_mint() {
+        let cache = BanksCache::default();
+        let missing_mint = Pubkey::new_unique();
+        let result = cache.try_get_account_for_mint(&missing_mint);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_insert_overwrites_existing_bank() {
+        let mut cache = BanksCache::default();
+        let bank_address = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let bank1 = create_test_bank(mint);
+        let mut bank2 = create_test_bank(mint);
+        bank2.config.oracle_setup = OracleSetup::PythPushOracle;
+
+        cache.insert(bank_address, bank1);
+        let first = cache.get_bank(&bank_address).unwrap();
+
+        cache.insert(bank_address, bank2);
+        let second = cache.get_bank(&bank_address).unwrap();
+
+        assert_eq!(first.address, second.address);
+        assert_ne!(
+            first.bank.config.oracle_setup,
+            second.bank.config.oracle_setup
+        );
     }
 }

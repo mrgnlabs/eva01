@@ -57,6 +57,7 @@ indexmap = "2.9"
 tiny_http = "0.12"
 signal-hook = "0.3.18"
 ctrlc = "3.4.7"
+rust_decimal = "1.37"
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"

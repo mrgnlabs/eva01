@@ -1896,6 +1896,7 @@ dependencies = [
  "prometheus",
  "rayon",
  "reqwest 0.12.20",
+ "rust_decimal",
  "serde",
  "serde_json",
  "serial_test",

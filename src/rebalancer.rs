@@ -705,7 +705,7 @@ impl Rebalancer {
     ) -> anyhow::Result<I80F48> {
         let bank_wrapper = self.cache.banks.try_get_bank(bank_pk)?;
         let oracle_wrapper = OracleWrapper::build(&self.cache, bank_pk)?;
-        let price = oracle_wrapper.get_price_of_type(
+        let price = oracle_wrapper.get_actual_price_of_type(
             marginfi::state::price::OraclePriceType::RealTime,
             price_bias,
             u32::MAX,
