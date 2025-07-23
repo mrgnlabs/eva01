@@ -128,21 +128,6 @@ impl SwbCranker {
         Ok(())
     }
 
-    fn calculate_sim_price(mut numbers: Vec<f64>) -> Option<f64> {
-        if numbers.is_empty() {
-            return None;
-        }
-
-        numbers.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let mid = numbers.len() / 2;
-
-        if numbers.len() % 2 == 0 {
-            Some((numbers[mid - 1] + numbers[mid]) / 2.0)
-        } else {
-            Some(numbers[mid])
-        }
-    }
-
     fn find_stale_oracles(&self, cache: &Cache) -> Result<Vec<Pubkey>> {
         let clock = &clock_manager::get_clock(&cache.clock)?;
 
@@ -298,41 +283,5 @@ mod tests {
             kind: ClientErrorKind::Io(std::io::Error::new(std::io::ErrorKind::Other, "io error")),
         };
         assert!(!is_stale_swb_price_error(&err));
-    }
-
-    #[test]
-    fn test_calculate_sim_price_empty() {
-        let numbers: Vec<f64> = vec![];
-        assert_eq!(SwbCranker::calculate_sim_price(numbers), None);
-    }
-
-    #[test]
-    fn test_calculate_sim_price_single_element() {
-        let numbers = vec![42.0];
-        assert_eq!(SwbCranker::calculate_sim_price(numbers), Some(42.0));
-    }
-
-    #[test]
-    fn test_calculate_sim_price_odd_number_of_elements() {
-        let numbers = vec![3.0, 1.0, 2.0];
-        assert_eq!(SwbCranker::calculate_sim_price(numbers), Some(2.0));
-    }
-
-    #[test]
-    fn test_calculate_sim_price_even_number_of_elements() {
-        let numbers = vec![4.0, 2.0, 1.0, 3.0];
-        assert_eq!(SwbCranker::calculate_sim_price(numbers), Some(2.5));
-    }
-
-    #[test]
-    fn test_calculate_sim_price_with_negative_numbers() {
-        let numbers = vec![-1.0, -3.0, -2.0];
-        assert_eq!(SwbCranker::calculate_sim_price(numbers), Some(-2.0));
-    }
-
-    #[test]
-    fn test_calculate_sim_price_with_duplicates() {
-        let numbers = vec![1.0, 2.0, 2.0, 3.0];
-        assert_eq!(SwbCranker::calculate_sim_price(numbers), Some(2.0));
     }
 }
