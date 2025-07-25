@@ -74,6 +74,10 @@ pub fn run_liquidator(
 
     // Check if the preferred asset is in the cache. If not, make the first one the preferred asset.
     let mints = cache.mints.get_mints();
+    if mints.len() < 2 {
+        thread_info!("Ignoring the single-bank group: {:?}", marginfi_group_id);
+        return Ok(());
+    }
     if !mints
         .iter()
         .any(|mint| mint == &config.rebalancer_config.swap_mint)
