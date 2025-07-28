@@ -1,13 +1,18 @@
 #![allow(dead_code)]
 
-use crate::config::GeneralConfig;
-use anyhow::Result;
+use crate::{
+    cache::Cache, clock_manager, config::GeneralConfig, thread_debug, thread_info,
+    utils::load_swb_pull_account_from_bytes,
+};
+use anyhow::{anyhow, Result};
+use marginfi::state::price::OracleSetup;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
     rpc_config::RpcSendTransactionConfig,
 };
 use solana_sdk::{
     commitment_config::CommitmentConfig,
+    genesis_config::ClusterType,
     instruction::InstructionError,
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
@@ -15,22 +20,27 @@ use solana_sdk::{
     signer::Signer,
     transaction::{TransactionError, VersionedTransaction},
 };
-use std::str::FromStr;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
+use std::{collections::HashSet, str::FromStr};
 use switchboard_on_demand_client::{
-    FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
+    FetchUpdateManyParams, Gateway, PullFeed, PullFeedAccountData, QueueAccountData, SbContext,
 };
 use tokio::runtime::{Builder, Runtime};
 
 use solana_client::client_error::ClientError;
 use solana_client::client_error::ClientErrorKind;
+use switchboard_on_demand_client::CrossbarClient;
 
-//TODO: parametrize the Swb Program ID.
-pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
-pub const SWB_STALE_PRICE_ERROR_CODE: u32 = 6049;
+use rust_decimal::prelude::ToPrimitive;
+
+const SWB_STALE_PRICE_ERROR_CODE: u32 = 6049;
+const CHUNK_SIZE: usize = 20;
 
 struct ResetFlag {
     flag: Arc<AtomicBool>,
@@ -43,9 +53,11 @@ impl Drop for ResetFlag {
 }
 
 pub struct SwbCranker {
+    cluster_type: ClusterType,
     tokio_rt: Runtime,
     rpc_client: RpcClient,
     non_blocking_rpc_client: NonBlockingRpcClient,
+    crossbar_client: CrossbarClient,
     swb_gateway: Gateway,
     payer: Keypair,
 }
@@ -60,22 +72,98 @@ impl SwbCranker {
             .enable_all()
             .build()?;
 
+        let crossbar_client =
+            CrossbarClient::new(&config.swb_crossbar_url, config.swb_crossbar_verbose);
+
         let rpc_client = RpcClient::new(config.rpc_url.clone());
         let non_blocking_rpc_client = NonBlockingRpcClient::new(config.rpc_url.clone());
         let queue = tokio_rt.block_on(QueueAccountData::load(
             &non_blocking_rpc_client,
-            &Pubkey::from_str(SWB_PROGRAM_ID).unwrap(),
+            &config.swb_program_id,
         ))?;
         let swb_gateway =
             tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
 
         Ok(Self {
+            cluster_type: config.cluster_type,
             tokio_rt,
             rpc_client,
             non_blocking_rpc_client,
+            crossbar_client,
             swb_gateway,
             payer,
         })
+    }
+
+    pub fn simulate_stale_prices(&self, cache: &Cache) -> Result<()> {
+        thread_info!("Simulating stale Swb prices...");
+
+        let stale_oracles = self.find_stale_oracles(cache)?;
+
+        let mut sim_prices: HashMap<Pubkey, f64> = HashMap::new();
+        if !stale_oracles.is_empty() {
+            for chunk in stale_oracles.chunks(CHUNK_SIZE) {
+                let sim_responses = self.tokio_rt.block_on(
+                    self.crossbar_client
+                        .simulate_solana_feeds(self.cluster_type, chunk),
+                )?;
+                for sim_response in sim_responses {
+                    if let Some(price) = sim_response.result {
+                        sim_prices.insert(
+                            Pubkey::from_str(&sim_response.feed)?,
+                            price.to_f64().ok_or(anyhow!(
+                                "Failed to convert simulated price {} to f64 for the Swb feed {}",
+                                price,
+                                sim_response.feed
+                            ))?,
+                        );
+                    }
+                }
+            }
+        }
+
+        cache.oracles.try_update_simulated_prices(sim_prices)?;
+        thread_info!("Simulation for the stale Swb prices completed.");
+
+        Ok(())
+    }
+
+    fn find_stale_oracles(&self, cache: &Cache) -> Result<Vec<Pubkey>> {
+        let clock = &clock_manager::get_clock(&cache.clock)?;
+
+        let mut result: HashSet<Pubkey> = HashSet::new();
+        for oracle_data in cache
+            .banks
+            .get_oracle_configs(Some(OracleSetup::SwitchboardPull))
+            .iter()
+        {
+            let oracle_account = cache
+                .oracles
+                .try_get_account(&oracle_data.oracle_addresses[0])?;
+            let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
+            offsets_data.copy_from_slice(
+                &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
+            );
+            let feed = load_swb_pull_account_from_bytes(&offsets_data)?;
+
+            if clock
+                .unix_timestamp
+                .saturating_sub(feed.last_update_timestamp)
+                > oracle_data.oracle_max_age as i64
+            {
+                thread_debug!(
+                    "The Swb oracle {} is stale, last updated at {}",
+                    oracle_data.oracle_addresses[0],
+                    feed.last_update_timestamp
+                );
+
+                //                let feed_hash = hex::encode(feed.feed_hash);
+
+                result.insert(oracle_data.oracle_addresses[0]);
+            }
+        }
+
+        Ok(result.into_iter().collect())
     }
 
     pub fn crank_oracles(&self, swb_oracles: Vec<Pubkey>) -> Result<()> {
