@@ -417,7 +417,7 @@ impl Liquidator {
         let all = asset_weight_maint - liab_weight_maint * liquidation_discount;
 
         if all >= I80F48::ZERO {
-            thread_error!("Account {:?} has no liquidatable amount: {:?}, asset_weight_maint: {:?}, liab_weight_maint: {:?}", account.address, all, asset_weight_maint, liab_weight_maint);
+            thread_debug!("Account {:?} has no liquidatable amount: {:?}, asset_weight_maint: {:?}, liab_weight_maint: {:?}", account.address, all, asset_weight_maint, liab_weight_maint);
             return Ok((I80F48::ZERO, I80F48::ZERO));
         }
 
