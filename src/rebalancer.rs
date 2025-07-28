@@ -550,6 +550,12 @@ impl Rebalancer {
     }
 
     fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {
+        if input_mint == output_mint {
+            return Err(anyhow::anyhow!(
+                "Jupiter swap failed: input and output mints cannot be the same: {:?}",
+                input_mint
+            ));
+        }
         thread_info!("Jupiter swap: {} -> {}", input_mint, output_mint);
         let jup_swap_client = JupiterSwapApiClient::new(self.jup_swap_api_url.clone());
 
