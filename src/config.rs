@@ -196,9 +196,7 @@ impl std::fmt::Display for GeneralConfig {
         write!(
             f,
             "GeneralConfig:\n\
-                 - RPC URL: {}\n\
                  - Yellowstone Endpoint: {}\n\
-                 - Yellowstone X Token: {}\n\
                  - Compute Unit Price Micro Lamports: {}\n\
                  - Compute Unit Limit: {}\n\
                  - Minimun profit: {}$\n\
@@ -211,9 +209,7 @@ impl std::fmt::Display for GeneralConfig {
                  - Address Lookup Tables: {:?}\n\
                  - Solana Clock Refresh Interval: {}\n\
                     - Healthcheck Port: {}",
-            self.rpc_url,
             self.yellowstone_endpoint,
-            self.yellowstone_x_token.as_deref().unwrap_or("None"),
             self.compute_unit_price_micro_lamports,
             self.compute_unit_limit,
             self.min_profit,
