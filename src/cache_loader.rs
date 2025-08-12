@@ -14,7 +14,7 @@ use solana_sdk::{
     account::Account,
     address_lookup_table::{state::AddressLookupTable, AddressLookupTableAccount},
     bs58,
-    commitment_config::CommitmentConfig,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
     instruction::Instruction,
     pubkey::Pubkey,
     signature::Keypair,
@@ -379,6 +379,7 @@ impl CacheLoader {
                         CommitmentConfig::finalized(),
                         RpcSendTransactionConfig {
                             skip_preflight: false,
+                            preflight_commitment: Some(CommitmentLevel::Processed),
                             ..Default::default()
                         },
                     )?;
