@@ -93,6 +93,8 @@ impl SwbCranker {
         ))?;
 
         let blockhash = self.rpc_client.get_latest_blockhash()?;
+        // The new Triton endpoint is too fast and makes the crank fail with the "block is too new" error. :-)
+        std::thread::sleep(std::time::Duration::from_secs(2));
 
         let txn = VersionedTransaction::try_new(
             VersionedMessage::V0(v0::Message::try_compile(
