@@ -32,7 +32,10 @@ use marginfi::{
 };
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{account::ReadableAccount, signature::Keypair, transaction::VersionedTransaction};
+use solana_sdk::{
+    account::ReadableAccount, commitment_config::CommitmentLevel, signature::Keypair,
+    transaction::VersionedTransaction,
+};
 use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
 use std::{cmp::min, collections::HashSet, sync::Arc, thread, time::Duration};
 use tokio::runtime::{Builder, Runtime};
@@ -66,7 +69,10 @@ impl Rebalancer {
     ) -> anyhow::Result<Self> {
         let signer = Keypair::from_bytes(&config.general_config.wallet_keypair)?;
 
-        let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
+        let rpc_client = RpcClient::new_with_commitment(
+            &config.general_config.rpc_url,
+            CommitmentConfig::confirmed(),
+        );
 
         let swap_mint = config.rebalancer_config.swap_mint;
         let swap_mint_bank = cache
@@ -603,9 +609,10 @@ impl Rebalancer {
             .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
                 &tx,
-                CommitmentConfig::finalized(),
+                CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
+                    preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },
             )?;

@@ -60,7 +60,7 @@ ctrlc = "3.4.7"
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-tag = "mrgn-0.1.4-rc1"
+tag = "mrgn-0.1.4-rc3"
 features = ["mainnet-beta", "client", "no-entrypoint"]
 
 [dev-dependencies]

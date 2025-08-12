@@ -20,7 +20,7 @@ use crate::wrappers::oracle::OracleWrapperTrait;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     address_lookup_table::AddressLookupTableAccount,
-    commitment_config::CommitmentConfig,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
     message::{v0::Message, CompileError, VersionedMessage},
@@ -84,7 +84,8 @@ impl LiquidatorAccount {
         cache: Arc<Cache>,
     ) -> Result<Self> {
         let signer = Keypair::from_bytes(&config.wallet_keypair)?;
-        let rpc_client = RpcClient::new(config.rpc_url.clone());
+        let rpc_client =
+            RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
 
         let accounts = marginfi_account_by_authority(
             signer.pubkey(),
@@ -230,14 +231,9 @@ impl LiquidatorAccount {
             &self.liquidator_address,
             liquidator_observation_accounts
         );
-        if liquidator_swb_oracles.iter().any(|oracle| {
-            thread_warn!(
-                "Stale oracle found among liquidator observation accounts: {}",
-                oracle
-            );
-            stale_swb_oracles.contains(oracle)
-        }) {
-            thread_warn!("Skipping liquidation attempt...");
+
+        if contains_stale_oracles(stale_swb_oracles, &liquidator_swb_oracles) {
+            thread_warn!("Skipping liquidation attempt because liquidator has stale oracles.");
             return Ok(());
         }
 
@@ -256,14 +252,9 @@ impl LiquidatorAccount {
             liquidatee_account_address,
             liquidatee_observation_accounts
         );
-        if liquidatee_swb_oracles.iter().any(|oracle| {
-            thread_warn!(
-                "Stale oracle found among liquidatee observation accounts: {}",
-                oracle
-            );
-            stale_swb_oracles.contains(oracle)
-        }) {
-            thread_warn!("Skipping liquidation attempt...");
+
+        if contains_stale_oracles(stale_swb_oracles, &liquidatee_swb_oracles) {
+            thread_warn!("Skipping liquidation attempt because liquidatee has stale oracles.");
             return Ok(());
         }
 
@@ -335,6 +326,7 @@ impl LiquidatorAccount {
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
+                    preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },
             ) {
@@ -438,6 +430,7 @@ impl LiquidatorAccount {
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
+                    preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },
             )
@@ -490,6 +483,7 @@ impl LiquidatorAccount {
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
+                    preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },
             );
@@ -546,6 +540,7 @@ impl LiquidatorAccount {
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
+                    preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },
             );
@@ -556,5 +551,72 @@ impl LiquidatorAccount {
         );
 
         Ok(())
+    }
+}
+
+fn contains_stale_oracles(stale_oracles: &HashSet<Pubkey>, account_oracles: &[Pubkey]) -> bool {
+    if let Some(oracle) = account_oracles
+        .iter()
+        .find(|oracle| stale_oracles.contains(*oracle))
+    {
+        thread_warn!("Found stale oracle: {}.", oracle);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_contains_stale_oracles_with_stale() {
+        let stale_oracle = Pubkey::new_unique();
+        let mut stale_oracles = HashSet::new();
+        stale_oracles.insert(stale_oracle);
+        let account_oracles = vec![Pubkey::new_unique(), stale_oracle, Pubkey::new_unique()];
+
+        assert!(contains_stale_oracles(&stale_oracles, &account_oracles));
+    }
+
+    #[test]
+    fn test_contains_stale_oracles_without_stale() {
+        let stale_oracle = Pubkey::new_unique();
+        let mut stale_oracles = HashSet::new();
+        stale_oracles.insert(stale_oracle);
+        let account_oracles = vec![Pubkey::new_unique(), Pubkey::new_unique()];
+
+        assert!(!contains_stale_oracles(&stale_oracles, &account_oracles));
+    }
+
+    #[test]
+    fn test_contains_stale_oracles_empty_account_oracles() {
+        let stale_oracle = Pubkey::new_unique();
+        let mut stale_oracles = HashSet::new();
+        stale_oracles.insert(stale_oracle);
+        let account_oracles = vec![];
+
+        assert!(!contains_stale_oracles(&stale_oracles, &account_oracles));
+    }
+
+    #[test]
+    fn test_contains_stale_oracles_empty_stale_oracles() {
+        let account_oracles = vec![Pubkey::new_unique()];
+        let stale_oracles = HashSet::new();
+
+        assert!(!contains_stale_oracles(&stale_oracles, &account_oracles));
+    }
+
+    #[test]
+    fn test_contains_stale_oracles_multiple_stale() {
+        let stale1 = Pubkey::new_unique();
+        let stale2 = Pubkey::new_unique();
+        let mut stale_oracles = HashSet::new();
+        stale_oracles.insert(stale1);
+        stale_oracles.insert(stale2);
+        let account_oracles = vec![stale2, Pubkey::new_unique()];
+
+        assert!(contains_stale_oracles(&stale_oracles, &account_oracles));
     }
 }

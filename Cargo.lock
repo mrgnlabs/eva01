@@ -3243,7 +3243,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "marginfi"
 version = "0.1.4"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.4-rc1#35b8970ca673bf80d0092ca834f0c1157d6c963e"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.4-rc3#f23c8debdc788aa25795a2ac715ac84a1dca0fbf"
 dependencies = [
  "anchor-lang",
  "anchor-spl",

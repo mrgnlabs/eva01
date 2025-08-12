@@ -135,13 +135,14 @@ impl Liquidator {
                         }
                     }
                     if !stale_swb_oracles.is_empty() {
-                        thread_debug!("Cranking Swb Oracles {:#?}", stale_swb_oracles);
+                        thread_info!("Cranking Swb Oracles {:#?}", stale_swb_oracles);
                         if let Err(err) = self
                             .swb_cranker
                             .crank_oracles(stale_swb_oracles.into_iter().collect())
                         {
                             thread_error!("Failed to crank Swb Oracles: {}", err)
                         }
+                        thread_info!("Completed cranking Swb Oracles.");
                     };
                 }
 
