@@ -256,7 +256,7 @@ pub fn initialize_marginfi_account(
 
     let res = rpc_client.send_and_confirm_transaction_with_spinner_and_config(
         &tx,
-        CommitmentConfig::confirmed(),
+        CommitmentConfig::finalized(),
         RpcSendTransactionConfig {
             skip_preflight: true,
             ..Default::default()
