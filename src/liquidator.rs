@@ -32,11 +32,7 @@ use std::{
 use std::{sync::atomic::Ordering, thread};
 
 #[cfg(feature = "publish_to_db")]
-use {
-    crate::utils::supabase::SupabasePublisher,
-    csv::{Writer, WriterBuilder},
-    std::fs::File,
-};
+use crate::utils::supabase::SupabasePublisher;
 
 pub struct Liquidator {
     liquidator_account: Arc<LiquidatorAccount>,
@@ -174,22 +170,9 @@ impl Liquidator {
             // TODO: gather info and crank any stale swb oracles
             #[cfg(feature = "publish_to_db")]
             if Instant::now() > next_publishing {
-                let mut wtr = WriterBuilder::new()
-                    .from_path(format!("health_snapshot_{}.csv", start.elapsed().as_secs()))
-                    .unwrap();
-                wtr.write_record([
-                    "account",
-                    "assets_maint",
-                    "liabs_maint",
-                    "health",
-                    "health %",
-                ])
-                .unwrap();
-
-                if let Err(e) = self.publish_all_accounts_health(&mut wtr, &mut supabase) {
+                if let Err(e) = self.publish_all_accounts_health(&mut supabase) {
                     thread_error!("Failed to publish all accounts' health: {}", e);
                 }
-                wtr.flush().unwrap();
                 next_publishing += period;
             }
         }
@@ -231,16 +214,15 @@ impl Liquidator {
     }
 
     #[cfg(feature = "publish_to_db")]
-    fn publish_all_accounts_health(
-        &mut self,
-        wtr: &mut Writer<File>,
-        supabase: &mut SupabasePublisher,
-    ) -> Result<()> {
+    fn publish_all_accounts_health(&mut self, supabase: &mut SupabasePublisher) -> Result<()> {
         let mut index: usize = 0;
-        while index < self.cache.marginfi_accounts.len()? {
+        let total_accs = self.cache.marginfi_accounts.len()?;
+        while index < total_accs {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
                 Ok(account) => {
-                    if let Err(e) = self.publish_account_health(&account, wtr, supabase) {
+                    if let Err(e) =
+                        self.publish_account_health(&account, supabase, index == total_accs - 1)
+                    {
                         thread_error!(
                             "Failed to publish Marginfi account health {}: {:?}",
                             account.address,
@@ -267,8 +249,8 @@ impl Liquidator {
     fn publish_account_health(
         &self,
         account: &MarginfiAccountWrapper,
-        wtr: &mut Writer<File>,
         supabase: &mut SupabasePublisher,
+        last_account: bool,
     ) -> Result<()> {
         let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
             &self.cache,
@@ -290,21 +272,13 @@ impl Liquidator {
                 * 100.0
         };
 
-        wtr.write_record([
-            account.address.to_string(),
-            total_weighted_assets.to_num::<f64>().to_string(),
-            total_weighted_liabilities.to_num::<f64>().to_string(),
-            maintenance_health.to_num::<f64>().to_string(),
-            percentage_health.to_string(),
-        ])
-        .unwrap();
-
         supabase.publish_health(
             account.address,
             total_weighted_assets.to_num::<f64>(),
             total_weighted_liabilities.to_num::<f64>(),
             maintenance_health.to_num::<f64>(),
             percentage_health,
+            last_account,
         )?;
 
         Ok(())
