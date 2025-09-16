@@ -1,4 +1,6 @@
 pub mod healthcheck;
+#[cfg(feature = "publish_to_db")]
+pub mod supabase;
 pub mod swb_cranker;
 
 use anyhow::{anyhow, Error, Result};

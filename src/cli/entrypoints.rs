@@ -19,13 +19,14 @@ use std::{
 };
 
 pub fn run_liquidator(
-    mut config: Eva01Config,
-    marginfi_group_id: Pubkey,
+    config: Eva01Config,
     preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
     stop_liquidator: Arc<AtomicBool>,
-    run_initial_rebalancing: bool,
 ) -> anyhow::Result<()> {
-    thread_info!("Starting liquidator for group: {:?}", marginfi_group_id);
+    thread_info!(
+        "Starting liquidator for group: {:?}",
+        config.general_config.marginfi_group_key
+    );
     // TODO: re-enable. https://linear.app/marginfi/issue/LIQ-13/reenable-grafana-metrics-reporting
     // register_metrics();
 
@@ -60,7 +61,7 @@ pub fn run_liquidator(
     let mut cache = Cache::new(
         wallet_pubkey,
         config.general_config.marginfi_program_id,
-        marginfi_group_id,
+        config.general_config.marginfi_group_key,
         clock.clone(),
         preferred_mints,
     );
@@ -70,21 +71,8 @@ pub fn run_liquidator(
         config.general_config.rpc_url.clone(),
         config.general_config.clone().address_lookup_tables,
     )?;
-    cache_loader.load_cache(&mut cache)?;
 
-    // Check if the preferred asset is in the cache. If not, make the first one the preferred asset.
-    let mints = cache.mints.get_mints();
-    if mints.len() < 2 {
-        thread_info!("Ignoring the single-bank group: {:?}", marginfi_group_id);
-        return Ok(());
-    }
-    if !mints
-        .iter()
-        .any(|mint| mint == &config.rebalancer_config.swap_mint)
-    {
-        config.rebalancer_config.swap_mint = mints[0]; // TODO: come up with a smarter logic for choosing the preferred asset
-        thread_info!("Configured preferred asset not found in cache, using the first one from cache as preferred: {}", config.rebalancer_config.swap_mint);
-    }
+    cache_loader.load_cache(&mut cache)?;
 
     cache.insert_preferred_mint(config.rebalancer_config.swap_mint);
 
@@ -102,7 +90,7 @@ pub fn run_liquidator(
 
     let liquidator_account = Arc::new(LiquidatorAccount::new(
         &config.general_config.clone(),
-        marginfi_group_id,
+        config.general_config.marginfi_group_key,
         config.rebalancer_config.swap_mint,
         cache.clone(),
     )?);
@@ -117,7 +105,6 @@ pub fn run_liquidator(
 
     let geyser_service = GeyserService::new(
         config.general_config,
-        marginfi_group_id,
         accounts_to_track,
         geyser_tx,
         stop_liquidator.clone(),
@@ -137,7 +124,7 @@ pub fn run_liquidator(
     thread::spawn(move || clock_manager.start(cloned_stop));
 
     thread::spawn(move || {
-        if let Err(e) = liquidator.start(run_initial_rebalancing) {
+        if let Err(e) = liquidator.start() {
             thread_error!("The Liquidator service failed! {:?}", e);
             panic!("Fatal error in the Liquidator service!");
         }

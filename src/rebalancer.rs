@@ -497,8 +497,8 @@ impl Rebalancer {
             let token = self.cache.tokens.try_get_token_for_mint(mint)?;
             match self.cache.try_get_token_wrapper::<OracleWrapper>(mint, &token) {
                 Ok(wrapper) => {
-                    // Ignore the swap token, usually USDC
-                    if wrapper.bank_wrapper.bank.mint == self.swap_mint {
+                    // Ignore the swap token (usually USDC) and SOL
+                    if wrapper.bank_wrapper.bank.mint == self.swap_mint || wrapper.bank_wrapper.bank.mint == spl_token::native_mint::ID {
                         continue;
                     }
 
