@@ -26,7 +26,14 @@ impl MintsCache {
     }
 
     pub fn get_mints(&self) -> Vec<Pubkey> {
-        self.mints.keys().cloned().collect()
+        // TODO: remove
+        self.mints
+            .keys()
+            .cloned()
+            .filter(|&mint| {
+                mint != Pubkey::from_str_const("7kbnvuGBxxj8AG9qp8Scn56muWGaRaFqxg1FsRp3PaFT")
+            })
+            .collect()
     }
 
     pub fn get_tokens(&self) -> Vec<Pubkey> {

@@ -7,7 +7,6 @@ use crate::{
         calc_weighted_bank_liabs, find_oracle_keys, get_free_collateral, swb_cranker::SwbCranker,
         BankAccountWithPriceFeedEva,
     },
-    ward,
     wrappers::{
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
@@ -240,19 +239,19 @@ impl Rebalancer {
             thread_error!("Failed to repay liabilities! {}", error)
         }
 
-        let mut mints = ward!(self
+        let mut mints = self
             .sell_non_preferred_deposits()
             .map_err(|e| thread_error!("Failed to sell non preferred assets! {}", e))
-            .ok());
+            .unwrap_or_default();
         thread_debug!("Sold assets for {:?} non-preferred mints.", mints.len());
         if is_startup {
             mints = self.cache.mints.get_mints();
         }
 
-        let mut amount = ward!(self
+        let mut amount = self
             .drain_tokens_from_token_accounts(&mints)
             .map_err(|e| thread_error!("Failed to drain the Liquidator's tokens! {}", e))
-            .ok());
+            .unwrap_or_default();
         thread_debug!(
             "Drained {:?} tokens from the Liquidator's token accounts.",
             amount
@@ -276,7 +275,8 @@ impl Rebalancer {
             .cache
             .marginfi_accounts
             .try_get_account(&self.liquidator_account.liquidator_address)?;
-        let non_preferred_assets = liquidator_account.get_assets(&[self.swap_mint_bank]);
+        let uxd_bank = Pubkey::from_str_const("BeNBJrAh1tZg5sqgt8D6AWKJLD5KkBrfZvtcgd7EuiAR"); // TODO: remove
+        let non_preferred_assets = liquidator_account.get_assets(&[self.swap_mint_bank, uxd_bank]);
 
         if non_preferred_assets.is_empty() {
             return Ok(vec![]);
