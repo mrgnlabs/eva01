@@ -4,7 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-publish_to_db = ["postgres", "native-tls", "postgres-native-tls", "postgres-types"]
+publish_to_db = [
+  "postgres",
+  "tokio-postgres-rustls",
+  "rustls",
+  "rustls-native-certs",
+  "rustls-pemfile",
+]
 
 [dependencies]
 solana-account-decoder = "=2.1.20"
@@ -60,10 +66,14 @@ tiny_http = "0.12"
 signal-hook = "0.3.18"
 ctrlc = "3.4.7"
 
-postgres = { version = "0.19.10", optional = true }
-native-tls = { version = "0.2.14", optional = true }
-postgres-native-tls = { version = "0.5.1", optional = true }
-postgres-types = { version = "0.2.9", optional = true, features = ["with-chrono-0_4"] }
+
+postgres = { version = "0.19.10", optional = true, features = ["with-chrono-0_4"] }
+tokio-postgres-rustls = { version = "=0.12", optional = true }
+rustls = { version = "0.23.31", optional = true, default-features = false, features = ["std"] }
+rustls-native-certs = { version = "0.8.1", optional = true }
+rustls-pemfile = { version = "2", optional = true }
+
+#postgres-types = { version = "0.2.9", optional = true, features = ["with-chrono-0_4"] }
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"

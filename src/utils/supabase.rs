@@ -1,10 +1,12 @@
 use anchor_lang::prelude::Pubkey;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use native_tls::TlsConnector;
 use postgres::{types::ToSql, Client};
-use postgres_native_tls::MakeTlsConnector;
-use std::{cmp::min, env};
+use rustls::pki_types::CertificateDer;
+use rustls::{ClientConfig, RootCertStore};
+use rustls_native_certs;
+use std::{cmp::min, env, fs::File, io::BufReader};
+use tokio_postgres_rustls::MakeRustlsConnect;
 
 const BATCH_SIZE: usize = 2000;
 const COLS_PER_ROW: usize = 7;
@@ -31,9 +33,8 @@ impl SupabasePublisher {
         let db_url = env::var("SUPABASE_URL").expect("SUPABASE_URL env var not set");
         let table = env::var("SUPABASE_TABLE").expect("SUPABASE_TABLE env var not set");
 
-        let tls = MakeTlsConnector::new(TlsConnector::new()?);
-        let client = Client::connect(&db_url, tls)?;
-
+        let tls = make_tls()?;
+        let client = postgres::Client::connect(&db_url, tls)?;
         Ok(Self {
             client,
             table,
@@ -135,4 +136,26 @@ impl SupabasePublisher {
         self.buf.drain(0..take);
         Ok(())
     }
+}
+
+fn make_tls() -> anyhow::Result<MakeRustlsConnect> {
+    // A) load OS trust anchors
+    let mut roots = RootCertStore::empty();
+    let native_res = rustls_native_certs::load_native_certs(); // CertificateResult { certs, errors }
+                                                               // If you want to fail on any OS cert load error, check native_res.errors
+    roots.add_parsable_certificates(native_res.certs);
+
+    // B) load Supabase CA from PEM (required: their chain anchors at a Supabase Root CA)
+    let ca_path = env::var("SUPABASE_CA_CERT")?;
+    let mut reader = BufReader::new(File::open(&ca_path)?);
+    let extra: Vec<CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+    let (_added, _ignored) = roots.add_parsable_certificates(extra);
+
+    // C) build rustls client config
+    let tls_config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+
+    Ok(MakeRustlsConnect::new(tls_config))
 }
