@@ -36,10 +36,8 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
-use std::{cmp::min, collections::HashSet, sync::Arc, thread, time::Duration};
+use std::{cmp::min, collections::HashSet, sync::Arc};
 use tokio::runtime::{Builder, Runtime};
-
-const MIN_LIQUIDATIONS_COUNT: u64 = 10;
 
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
@@ -50,7 +48,6 @@ pub struct Rebalancer {
     rpc_client: RpcClient,
     swap_mint: Pubkey,
     swap_mint_bank: Pubkey,
-    min_profit: f64,
     token_account_dust_threshold: I80F48,
     jup_swap_api_url: String,
     slippage_bps: u16,
@@ -78,7 +75,6 @@ impl Rebalancer {
             .banks
             .try_get_account_for_mint(&config.rebalancer_config.swap_mint)?;
 
-        let min_profit = config.general_config.min_profit;
         let token_account_dust_threshold = config.rebalancer_config.token_account_dust_threshold;
         let jup_swap_api_url = config.rebalancer_config.jup_swap_api_url;
         let slippage_bps = config.rebalancer_config.slippage_bps;
@@ -101,7 +97,6 @@ impl Rebalancer {
             rpc_client,
             swap_mint,
             swap_mint_bank,
-            min_profit,
             token_account_dust_threshold,
             jup_swap_api_url,
             slippage_bps,
@@ -109,31 +104,6 @@ impl Rebalancer {
             tokio_rt,
             cache,
         })
-    }
-
-    pub fn fund_liquidator_account(&mut self) -> anyhow::Result<()> {
-        // Multiply by 40 because the profit is 0.025 of the amount that is being liquidated.
-        // And then multiply by MIN_LIQUIDATIONS_COUNT to get enough funds for that many liquidations.
-        let usd_value = (self.min_profit * 40.0) * (MIN_LIQUIDATIONS_COUNT as f64);
-
-        let sol_price = 150.0; // TODO: Fetch the current SOL price and account for slippage by lowering it
-        let sol_amount: f64 = usd_value / sol_price;
-        let swap_mint_amount = self.swap(
-            solana_sdk::native_token::sol_to_lamports(sol_amount),
-            spl_token::native_mint::ID,
-            self.swap_mint,
-        )?;
-
-        thread_info!(
-            "Funding the Liquidator account with {} tokens ({} in SOL).",
-            swap_mint_amount,
-            sol_amount
-        );
-        thread::sleep(Duration::from_secs(10));
-        if let Err(error) = self.deposit_preferred_token(swap_mint_amount) {
-            thread_error!("Failed to deposit preferred token: {}", error)
-        }
-        Ok(())
     }
 
     pub fn run(&mut self, is_startup: bool) -> anyhow::Result<()> {
@@ -730,10 +700,13 @@ impl Rebalancer {
     }
 }
 
-// If our margin is at 50% or lower, we should stop the Liquidator and manually adjust it's balances.
+// If our margin is at 50% or lower, we should stop the Liquidator and manually adjust its balances.
 pub fn check_liquidator_health(cache: &Arc<Cache>, lq_acc: &MarginfiAccountWrapper) -> Result<()> {
-    let (weighted_assets, weighted_liabs) =
-        calc_total_weighted_assets_liabs(cache, &lq_acc.lending_account, RequirementType::Initial)?;
+    let (weighted_assets, weighted_liabs) = calc_total_weighted_assets_liabs(
+        cache,
+        &lq_acc.lending_account,
+        RequirementType::Maintenance,
+    )?;
 
     if weighted_assets.is_zero() {
         return Err(anyhow!(

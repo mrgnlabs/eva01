@@ -1,7 +1,7 @@
 use crate::{
     cache::Cache,
     config::Eva01Config,
-    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
+    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     rebalancer::Rebalancer,
     thread_debug, thread_error, thread_info, thread_trace,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
@@ -81,7 +81,7 @@ impl Liquidator {
     pub fn start(&mut self) -> Result<()> {
         // Fund the liquidator account, if needed
         if !self.liquidator_account.has_funds()? {
-            self.rebalancer.fund_liquidator_account()?;
+            return Err(anyhow!("Liquidator has no funds."));
         }
 
         self.rebalancer.run(true)?;
@@ -98,7 +98,6 @@ impl Liquidator {
         thread_info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             if self.run_liquidation.load(Ordering::Relaxed) {
-                let lq_attempts = LIQUIDATION_ATTEMPTS.get();
                 thread_info!("Running the Liquidation process...");
                 self.run_liquidation.store(false, Ordering::Relaxed);
 
@@ -157,11 +156,9 @@ impl Liquidator {
 
                 thread_info!("The Liquidation process is complete.");
 
-                if LIQUIDATION_ATTEMPTS.get() > lq_attempts {
-                    if let Err(error) = self.rebalancer.run(false) {
-                        thread_error!("Rebalancing failed: {:?}", error);
-                        ERROR_COUNT.inc();
-                    }
+                if let Err(error) = self.rebalancer.run(false) {
+                    thread_error!("Rebalancing failed: {:?}", error);
+                    ERROR_COUNT.inc();
                 }
             } else {
                 thread::sleep(Duration::from_secs(1))
