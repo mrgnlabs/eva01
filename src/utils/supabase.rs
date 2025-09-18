@@ -5,7 +5,7 @@ use postgres::{types::ToSql, Client};
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_native_certs;
-use std::{cmp::min, env, fs::File, io::BufReader};
+use std::{cmp::min, env};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 const BATCH_SIZE: usize = 2000;
@@ -141,15 +141,14 @@ impl SupabasePublisher {
 fn make_tls() -> anyhow::Result<MakeRustlsConnect> {
     // A) load OS trust anchors
     let mut roots = RootCertStore::empty();
-    let native_res = rustls_native_certs::load_native_certs(); // CertificateResult { certs, errors }
-                                                               // If you want to fail on any OS cert load error, check native_res.errors
+    let native_res = rustls_native_certs::load_native_certs();
     roots.add_parsable_certificates(native_res.certs);
 
     // B) load Supabase CA from PEM (required: their chain anchors at a Supabase Root CA)
-    let ca_path = env::var("SUPABASE_CA_CERT")?;
-    let mut reader = BufReader::new(File::open(&ca_path)?);
+    let pem = std::env::var("SUPABASE_CA_CERT")?.replace("\\n", "\n");
+    let mut cursor = std::io::Cursor::new(pem.into_bytes());
     let extra: Vec<CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+        rustls_pemfile::certs(&mut cursor).collect::<Result<Vec<_>, _>>()?;
     let (_added, _ignored) = roots.add_parsable_certificates(extra);
 
     // C) build rustls client config
