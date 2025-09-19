@@ -6,7 +6,7 @@ use anchor_lang::AccountDeserialize;
 use anyhow::Result;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
-use marginfi::state::marginfi_account::MarginfiAccount;
+use marginfi_type_crate::types::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::Account, clock::Clock};
 use std::{

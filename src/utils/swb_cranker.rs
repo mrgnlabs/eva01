@@ -70,8 +70,13 @@ impl SwbCranker {
             &non_blocking_rpc_client,
             &Pubkey::from_str(SWB_PROGRAM_ID).unwrap(),
         ))?;
-        let swb_gateway =
-            tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone();
+
+        // Prefer private gateway from env; fall back to first on-chain gateway
+        let swb_gateway = if let Some(url) = config.crossbar_api_url.as_ref() {
+            Gateway::new(url.to_string())
+        } else {
+            tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone()
+        };
 
         Ok(Self {
             tokio_rt,

@@ -22,12 +22,10 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
-use marginfi::{
+use marginfi::state::{marginfi_account::RequirementType, price::PriceBias};
+use marginfi_type_crate::{
     constants::EXP_10_I80F48,
-    state::{
-        marginfi_account::{BalanceSide, LendingAccount, RequirementType},
-        price::{OracleSetup, PriceBias},
-    },
+    types::{BalanceSide, LendingAccount, OracleSetup},
 };
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_program::pubkey::Pubkey;

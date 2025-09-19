@@ -64,6 +64,8 @@ impl Eva01Config {
             .parse()
             .expect("Invalid HEALTHCHECK_PORT number");
 
+        let crossbar_api_url = std::env::var("CROSSBAR_API_URL").ok();
+
         let general_config = GeneralConfig {
             rpc_url,
             yellowstone_endpoint,
@@ -77,6 +79,7 @@ impl Eva01Config {
             solana_clock_refresh_interval,
             min_profit,
             healthcheck_port,
+            crossbar_api_url,
         };
 
         // Liquidator process configuration
@@ -149,6 +152,7 @@ pub struct GeneralConfig {
     pub solana_clock_refresh_interval: u64,
     pub min_profit: f64,
     pub healthcheck_port: u16,
+    pub crossbar_api_url: Option<String>,
 }
 
 impl GeneralConfig {

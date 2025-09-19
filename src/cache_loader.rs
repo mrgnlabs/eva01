@@ -1,9 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anchor_lang::Discriminator;
 use anchor_spl::associated_token;
 use anyhow::Ok;
-use marginfi::state::{marginfi_account::MarginfiAccount, marginfi_group::Bank};
+use marginfi_type_crate::types::{Bank, MarginfiAccount};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
     rpc_client::RpcClient,

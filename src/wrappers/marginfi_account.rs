@@ -3,10 +3,8 @@ use crate::{cache::Cache, thread_debug};
 use super::{bank::BankWrapper, oracle::OracleWrapperTrait};
 use anyhow::{Error, Result};
 use fixed::types::I80F48;
-use marginfi::state::{
-    marginfi_account::{BalanceSide, LendingAccount},
-    price::OracleSetup,
-};
+use marginfi::state::bank::BankImpl;
+use marginfi_type_crate::types::{BalanceSide, LendingAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashSet, sync::Arc};
 
@@ -180,9 +178,9 @@ impl MarginfiAccountWrapper {
 pub mod test_utils {
     use std::array;
 
-    use marginfi::{
+    use marginfi_type_crate::{
         constants::ASSET_TAG_DEFAULT,
-        state::{marginfi_account::Balance, marginfi_group::WrappedI80F48},
+        types::{Balance, WrappedI80F48},
     };
 
     use crate::wrappers::bank::test_utils::{test_sol, test_usdc};

@@ -6,3 +6,4 @@ config.toml
 .vscode/
 bin/*.env
 *.sh
+*.DS_Store

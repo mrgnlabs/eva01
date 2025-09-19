@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
-use marginfi::state::marginfi_account::MarginfiAccount;
+use marginfi_type_crate::types::MarginfiAccount;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,

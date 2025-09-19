@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use marginfi::state::price::{
-    OraclePriceFeedAdapter, OraclePriceType, OracleSetup, PriceAdapter, PriceBias,
-    SwitchboardPullPriceFeed,
+    OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias, SwitchboardPullPriceFeed,
 };
+use marginfi_type_crate::types::OracleSetup;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account_info::IntoAccountInfo;
 use switchboard_on_demand_client::PullFeedAccountData;

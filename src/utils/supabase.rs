@@ -162,8 +162,7 @@ impl SupabasePublisher {
     }
 
     fn reconnect(&mut self) -> anyhow::Result<()> {
-        let tls = make_tls()?; // your existing rustls builder
-                               // use Config so we can add TCP keepalives to reduce drops
+        let tls = make_tls()?;
         let mut cfg: postgres::Config = self.db_url.parse()?;
         cfg.keepalives(true)
             .keepalives_idle(std::time::Duration::from_secs(30))
