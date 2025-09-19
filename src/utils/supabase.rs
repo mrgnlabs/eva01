@@ -1,3 +1,4 @@
+use crate::thread_debug;
 use anchor_lang::prelude::Pubkey;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -12,6 +13,7 @@ const BATCH_SIZE: usize = 2000;
 const COLS_PER_ROW: usize = 7;
 
 pub struct SupabasePublisher {
+    db_url: String,
     client: Client,
     table: String,
     buf: Vec<AccountHealthRow>,
@@ -36,6 +38,7 @@ impl SupabasePublisher {
         let tls = make_tls()?;
         let client = postgres::Client::connect(&db_url, tls)?;
         Ok(Self {
+            db_url,
             client,
             table,
             buf: Vec::with_capacity(BATCH_SIZE),
@@ -92,13 +95,11 @@ impl SupabasePublisher {
     /// Execute INSERT for the first `take` rows in the buffer.
     /// Leaves buffer intact on error; drains only on success.
     fn exec_chunk(&mut self, take: usize) -> Result<()> {
-        let chunk = &self.buf[..take];
+        let rows: Vec<AccountHealthRow> = self.buf[..take].to_vec();
+        let mut params: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(rows.len() * COLS_PER_ROW);
+        let mut values = String::with_capacity(rows.len() * 32);
 
-        // Build VALUES list and parameters
-        let mut params: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(take * COLS_PER_ROW);
-        let mut values = String::with_capacity(take * 32);
-
-        for (i, r) in chunk.iter().enumerate() {
+        for (i, r) in rows.iter().enumerate() {
             if i > 0 {
                 values.push(',');
             }
@@ -119,7 +120,7 @@ impl SupabasePublisher {
                 &r.liabilities_usd,
                 &r.maintenance_health,
                 &r.percentage_health,
-                &r.created_at, // timestamptz column -> DateTime<Utc>
+                &r.created_at,
                 &r.updated_at,
             ]);
         }
@@ -131,11 +132,51 @@ impl SupabasePublisher {
             self.table, values
         );
 
-        self.client.execute(&sql, &params)?;
+        self.exec_with_retry(&sql, &params)?;
         // Only remove on success
         self.buf.drain(0..take);
         Ok(())
     }
+
+    fn exec_with_retry(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn postgres::types::ToSql + Sync)],
+    ) -> anyhow::Result<()> {
+        let mut backoff = std::time::Duration::from_millis(100);
+        for _ in 0..5 {
+            match self.client.execute(sql, params) {
+                Ok(n) => {
+                    thread_debug!("Wrote {} rows to DB", n);
+                    return Ok(());
+                }
+                Err(e) if is_transient(&e) => {
+                    self.reconnect()?;
+                    std::thread::sleep(backoff);
+                    backoff = backoff.saturating_mul(2);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(anyhow::anyhow!("retry budget exhausted"))
+    }
+
+    fn reconnect(&mut self) -> anyhow::Result<()> {
+        let tls = make_tls()?; // your existing rustls builder
+                               // use Config so we can add TCP keepalives to reduce drops
+        let mut cfg: postgres::Config = self.db_url.parse()?;
+        cfg.keepalives(true)
+            .keepalives_idle(std::time::Duration::from_secs(30))
+            .keepalives_interval(std::time::Duration::from_secs(10))
+            .keepalives_retries(3);
+        self.client = cfg.connect(tls)?;
+        Ok(())
+    }
+}
+
+fn is_transient(e: &postgres::Error) -> bool {
+    let s = e.to_string();
+    s.contains("close_notify") || s.contains("UnexpectedEof") || s.contains("connection closed")
 }
 
 fn make_tls() -> anyhow::Result<MakeRustlsConnect> {

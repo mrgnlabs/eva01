@@ -84,7 +84,7 @@ impl Liquidator {
             return Err(anyhow!("Liquidator has no funds."));
         }
 
-        self.rebalancer.run(true)?;
+        self.rebalancer.run()?;
 
         #[cfg(feature = "publish_to_db")]
         let start = Instant::now();
@@ -156,7 +156,7 @@ impl Liquidator {
 
                 thread_info!("The Liquidation process is complete.");
 
-                if let Err(error) = self.rebalancer.run(false) {
+                if let Err(error) = self.rebalancer.run() {
                     thread_error!("Rebalancing failed: {:?}", error);
                     ERROR_COUNT.inc();
                 }

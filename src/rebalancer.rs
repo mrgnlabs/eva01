@@ -11,6 +11,7 @@ use crate::{
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
         oracle::{OracleWrapper, OracleWrapperTrait},
+        token_account::TokenAccountWrapper,
     },
 };
 use anyhow::{anyhow, Result};
@@ -30,7 +31,7 @@ use marginfi::{
     },
 };
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
-use solana_program::pubkey::Pubkey;
+use solana_program::{program_pack::Pack, pubkey::Pubkey};
 use solana_sdk::{
     account::ReadableAccount, commitment_config::CommitmentLevel, signature::Keypair,
     transaction::VersionedTransaction,
@@ -106,7 +107,7 @@ impl Rebalancer {
         })
     }
 
-    pub fn run(&mut self, is_startup: bool) -> anyhow::Result<()> {
+    pub fn run(&mut self) -> anyhow::Result<()> {
         let lq_acc = self
             .cache
             .marginfi_accounts
@@ -118,7 +119,7 @@ impl Rebalancer {
             Ok(should_rebalance) => {
                 if should_rebalance {
                     thread_info!("Running the Rebalancing process...");
-                    self.rebalance_accounts(is_startup);
+                    self.rebalance_accounts();
                     thread_info!("The Rebalancing process is complete.");
                 }
             }
@@ -175,10 +176,15 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn deposit_preferred_token(&self, amount: u64) -> anyhow::Result<()> {
+    fn deposit_preferred_token(&self) -> anyhow::Result<()> {
+        let amount = self
+            .get_token_balance_for_mint(&self.swap_mint)
+            .map(|balance| balance.to_num())
+            .unwrap_or_default();
         if amount == 0 {
-            return Err(anyhow::anyhow!("Deposit amount is zero!"));
+            return Ok(());
         }
+
         thread_debug!(
             "Depositing {} of preferred token to the Swap mint bank {:?}.",
             amount,
@@ -197,7 +203,7 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn rebalance_accounts(&mut self, is_startup: bool) {
+    fn rebalance_accounts(&mut self) {
         if let Err(error) = self.crank_active_swb_oracles() {
             thread_error!(
                 "Failed to crank Swb Oracles for the Liquidator banks: {}",
@@ -209,34 +215,26 @@ impl Rebalancer {
             thread_error!("Failed to repay liabilities! {}", error)
         }
 
-        let mut mints = self
+        let sold_mints = self
             .sell_non_preferred_deposits()
             .map_err(|e| thread_error!("Failed to sell non preferred assets! {}", e))
             .unwrap_or_default();
-        thread_debug!("Sold assets for {:?} non-preferred mints.", mints.len());
-        if is_startup {
-            mints = self.cache.mints.get_mints();
-        }
+        thread_debug!(
+            "Sold assets for {:?} non-preferred mints.",
+            sold_mints.len()
+        );
 
-        let mut amount = self
-            .drain_tokens_from_token_accounts(&mints)
+        let amount = self
+            .drain_tokens_from_token_accounts()
             .map_err(|e| thread_error!("Failed to drain the Liquidator's tokens! {}", e))
             .unwrap_or_default();
         thread_debug!(
             "Drained {:?} tokens from the Liquidator's token accounts.",
             amount
         );
-        if is_startup {
-            amount = self
-                .get_token_balance_for_mint(&self.swap_mint)
-                .map(|balance| balance.to_num())
-                .unwrap_or_default();
-        }
 
-        if amount > 0 {
-            if let Err(error) = self.deposit_preferred_token(amount) {
-                thread_error!("Failed to deposit preferred token: {}", error)
-            }
+        if let Err(error) = self.deposit_preferred_token() {
+            thread_error!("Failed to deposit preferred token: {}", error)
         }
     }
 
@@ -411,10 +409,8 @@ impl Rebalancer {
     }
 
     fn has_non_preferred_tokens(&self) -> Result<bool> {
-        for (mint_address, token_address) in self
-            .cache
-            .tokens
-            .get_non_preferred_mints(self.cache.get_preferred_mints())
+        for (mint_address, token_address) in
+            self.cache.tokens.get_non_preferred_mints(self.swap_mint)
         {
             match self
                 .cache
@@ -461,14 +457,21 @@ impl Rebalancer {
             }))
     }
 
-    fn drain_tokens_from_token_accounts(&mut self, mints: &Vec<Pubkey>) -> anyhow::Result<u64> {
+    fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<u64> {
         let mut drained_amount = 0;
-        for mint in mints {
-            let token = self.cache.tokens.try_get_token_for_mint(mint)?;
-            match self.cache.try_get_token_wrapper::<OracleWrapper>(mint, &token) {
+        for mint in self.cache.mints.get_mints() {
+            let token = self.cache.tokens.try_get_token_for_mint(&mint)?;
+            match self.cache.try_get_token_wrapper::<OracleWrapper>(&mint, &token) {
                 Ok(wrapper) => {
-                    // Ignore the swap token (usually USDC) and SOL
-                    if wrapper.bank_wrapper.bank.mint == self.swap_mint || wrapper.bank_wrapper.bank.mint == spl_token::native_mint::ID {
+                    // Ignore the swap token (usually USDC)
+                    if wrapper.bank_wrapper.bank.mint == self.swap_mint {
+                        continue;
+                    }
+                    if wrapper.bank_wrapper.bank.mint == spl_token::native_mint::ID {
+                        drained_amount += self.drain_excessive_sol(wrapper, &token)?;
+                        continue;
+                    }
+                    else {
                         continue;
                     }
 
@@ -497,6 +500,83 @@ impl Rebalancer {
         }
 
         Ok(drained_amount)
+    }
+
+    fn drain_excessive_sol(
+        &mut self,
+        wrapper: TokenAccountWrapper<OracleWrapper>,
+        token_address: &Pubkey,
+    ) -> anyhow::Result<u64> {
+        // Partial unwrap via a temp wSOL account (keep main ATA open).
+        let wsol_amount: u64 = wrapper.get_amount().to_num();
+        thread_info!("wsol_amount = {}", wsol_amount);
+        const LAMPORTS_PER_SOL: u64 = 80_000;
+        if wsol_amount > LAMPORTS_PER_SOL {
+            let to_unwrap = wsol_amount - LAMPORTS_PER_SOL / 10; // we are keeping 0.1 wSOL
+            let temp = solana_sdk::signature::Keypair::new();
+            let rent = self
+                .rpc_client
+                .get_minimum_balance_for_rent_exemption(spl_token::state::Account::LEN)?;
+
+            // Create + init temp token account for wSOL
+            let create_ix = solana_sdk::system_instruction::create_account(
+                &self.signer.pubkey(),
+                &temp.pubkey(),
+                rent,
+                spl_token::state::Account::LEN as u64,
+                &spl_token::id(),
+            );
+            let init_ix = spl_token::instruction::initialize_account3(
+                &spl_token::id(),
+                &temp.pubkey(),
+                &spl_token::native_mint::id(),
+                &self.signer.pubkey(),
+            )?;
+            // Move the portion to unwrap into the temp account
+            let transfer_ix = spl_token::instruction::transfer_checked(
+                &spl_token::id(),
+                token_address,
+                &spl_token::native_mint::id(),
+                &temp.pubkey(),
+                &self.signer.pubkey(),
+                &[],
+                to_unwrap,
+                9,
+            )?;
+            // Close temp -> returns lamports (native SOL) to signer
+            let close_ix = spl_token::instruction::close_account(
+                &spl_token::id(),
+                &temp.pubkey(),
+                &self.signer.pubkey(),
+                &self.signer.pubkey(),
+                &[],
+            )?;
+
+            // Send unwrap tx
+            let bh = self.rpc_client.get_latest_blockhash()?;
+            let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+                &[create_ix, init_ix, transfer_ix, close_ix],
+                Some(&self.signer.pubkey()),
+                &[&self.signer, &temp],
+                bh,
+            );
+            self.rpc_client
+                .send_and_confirm_transaction_with_spinner_and_config(
+                    &tx,
+                    CommitmentConfig::finalized(),
+                    RpcSendTransactionConfig {
+                        skip_preflight: false,
+                        preflight_commitment: Some(CommitmentLevel::Processed),
+                        ..Default::default()
+                    },
+                )?;
+
+            // Immediately swap unwrapped SOL -> swap token (e.g. USDC)
+            self.swap(to_unwrap, spl_token::native_mint::ID, self.swap_mint)
+        } else {
+            thread_debug!("Skipping unwrap: wSOL balance ≤ 1 SOL.");
+            Ok(0)
+        }
     }
 
     /// Withdraw and sells a given asset
@@ -552,7 +632,7 @@ impl Rebalancer {
                 user_public_key: self.signer.pubkey(),
                 quote_response,
                 config: TransactionConfig {
-                    wrap_and_unwrap_sol: input_mint == spl_token::native_mint::ID,
+                    wrap_and_unwrap_sol: output_mint == spl_token::native_mint::ID,
                     compute_unit_price_micro_lamports: Some(
                         self.compute_unit_price_micro_lamports.clone(),
                     ),

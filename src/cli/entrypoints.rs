@@ -11,18 +11,13 @@ use crate::{
     wrappers::liquidator_account::LiquidatorAccount,
 };
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
+use solana_sdk::{signature::Keypair, signer::Signer};
 use std::{
-    collections::HashSet,
-    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    sync::{atomic::AtomicBool, Arc, Mutex},
     thread,
 };
 
-pub fn run_liquidator(
-    config: Eva01Config,
-    preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
-    stop_liquidator: Arc<AtomicBool>,
-) -> anyhow::Result<()> {
+pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> anyhow::Result<()> {
     thread_info!(
         "Starting liquidator for group: {:?}",
         config.general_config.marginfi_group_key
@@ -63,7 +58,6 @@ pub fn run_liquidator(
         config.general_config.marginfi_program_id,
         config.general_config.marginfi_group_key,
         clock.clone(),
-        preferred_mints,
     );
 
     let cache_loader = CacheLoader::new(
@@ -73,8 +67,6 @@ pub fn run_liquidator(
     )?;
 
     cache_loader.load_cache(&mut cache)?;
-
-    cache.insert_preferred_mint(config.rebalancer_config.swap_mint);
 
     let accounts_to_track = get_accounts_to_track(&cache)?;
 

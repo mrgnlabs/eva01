@@ -1,6 +1,5 @@
 use std::{
-    collections::HashSet,
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    sync::{atomic::AtomicBool, Arc},
     thread::{self},
 };
 
@@ -20,7 +19,6 @@ pub mod setup;
 /// Main entrypoint for Eva
 pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
     let config = Eva01Config::new()?;
-    let preferred_mints = Arc::new(RwLock::new(HashSet::new()));
     info!("Starting eva01 liquidator! {}", &config);
 
     let health_state = Arc::new(Mutex::new(HealthState::Initializing));
@@ -35,5 +33,5 @@ pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         .lock()
         .expect("Failed to acquire the health_state lock") = HealthState::Running;
 
-    entrypoints::run_liquidator(config, Arc::clone(&preferred_mints), stop.clone())
+    entrypoints::run_liquidator(config, stop.clone())
 }
