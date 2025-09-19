@@ -40,17 +40,11 @@ impl Eva01Config {
         )
         .expect("Invalid MARGINFI_PROGRAM_ID Pubkey");
 
-        let marginfi_api_url = std::env::var("MARGINFI_API_URL").ok();
-        let marginfi_api_key = std::env::var("MARGINFI_API_KEY").ok();
-        let marginfi_api_arena_threshold: Option<u64> =
-            std::env::var("MARGINFI_API_ARENA_THRESHOLD")
-                .ok()
-                .and_then(|s| s.parse().ok());
-
-        let marginfi_groups_whitelist: Vec<Pubkey> =
-            parse_pubkey_list("MARGINFI_GROUPS_WHITELIST")?;
-        let marginfi_groups_blacklist: Vec<Pubkey> =
-            parse_pubkey_list("MARGINFI_GROUPS_BLACKLIST")?;
+        let marginfi_group_key = Pubkey::from_str(
+            &std::env::var("MARGINFI_GROUP_KEY")
+                .expect("MARGINFI_GROUP_KEY environment variable is not set"),
+        )
+        .expect("Invalid MARGINFI_GROUP_KEY Pubkey");
 
         let address_lookup_tables: Vec<Pubkey> =
             parse_pubkey_list("ADDRESS_LOOKUP_TABLES").unwrap_or_else(|_| vec![]);
@@ -78,18 +72,12 @@ impl Eva01Config {
             compute_unit_price_micro_lamports,
             compute_unit_limit,
             marginfi_program_id,
-            marginfi_api_url,
-            marginfi_api_key,
-            marginfi_api_arena_threshold,
-            marginfi_groups_whitelist,
-            marginfi_groups_blacklist,
+            marginfi_group_key,
             address_lookup_tables,
             solana_clock_refresh_interval,
             min_profit,
             healthcheck_port,
         };
-
-        general_config.validate()?;
 
         // Liquidator process configuration
         let isolated_banks: bool = std::env::var("ISOLATED_BANKS")
@@ -156,11 +144,7 @@ pub struct GeneralConfig {
     pub compute_unit_price_micro_lamports: u64,
     pub compute_unit_limit: u32,
     pub marginfi_program_id: Pubkey,
-    pub marginfi_api_url: Option<String>,
-    pub marginfi_api_key: Option<String>,
-    pub marginfi_api_arena_threshold: Option<u64>,
-    pub marginfi_groups_whitelist: Vec<Pubkey>,
-    pub marginfi_groups_blacklist: Vec<Pubkey>,
+    pub marginfi_group_key: Pubkey,
     pub address_lookup_tables: Vec<Pubkey>,
     pub solana_clock_refresh_interval: u64,
     pub min_profit: f64,
@@ -168,21 +152,6 @@ pub struct GeneralConfig {
 }
 
 impl GeneralConfig {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        match (
-            !self.marginfi_groups_whitelist.is_empty(),
-            !self.marginfi_groups_blacklist.is_empty(),
-        ) {
-            (true, false) | (false, true) => Ok(()),
-            (true, true) => Err(anyhow::anyhow!(
-                "Only one of marginfi_groups_whitelist or marginfi_groups_blacklist must be set."
-            )),
-            (false, false) => Err(anyhow::anyhow!(
-                "Either marginfi_groups_whitelist or marginfi_groups_blacklist must be set - not both."
-            )),
-        }
-    }
-
     pub fn get_geyser_service_config(&self) -> GeyserServiceConfig {
         GeyserServiceConfig {
             endpoint: self.yellowstone_endpoint.clone(),
@@ -201,24 +170,16 @@ impl std::fmt::Display for GeneralConfig {
                  - Compute Unit Limit: {}\n\
                  - Minimun profit: {}$\n\
                  - Marginfi Program ID: {}\n\
-                 - Marginfi API URL: {}\n\
-                 - Marginfi API Key: {}\n\
-                 - Marginfi API Arena Threshold: {}\n\
-                 - Marginfi Groups Whitelist: {:?}\n\
-                 - Marginfi Groups Blacklist: {:?}\n
+                 - Marginfi Group: {:?}\n\
                  - Address Lookup Tables: {:?}\n\
                  - Solana Clock Refresh Interval: {}\n\
-                    - Healthcheck Port: {}",
+                 - Healthcheck Port: {}",
             self.yellowstone_endpoint,
             self.compute_unit_price_micro_lamports,
             self.compute_unit_limit,
             self.min_profit,
             self.marginfi_program_id,
-            self.marginfi_api_url.as_deref().unwrap_or("None"),
-            self.marginfi_api_key.as_deref().unwrap_or("None"),
-            self.marginfi_api_arena_threshold.unwrap_or_default(),
-            self.marginfi_groups_whitelist,
-            self.marginfi_groups_blacklist,
+            self.marginfi_group_key,
             self.address_lookup_tables,
             self.solana_clock_refresh_interval,
             self.healthcheck_port,
@@ -320,7 +281,6 @@ mod tests {
         String,
         String,
         String,
-        String,
     ) {
         let keypair = serde_json::to_string(&Keypair::new().to_bytes().to_vec()).unwrap();
 
@@ -331,8 +291,7 @@ mod tests {
         let compute_unit_price_micro_lamports = "1000";
         let compute_unit_limit = "200000";
         let marginfi_program_id = Pubkey::new_unique().to_string();
-        let marginfi_groups_whitelist = Pubkey::new_unique().to_string();
-        let marginfi_groups_blacklist = "";
+        let marginfi_group_key = Pubkey::new_unique().to_string();
         let address_lookup_tables = Pubkey::new_unique().to_string();
         let solana_clock_refresh_interval = "1000";
         let min_profit = "0.01";
@@ -349,8 +308,7 @@ mod tests {
         );
         set_env("COMPUTE_UNIT_LIMIT", compute_unit_limit);
         set_env("MARGINFI_PROGRAM_ID", &marginfi_program_id);
-        set_env("MARGINFI_GROUPS_WHITELIST", &marginfi_groups_whitelist);
-        set_env("MARGINFI_GROUPS_BLACKLIST", &marginfi_groups_blacklist);
+        set_env("MARGINFI_GROUP_KEY", &marginfi_group_key);
         set_env("ADDRESS_LOOKUP_TABLES", &address_lookup_tables);
         set_env(
             "SOLANA_CLOCK_REFRESH_INTERVAL",
@@ -368,8 +326,7 @@ mod tests {
             compute_unit_price_micro_lamports.to_string(),
             compute_unit_limit.to_string(),
             marginfi_program_id.to_string(),
-            marginfi_groups_whitelist.to_string(),
-            marginfi_groups_blacklist.to_string(),
+            marginfi_group_key.to_string(),
             address_lookup_tables.to_string(),
             solana_clock_refresh_interval.to_string(),
             min_profit.to_string(),
@@ -415,82 +372,6 @@ mod tests {
         set_env("TEST_PUBKEY_LIST", "invalid_pubkey");
         let result = parse_pubkey_list("TEST_PUBKEY_LIST");
         assert!(result.is_err());
-    }
-
-    #[test]
-    #[serial]
-    fn test_general_config_validate_whitelist_only() {
-        let mut config = GeneralConfig {
-            rpc_url: "".to_string(),
-            yellowstone_endpoint: "".to_string(),
-            yellowstone_x_token: None,
-            wallet_keypair: Vec::<u8>::new(),
-            compute_unit_price_micro_lamports: 0,
-            compute_unit_limit: 0,
-            marginfi_program_id: Pubkey::default(),
-            marginfi_api_url: None,
-            marginfi_api_key: None,
-            marginfi_api_arena_threshold: None,
-            marginfi_groups_whitelist: vec![Pubkey::default()],
-            marginfi_groups_blacklist: vec![],
-            address_lookup_tables: vec![],
-            solana_clock_refresh_interval: 0,
-            min_profit: 0.01,
-            healthcheck_port: 0,
-        };
-        assert!(config.validate().is_ok());
-
-        config.marginfi_groups_whitelist = vec![];
-        config.marginfi_groups_blacklist = vec![Pubkey::default()];
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    #[serial]
-    fn test_general_config_validate_both_set() {
-        let config = GeneralConfig {
-            rpc_url: "".to_string(),
-            yellowstone_endpoint: "".to_string(),
-            yellowstone_x_token: None,
-            wallet_keypair: Vec::<u8>::new(),
-            compute_unit_price_micro_lamports: 0,
-            compute_unit_limit: 0,
-            marginfi_program_id: Pubkey::default(),
-            marginfi_api_url: None,
-            marginfi_api_key: None,
-            marginfi_api_arena_threshold: None,
-            marginfi_groups_whitelist: vec![Pubkey::default()],
-            marginfi_groups_blacklist: vec![Pubkey::default()],
-            address_lookup_tables: vec![],
-            solana_clock_refresh_interval: 0,
-            min_profit: 0.01,
-            healthcheck_port: 0,
-        };
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    #[serial]
-    fn test_general_config_validate_none_set() {
-        let config = GeneralConfig {
-            rpc_url: "".to_string(),
-            yellowstone_endpoint: "".to_string(),
-            yellowstone_x_token: None,
-            wallet_keypair: Vec::<u8>::new(),
-            compute_unit_price_micro_lamports: 0,
-            compute_unit_limit: 0,
-            marginfi_program_id: Pubkey::default(),
-            marginfi_api_url: None,
-            marginfi_api_key: None,
-            marginfi_api_arena_threshold: None,
-            marginfi_groups_whitelist: vec![],
-            marginfi_groups_blacklist: vec![],
-            address_lookup_tables: vec![],
-            solana_clock_refresh_interval: 0,
-            min_profit: 0.01,
-            healthcheck_port: 0,
-        };
-        assert!(config.validate().is_err());
     }
 
     #[test]

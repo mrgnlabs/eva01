@@ -7,7 +7,6 @@ use crate::{
         calc_weighted_bank_liabs, find_oracle_keys, get_free_collateral, swb_cranker::SwbCranker,
         BankAccountWithPriceFeedEva,
     },
-    ward,
     wrappers::{
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
@@ -37,10 +36,8 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
-use std::{cmp::min, collections::HashSet, sync::Arc, thread, time::Duration};
+use std::{cmp::min, collections::HashSet, sync::Arc};
 use tokio::runtime::{Builder, Runtime};
-
-const MIN_LIQUIDATIONS_COUNT: u64 = 10;
 
 /// The rebalancer is responsible to keep the liquidator account
 /// "rebalanced" -> Document this better
@@ -51,7 +48,6 @@ pub struct Rebalancer {
     rpc_client: RpcClient,
     swap_mint: Pubkey,
     swap_mint_bank: Pubkey,
-    min_profit: f64,
     token_account_dust_threshold: I80F48,
     jup_swap_api_url: String,
     slippage_bps: u16,
@@ -79,7 +75,6 @@ impl Rebalancer {
             .banks
             .try_get_account_for_mint(&config.rebalancer_config.swap_mint)?;
 
-        let min_profit = config.general_config.min_profit;
         let token_account_dust_threshold = config.rebalancer_config.token_account_dust_threshold;
         let jup_swap_api_url = config.rebalancer_config.jup_swap_api_url;
         let slippage_bps = config.rebalancer_config.slippage_bps;
@@ -102,7 +97,6 @@ impl Rebalancer {
             rpc_client,
             swap_mint,
             swap_mint_bank,
-            min_profit,
             token_account_dust_threshold,
             jup_swap_api_url,
             slippage_bps,
@@ -112,32 +106,7 @@ impl Rebalancer {
         })
     }
 
-    pub fn fund_liquidator_account(&mut self) -> anyhow::Result<()> {
-        // Multiply by 40 because the profit is 0.025 of the amount that is being liquidated.
-        // And then multiply by MIN_LIQUIDATIONS_COUNT to get enough funds for that many liquidations.
-        let usd_value = (self.min_profit * 40.0) * (MIN_LIQUIDATIONS_COUNT as f64);
-
-        let sol_price = 150.0; // TODO: Fetch the current SOL price and account for slippage by lowering it
-        let sol_amount: f64 = usd_value / sol_price;
-        let swap_mint_amount = self.swap(
-            solana_sdk::native_token::sol_to_lamports(sol_amount),
-            spl_token::native_mint::ID,
-            self.swap_mint,
-        )?;
-
-        thread_info!(
-            "Funding the Liquidator account with {} tokens ({} in SOL).",
-            swap_mint_amount,
-            sol_amount
-        );
-        thread::sleep(Duration::from_secs(10));
-        if let Err(error) = self.deposit_preferred_token(swap_mint_amount) {
-            thread_error!("Failed to deposit preferred token: {}", error)
-        }
-        Ok(())
-    }
-
-    pub fn run(&mut self, is_startup: bool) -> anyhow::Result<()> {
+    pub fn run(&mut self) -> anyhow::Result<()> {
         let lq_acc = self
             .cache
             .marginfi_accounts
@@ -149,7 +118,7 @@ impl Rebalancer {
             Ok(should_rebalance) => {
                 if should_rebalance {
                     thread_info!("Running the Rebalancing process...");
-                    self.rebalance_accounts(is_startup);
+                    self.rebalance_accounts();
                     thread_info!("The Rebalancing process is complete.");
                 }
             }
@@ -206,10 +175,15 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn deposit_preferred_token(&self, amount: u64) -> anyhow::Result<()> {
+    fn deposit_preferred_token(&self) -> anyhow::Result<()> {
+        let amount = self
+            .get_token_balance_for_mint(&self.swap_mint)
+            .map(|balance| balance.to_num())
+            .unwrap_or_default();
         if amount == 0 {
-            return Err(anyhow::anyhow!("Deposit amount is zero!"));
+            return Ok(());
         }
+
         thread_debug!(
             "Depositing {} of preferred token to the Swap mint bank {:?}.",
             amount,
@@ -228,7 +202,7 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn rebalance_accounts(&mut self, is_startup: bool) {
+    fn rebalance_accounts(&mut self) {
         if let Err(error) = self.crank_active_swb_oracles() {
             thread_error!(
                 "Failed to crank Swb Oracles for the Liquidator banks: {}",
@@ -240,34 +214,26 @@ impl Rebalancer {
             thread_error!("Failed to repay liabilities! {}", error)
         }
 
-        let mut mints = ward!(self
+        let sold_mints = self
             .sell_non_preferred_deposits()
             .map_err(|e| thread_error!("Failed to sell non preferred assets! {}", e))
-            .ok());
-        thread_debug!("Sold assets for {:?} non-preferred mints.", mints.len());
-        if is_startup {
-            mints = self.cache.mints.get_mints();
-        }
+            .unwrap_or_default();
+        thread_debug!(
+            "Sold assets for {:?} non-preferred mints.",
+            sold_mints.len()
+        );
 
-        let mut amount = ward!(self
-            .drain_tokens_from_token_accounts(&mints)
+        let amount = self
+            .drain_tokens_from_token_accounts()
             .map_err(|e| thread_error!("Failed to drain the Liquidator's tokens! {}", e))
-            .ok());
+            .unwrap_or_default();
         thread_debug!(
             "Drained {:?} tokens from the Liquidator's token accounts.",
             amount
         );
-        if is_startup {
-            amount = self
-                .get_token_balance_for_mint(&self.swap_mint)
-                .map(|balance| balance.to_num())
-                .unwrap_or_default();
-        }
 
-        if amount > 0 {
-            if let Err(error) = self.deposit_preferred_token(amount) {
-                thread_error!("Failed to deposit preferred token: {}", error)
-            }
+        if let Err(error) = self.deposit_preferred_token() {
+            thread_error!("Failed to deposit preferred token: {}", error)
         }
     }
 
@@ -276,7 +242,8 @@ impl Rebalancer {
             .cache
             .marginfi_accounts
             .try_get_account(&self.liquidator_account.liquidator_address)?;
-        let non_preferred_assets = liquidator_account.get_assets(&[self.swap_mint_bank]);
+        let uxd_bank = Pubkey::from_str_const("BeNBJrAh1tZg5sqgt8D6AWKJLD5KkBrfZvtcgd7EuiAR"); // TODO: remove
+        let non_preferred_assets = liquidator_account.get_assets(&[self.swap_mint_bank, uxd_bank]);
 
         if non_preferred_assets.is_empty() {
             return Ok(vec![]);
@@ -441,10 +408,8 @@ impl Rebalancer {
     }
 
     fn has_non_preferred_tokens(&self) -> Result<bool> {
-        for (mint_address, token_address) in self
-            .cache
-            .tokens
-            .get_non_preferred_mints(self.cache.get_preferred_mints())
+        for (mint_address, token_address) in
+            self.cache.tokens.get_non_preferred_mints(self.swap_mint)
         {
             match self
                 .cache
@@ -491,13 +456,13 @@ impl Rebalancer {
             }))
     }
 
-    fn drain_tokens_from_token_accounts(&mut self, mints: &Vec<Pubkey>) -> anyhow::Result<u64> {
+    fn drain_tokens_from_token_accounts(&mut self) -> anyhow::Result<u64> {
         let mut drained_amount = 0;
-        for mint in mints {
-            let token = self.cache.tokens.try_get_token_for_mint(mint)?;
-            match self.cache.try_get_token_wrapper::<OracleWrapper>(mint, &token) {
+        for mint in self.cache.mints.get_mints() {
+            let token = self.cache.tokens.try_get_token_for_mint(&mint)?;
+            match self.cache.try_get_token_wrapper::<OracleWrapper>(&mint, &token) {
                 Ok(wrapper) => {
-                    // Ignore the swap token, usually USDC
+                    // Ignore the swap token (usually USDC)
                     if wrapper.bank_wrapper.bank.mint == self.swap_mint {
                         continue;
                     }
@@ -582,7 +547,7 @@ impl Rebalancer {
                 user_public_key: self.signer.pubkey(),
                 quote_response,
                 config: TransactionConfig {
-                    wrap_and_unwrap_sol: input_mint == spl_token::native_mint::ID,
+                    wrap_and_unwrap_sol: false,
                     compute_unit_price_micro_lamports: Some(
                         self.compute_unit_price_micro_lamports.clone(),
                     ),
@@ -730,10 +695,13 @@ impl Rebalancer {
     }
 }
 
-// If our margin is at 50% or lower, we should stop the Liquidator and manually adjust it's balances.
+// If our margin is at 50% or lower, we should stop the Liquidator and manually adjust its balances.
 pub fn check_liquidator_health(cache: &Arc<Cache>, lq_acc: &MarginfiAccountWrapper) -> Result<()> {
-    let (weighted_assets, weighted_liabs) =
-        calc_total_weighted_assets_liabs(cache, &lq_acc.lending_account, RequirementType::Initial)?;
+    let (weighted_assets, weighted_liabs) = calc_total_weighted_assets_liabs(
+        cache,
+        &lq_acc.lending_account,
+        RequirementType::Maintenance,
+    )?;
 
     if weighted_assets.is_zero() {
         return Err(anyhow!(

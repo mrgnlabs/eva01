@@ -1,7 +1,7 @@
 use crate::{
     cache::Cache,
     config::Eva01Config,
-    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY},
+    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     rebalancer::Rebalancer,
     thread_debug, thread_error, thread_info, thread_trace,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
@@ -30,6 +30,9 @@ use std::{
     time::{Duration, Instant},
 };
 use std::{sync::atomic::Ordering, thread};
+
+#[cfg(feature = "publish_to_db")]
+use crate::utils::supabase::SupabasePublisher;
 
 pub struct Liquidator {
     liquidator_account: Arc<LiquidatorAccount>,
@@ -75,21 +78,26 @@ impl Liquidator {
         })
     }
 
-    pub fn start(&mut self, run_initial_rebalancing: bool) -> Result<()> {
+    pub fn start(&mut self) -> Result<()> {
         // Fund the liquidator account, if needed
         if !self.liquidator_account.has_funds()? {
-            self.rebalancer.fund_liquidator_account()?;
+            return Err(anyhow!("Liquidator has no funds."));
         }
 
-        // Initial rebalancing
-        if run_initial_rebalancing {
-            self.rebalancer.run(true)?;
-        }
+        self.rebalancer.run()?;
+
+        #[cfg(feature = "publish_to_db")]
+        let start = Instant::now();
+        #[cfg(feature = "publish_to_db")]
+        let period = Duration::from_secs(30 * 60);
+        #[cfg(feature = "publish_to_db")]
+        let mut next_publishing = start;
+        #[cfg(feature = "publish_to_db")]
+        let mut supabase = SupabasePublisher::from_env()?;
 
         thread_info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             if self.run_liquidation.load(Ordering::Relaxed) {
-                let lq_attempts = LIQUIDATION_ATTEMPTS.get();
                 thread_info!("Running the Liquidation process...");
                 self.run_liquidation.store(false, Ordering::Relaxed);
 
@@ -125,7 +133,7 @@ impl Liquidator {
                                 }
                             }
                             Err(e) => {
-                                thread_debug!(
+                                thread_error!(
                                     "The account {:?} has failed the liquidation evaluation: {:?}",
                                     candidate.liquidatee_account.address,
                                     e
@@ -148,14 +156,21 @@ impl Liquidator {
 
                 thread_info!("The Liquidation process is complete.");
 
-                if LIQUIDATION_ATTEMPTS.get() > lq_attempts {
-                    if let Err(error) = self.rebalancer.run(false) {
-                        thread_error!("Rebalancing failed: {:?}", error);
-                        ERROR_COUNT.inc();
-                    }
+                if let Err(error) = self.rebalancer.run() {
+                    thread_error!("Rebalancing failed: {:?}", error);
+                    ERROR_COUNT.inc();
                 }
             } else {
                 thread::sleep(Duration::from_secs(1))
+            }
+
+            // TODO: gather info and crank any stale swb oracles
+            #[cfg(feature = "publish_to_db")]
+            if Instant::now() > next_publishing {
+                if let Err(e) = self.publish_all_accounts_health(&mut supabase) {
+                    thread_error!("Failed to publish all accounts' health: {}", e);
+                }
+                next_publishing += period;
             }
         }
         thread_info!("The Liquidator loop is stopped.");
@@ -193,6 +208,77 @@ impl Liquidator {
         }
 
         Ok(result)
+    }
+
+    #[cfg(feature = "publish_to_db")]
+    fn publish_all_accounts_health(&mut self, supabase: &mut SupabasePublisher) -> Result<()> {
+        let mut index: usize = 0;
+        let total_accs = self.cache.marginfi_accounts.len()?;
+        while index < total_accs {
+            match self.cache.marginfi_accounts.try_get_account_by_index(index) {
+                Ok(account) => {
+                    if let Err(e) =
+                        self.publish_account_health(&account, supabase, index == total_accs - 1)
+                    {
+                        thread_error!(
+                            "Failed to publish Marginfi account health {}: {:?}",
+                            account.address,
+                            e
+                        );
+                    }
+                }
+                Err(err) => {
+                    thread_error!(
+                        "Failed to get Marginfi account by index {}: {:?}",
+                        index,
+                        err
+                    );
+                    ERROR_COUNT.inc();
+                }
+            }
+            index += 1;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "publish_to_db")]
+    fn publish_account_health(
+        &self,
+        account: &MarginfiAccountWrapper,
+        supabase: &mut SupabasePublisher,
+        last_account: bool,
+    ) -> Result<()> {
+        let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
+            &self.cache,
+            &account.lending_account,
+            RequirementType::Maintenance,
+        )?;
+        let maintenance_health = total_weighted_assets - total_weighted_liabilities;
+        let percentage_health = if total_weighted_assets == I80F48::ZERO {
+            if total_weighted_liabilities == I80F48::ZERO {
+                100.0
+            } else {
+                0.0
+            }
+        } else {
+            maintenance_health
+                .checked_div(total_weighted_assets)
+                .unwrap()
+                .to_num::<f64>()
+                * 100.0
+        };
+
+        supabase.publish_health(
+            account.address,
+            total_weighted_assets.to_num::<f64>(),
+            total_weighted_liabilities.to_num::<f64>(),
+            maintenance_health.to_num::<f64>(),
+            percentage_health,
+            last_account,
+        )?;
+
+        Ok(())
     }
 
     fn process_account(

@@ -66,7 +66,6 @@ pub struct GeyserService {
 impl GeyserService {
     pub fn new(
         config: GeneralConfig,
-        marginfi_group_pk: Pubkey,
         tracked_accounts: HashMap<Pubkey, AccountType>,
         geyser_tx: Sender<GeyserUpdate>,
         stop: Arc<AtomicBool>,
@@ -85,7 +84,7 @@ impl GeyserService {
             x_token: geyser_config.x_token,
             tracked_accounts,
             marginfi_program_id: config.marginfi_program_id,
-            marginfi_group_pk,
+            marginfi_group_pk: config.marginfi_group_key,
             geyser_tx,
             tokio_rt,
             stop,

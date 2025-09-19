@@ -4,10 +4,7 @@ pub mod mints;
 mod oracles;
 mod tokens;
 
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex, RwLock},
-};
+use std::sync::{Arc, Mutex};
 
 use accounts::MarginfiAccountsCache;
 use anyhow::Result;
@@ -33,7 +30,6 @@ pub struct Cache {
     pub tokens: TokensCache,
     pub clock: Arc<Mutex<Clock>>,
     pub luts: Vec<AddressLookupTableAccount>,
-    preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
 }
 
 impl Cache {
@@ -42,7 +38,6 @@ impl Cache {
         marginfi_program_id: Pubkey,
         marginfi_group_address: Pubkey,
         clock: Arc<Mutex<Clock>>,
-        preferred_mints: Arc<RwLock<HashSet<Pubkey>>>,
     ) -> Self {
         Self {
             signer_pk,
@@ -55,7 +50,6 @@ impl Cache {
             tokens: TokensCache::default(),
             clock,
             luts: vec![],
-            preferred_mints,
         }
     }
 
@@ -78,19 +72,6 @@ impl Cache {
             bank_wrapper,
             oracle_wrapper,
         })
-    }
-
-    pub fn insert_preferred_mint(&mut self, mint_address: Pubkey) {
-        self.preferred_mints.write().unwrap().insert(mint_address);
-    }
-
-    pub fn get_preferred_mints(&self) -> Vec<Pubkey> {
-        self.preferred_mints
-            .read()
-            .unwrap()
-            .iter()
-            .cloned()
-            .collect()
     }
 }
 
