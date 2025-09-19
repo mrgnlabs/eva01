@@ -11,7 +11,6 @@ use crate::{
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
         oracle::{OracleWrapper, OracleWrapperTrait},
-        token_account::TokenAccountWrapper,
     },
 };
 use anyhow::{anyhow, Result};
@@ -31,7 +30,7 @@ use marginfi::{
     },
 };
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
-use solana_program::{program_pack::Pack, pubkey::Pubkey};
+use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::ReadableAccount, commitment_config::CommitmentLevel, signature::Keypair,
     transaction::VersionedTransaction,
@@ -467,13 +466,6 @@ impl Rebalancer {
                     if wrapper.bank_wrapper.bank.mint == self.swap_mint {
                         continue;
                     }
-                    if wrapper.bank_wrapper.bank.mint == spl_token::native_mint::ID {
-                        drained_amount += self.drain_excessive_sol(wrapper, &token)?;
-                        continue;
-                    }
-                    else {
-                        continue;
-                    }
 
                     let value = wrapper.get_value()?;
                     if value > self.token_account_dust_threshold {
@@ -500,83 +492,6 @@ impl Rebalancer {
         }
 
         Ok(drained_amount)
-    }
-
-    fn drain_excessive_sol(
-        &mut self,
-        wrapper: TokenAccountWrapper<OracleWrapper>,
-        token_address: &Pubkey,
-    ) -> anyhow::Result<u64> {
-        // Partial unwrap via a temp wSOL account (keep main ATA open).
-        let wsol_amount: u64 = wrapper.get_amount().to_num();
-        thread_info!("wsol_amount = {}", wsol_amount);
-        const LAMPORTS_PER_SOL: u64 = 80_000;
-        if wsol_amount > LAMPORTS_PER_SOL {
-            let to_unwrap = wsol_amount - LAMPORTS_PER_SOL / 10; // we are keeping 0.1 wSOL
-            let temp = solana_sdk::signature::Keypair::new();
-            let rent = self
-                .rpc_client
-                .get_minimum_balance_for_rent_exemption(spl_token::state::Account::LEN)?;
-
-            // Create + init temp token account for wSOL
-            let create_ix = solana_sdk::system_instruction::create_account(
-                &self.signer.pubkey(),
-                &temp.pubkey(),
-                rent,
-                spl_token::state::Account::LEN as u64,
-                &spl_token::id(),
-            );
-            let init_ix = spl_token::instruction::initialize_account3(
-                &spl_token::id(),
-                &temp.pubkey(),
-                &spl_token::native_mint::id(),
-                &self.signer.pubkey(),
-            )?;
-            // Move the portion to unwrap into the temp account
-            let transfer_ix = spl_token::instruction::transfer_checked(
-                &spl_token::id(),
-                token_address,
-                &spl_token::native_mint::id(),
-                &temp.pubkey(),
-                &self.signer.pubkey(),
-                &[],
-                to_unwrap,
-                9,
-            )?;
-            // Close temp -> returns lamports (native SOL) to signer
-            let close_ix = spl_token::instruction::close_account(
-                &spl_token::id(),
-                &temp.pubkey(),
-                &self.signer.pubkey(),
-                &self.signer.pubkey(),
-                &[],
-            )?;
-
-            // Send unwrap tx
-            let bh = self.rpc_client.get_latest_blockhash()?;
-            let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[create_ix, init_ix, transfer_ix, close_ix],
-                Some(&self.signer.pubkey()),
-                &[&self.signer, &temp],
-                bh,
-            );
-            self.rpc_client
-                .send_and_confirm_transaction_with_spinner_and_config(
-                    &tx,
-                    CommitmentConfig::finalized(),
-                    RpcSendTransactionConfig {
-                        skip_preflight: false,
-                        preflight_commitment: Some(CommitmentLevel::Processed),
-                        ..Default::default()
-                    },
-                )?;
-
-            // Immediately swap unwrapped SOL -> swap token (e.g. USDC)
-            self.swap(to_unwrap, spl_token::native_mint::ID, self.swap_mint)
-        } else {
-            thread_debug!("Skipping unwrap: wSOL balance ≤ 1 SOL.");
-            Ok(0)
-        }
     }
 
     /// Withdraw and sells a given asset
@@ -632,7 +547,7 @@ impl Rebalancer {
                 user_public_key: self.signer.pubkey(),
                 quote_response,
                 config: TransactionConfig {
-                    wrap_and_unwrap_sol: output_mint == spl_token::native_mint::ID,
+                    wrap_and_unwrap_sol: false,
                     compute_unit_price_micro_lamports: Some(
                         self.compute_unit_price_micro_lamports.clone(),
                     ),
