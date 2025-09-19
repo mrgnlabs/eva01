@@ -1,10 +1,10 @@
 use crate::wrappers::oracle::OracleWrapperTrait;
 use fixed::types::I80F48;
 use marginfi::state::{
-    marginfi_account::{calc_amount, calc_value, BalanceSide, RequirementType},
-    marginfi_group::Bank,
+    marginfi_account::{calc_amount, calc_value, RequirementType},
     price::{OraclePriceType, PriceBias},
 };
+use marginfi_type_crate::types::{BalanceSide, Bank};
 use solana_program::pubkey::Pubkey;
 
 #[derive(Clone)]
@@ -85,7 +85,8 @@ pub mod test_utils {
     use crate::wrappers::oracle::test_utils::TestOracleWrapper;
 
     use super::*;
-    use marginfi::state::{marginfi_group::BankConfig, price::OracleSetup};
+    use marginfi::state::bank::BankImpl;
+    use marginfi_type_crate::types::{BankConfig, OracleSetup};
     use std::str::FromStr;
 
     const SOL_BANK_ADDRESS: &str = "1111111Bs8Haw3nAsWf5hmLfKzc6PMEzcxUCKkVYK";

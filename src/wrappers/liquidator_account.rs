@@ -13,7 +13,7 @@ use crate::{
     wrappers::oracle::OracleWrapper,
 };
 use anyhow::{anyhow, Result};
-use marginfi::state::marginfi_account::BalanceSide;
+use marginfi_type_crate::types::BalanceSide;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 
 use crate::wrappers::oracle::OracleWrapperTrait;

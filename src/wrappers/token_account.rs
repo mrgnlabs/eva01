@@ -2,7 +2,7 @@ use crate::wrappers::oracle::OracleWrapperTrait;
 
 use super::bank::BankWrapper;
 use fixed::types::I80F48;
-use marginfi::constants::EXP_10_I80F48;
+use marginfi_type_crate::constants::EXP_10_I80F48;
 
 #[derive(Clone)]
 pub struct TokenAccountWrapper<T: OracleWrapperTrait> {

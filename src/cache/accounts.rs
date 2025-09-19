@@ -66,12 +66,9 @@ impl MarginfiAccountsCache {
 }
 #[cfg(test)]
 mod tests {
-    use marginfi::{
+    use marginfi_type_crate::{
         constants::ASSET_TAG_DEFAULT,
-        state::{
-            marginfi_account::{Balance, LendingAccount},
-            marginfi_group::WrappedI80F48,
-        },
+        types::{Balance, LendingAccount, WrappedI80F48},
     };
 
     use super::*;

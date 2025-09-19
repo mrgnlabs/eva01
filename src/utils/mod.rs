@@ -8,13 +8,19 @@ use backoff::ExponentialBackoff;
 use fixed::types::I80F48;
 use marginfi::{
     bank_authority_seed,
-    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_SOL, ASSET_TAG_STAKED},
     errors::MarginfiError,
     state::{
-        emode::{reconcile_emode_configs, EmodeConfig},
-        marginfi_account::{calc_value, Balance, BalanceSide, LendingAccount, RequirementType},
-        marginfi_group::{Bank, BankConfig, BankVaultType, RiskTier},
+        bank::{BankImpl, BankVaultType},
+        bank_config::BankConfigImpl,
+        marginfi_account::{calc_value, RequirementType},
         price::PriceBias,
+    },
+};
+use marginfi_type_crate::{
+    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_SOL, ASSET_TAG_STAKED},
+    types::{
+        reconcile_emode_configs, Balance, BalanceSide, Bank, BankConfig, EmodeConfig,
+        LendingAccount, RiskTier,
     },
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
@@ -423,37 +429,17 @@ pub fn calc_weighted_bank_liabs(
 }
 
 pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
-    use marginfi::{constants::PYTH_SPONSORED_SHARD_ID, state::price::PythPushOraclePriceFeed};
-    match bank_config.oracle_setup {
-        marginfi::state::price::OracleSetup::PythPushOracle
-            if !bank_config.is_pyth_push_migrated() =>
-        {
-            let feed_id = bank_config.get_pyth_push_oracle_feed_id().unwrap();
-            vec![PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id).0]
-        }
-        marginfi::state::price::OracleSetup::StakedWithPythPush
-            if !bank_config.is_pyth_push_migrated() =>
-        {
-            let feed_id = bank_config.get_pyth_push_oracle_feed_id().unwrap();
-            let oracle_addresses = vec![
-                PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id).0,
-                bank_config.oracle_keys[1],
-                bank_config.oracle_keys[2],
-            ];
-            oracle_addresses
-        }
-        _ => bank_config
-            .oracle_keys
-            .iter()
-            .filter_map(|key| {
-                if *key != Pubkey::default() {
-                    Some(*key)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>(),
-    }
+    bank_config
+        .oracle_keys
+        .iter()
+        .filter_map(|key| {
+            if *key != Pubkey::default() {
+                Some(*key)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
 }
 
 pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> Result<PullFeedAccountData> {
@@ -587,6 +573,7 @@ pub fn log_genuine_error(prefix: &str, error: Error) {
     }
 }
 
+// TODO: expose from program
 pub fn check_asset_tags_matching(bank: &Bank, lending_account: &LendingAccount) -> bool {
     let mut has_default_asset = false;
     let mut has_staked_asset = false;
@@ -616,13 +603,7 @@ mod tests {
     use crate::utils::find_oracle_keys;
 
     use super::accessor;
-    use marginfi::{
-        constants::PYTH_SPONSORED_SHARD_ID,
-        state::{
-            marginfi_group::BankConfig,
-            price::{OracleSetup, PythPushOraclePriceFeed},
-        },
-    };
+    use marginfi_type_crate::types::{BankConfig, OracleSetup};
     use solana_program::pubkey::Pubkey;
 
     #[test]
@@ -675,11 +656,7 @@ mod tests {
         keys = find_oracle_keys(&config);
         assert_eq!(keys.len(), 1);
 
-        let feed_id_bytes: &[u8; 32] = feed_id.as_ref().try_into().unwrap();
-        assert_eq!(
-            keys[0],
-            PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id_bytes).0
-        );
+        assert_eq!(keys[0], feed_id);
 
         // Migrate the bank and check again
         config.config_flags = 1;
@@ -705,11 +682,7 @@ mod tests {
         let mut keys = find_oracle_keys(&config);
         assert_eq!(keys.len(), 3);
 
-        let feed_id_bytes: &[u8; 32] = feed_id.as_ref().try_into().unwrap();
-        assert_eq!(
-            keys[0],
-            PythPushOraclePriceFeed::find_oracle_address(PYTH_SPONSORED_SHARD_ID, feed_id_bytes).0
-        );
+        assert_eq!(keys[0], feed_id);
         assert_eq!(keys[1], spl_mint);
         assert_eq!(keys[2], spl_sol_pool);
 

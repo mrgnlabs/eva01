@@ -14,13 +14,14 @@ use crate::{
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use marginfi::{
+use marginfi::state::{
+    bank::BankImpl,
+    marginfi_account::RequirementType,
+    price::{OraclePriceType, PriceBias},
+};
+use marginfi_type_crate::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
-    state::{
-        marginfi_account::{BalanceSide, RequirementType},
-        marginfi_group::{BankOperationalState, RiskTier},
-        price::{OraclePriceType, PriceBias},
-    },
+    types::{BalanceSide, BankOperationalState, RiskTier},
 };
 use solana_program::pubkey::Pubkey;
 use std::{

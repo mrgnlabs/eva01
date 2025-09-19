@@ -77,10 +77,7 @@ impl Cache {
 
 #[cfg(test)]
 pub mod test_utils {
-    use std::{
-        collections::HashSet,
-        sync::{Arc, Mutex, RwLock},
-    };
+    use std::sync::{Arc, Mutex};
 
     use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
 
@@ -94,7 +91,6 @@ pub mod test_utils {
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Arc::new(Mutex::new(Clock::default())),
-            Arc::new(RwLock::new(HashSet::new())),
         );
 
         for bank_wrapper in bank_wrappers {
@@ -138,7 +134,6 @@ mod tests {
             marginfi_program_id,
             marginfi_group_address,
             Arc::new(Mutex::new(Clock::default())),
-            Arc::new(RwLock::new(HashSet::new())),
         );
         assert_eq!(cache.signer_pk, signer_pk);
         assert_eq!(cache.marginfi_program_id, marginfi_program_id);
@@ -150,13 +145,11 @@ mod tests {
         let signer_pk = Pubkey::new_unique();
         let marginfi_program_id = Pubkey::new_unique();
         let marginfi_group_address = Pubkey::new_unique();
-        let preferred_mints = Arc::new(RwLock::new(HashSet::new()));
         let mut cache = Cache::new(
             signer_pk,
             marginfi_program_id,
             marginfi_group_address,
             Arc::new(Mutex::new(Clock::default())),
-            preferred_mints,
         );
         let lut = AddressLookupTableAccount {
             key: Pubkey::new_unique(),

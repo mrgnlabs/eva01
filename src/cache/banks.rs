@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use marginfi::state::marginfi_group::Bank;
+use marginfi_type_crate::types::Bank;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::{utils::find_oracle_keys, wrappers::bank::BankWrapper};
@@ -65,12 +65,9 @@ pub mod test_utils {
     use super::*;
     use fixed::types::I80F48;
     use fixed_macro::types::I80F48;
-    use marginfi::{
+    use marginfi_type_crate::{
         constants::MAX_ORACLE_KEYS,
-        state::{
-            marginfi_group::{Bank, BankConfig, InterestRateConfig},
-            price::OracleSetup,
-        },
+        types::{BankConfig, InterestRateConfig, OracleSetup},
     };
 
     pub fn create_test_bank(mint: Pubkey) -> Bank {
