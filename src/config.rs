@@ -1,7 +1,10 @@
 use crate::geyser::GeyserServiceConfig;
 use fixed::types::I80F48;
 use solana_sdk::pubkey::Pubkey;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
+
+#[cfg(feature = "publish_to_db")]
+pub use {crate::utils::supabase::Threshold, publish_imp::*};
 
 #[derive(Clone, Debug)]
 pub struct Eva01Config {
@@ -66,6 +69,8 @@ impl Eva01Config {
 
         let crossbar_api_url = std::env::var("CROSSBAR_API_URL").ok();
 
+        let declared_values = load_declared_values_from_env()?;
+
         let general_config = GeneralConfig {
             rpc_url,
             yellowstone_endpoint,
@@ -80,6 +85,9 @@ impl Eva01Config {
             min_profit,
             healthcheck_port,
             crossbar_api_url,
+            declared_values,
+            #[cfg(feature = "publish_to_db")]
+            publish_thresholds: load_thresholds_from_env()?,
         };
 
         // Liquidator process configuration
@@ -124,6 +132,45 @@ impl Eva01Config {
     }
 }
 
+#[cfg(feature = "publish_to_db")]
+mod publish_imp {
+    use crate::utils::supabase::Threshold;
+
+    pub fn load_thresholds_from_env() -> anyhow::Result<Vec<Threshold>> {
+        match std::env::var("PUBLISH_THRESHOLDS") {
+            Ok(s) => {
+                let mut v: Vec<Threshold> = serde_json::from_str(&s)?;
+                v.sort_by(|a, b| a.min_liab_value_usd.total_cmp(&b.min_liab_value_usd));
+                if v.is_empty() || v.first().unwrap().min_liab_value_usd > 0.0 {
+                    return Err(anyhow::anyhow!(
+                        "lowest rule must have min_liab_value_usd = 0.0"
+                    ));
+                }
+
+                Ok(v)
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+}
+
+pub fn load_declared_values_from_env() -> anyhow::Result<HashMap<Pubkey, f64>> {
+    match std::env::var("DECLARED_VALUES") {
+        Ok(s) if !s.trim().is_empty() => {
+            let raw: HashMap<String, f64> = serde_json::from_str(&s)?;
+            let mut out = HashMap::with_capacity(raw.len());
+            for (k, v) in raw {
+                let pk = Pubkey::from_str(&k).map_err(|e| {
+                    anyhow::anyhow!("Invalid mint pubkey in DECLARED_VALUES: {k}: {e}")
+                })?;
+                out.insert(pk, v);
+            }
+            Ok(out)
+        }
+        _ => Ok(HashMap::new()),
+    }
+}
+
 impl std::fmt::Display for Eva01Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -153,6 +200,9 @@ pub struct GeneralConfig {
     pub min_profit: f64,
     pub healthcheck_port: u16,
     pub crossbar_api_url: Option<String>,
+    pub declared_values: HashMap<Pubkey, f64>,
+    #[cfg(feature = "publish_to_db")]
+    pub publish_thresholds: Vec<Threshold>,
 }
 
 impl GeneralConfig {

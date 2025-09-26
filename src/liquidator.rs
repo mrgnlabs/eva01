@@ -3,7 +3,7 @@ use crate::{
     config::Eva01Config,
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     rebalancer::Rebalancer,
-    thread_debug, thread_error, thread_info, thread_trace,
+    thread_debug, thread_error, thread_info, thread_trace, thread_warn,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
     wrappers::{
         liquidator_account::LiquidatorAccount,
@@ -17,7 +17,7 @@ use fixed_macro::types::I80F48;
 use marginfi::state::{
     bank::BankImpl,
     marginfi_account::RequirementType,
-    price::{OraclePriceType, PriceBias},
+    price::{OraclePriceType, PriceAdapter, PriceBias},
 };
 use marginfi_type_crate::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
@@ -26,14 +26,16 @@ use marginfi_type_crate::{
 use solana_program::pubkey::Pubkey;
 use std::{
     cmp::min,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 use std::{sync::atomic::Ordering, thread};
 
 #[cfg(feature = "publish_to_db")]
-use crate::utils::supabase::SupabasePublisher;
+use crate::utils::supabase::{PublishQueue, SupabasePublisher, Threshold};
+
+const DECLARED_VALUE_RANGE: f64 = 0.5;
 
 pub struct Liquidator {
     liquidator_account: Arc<LiquidatorAccount>,
@@ -44,6 +46,9 @@ pub struct Liquidator {
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
     swb_cranker: SwbCranker,
+    declared_values: HashMap<Pubkey, f64>,
+    #[cfg(feature = "publish_to_db")]
+    pub publish_thresholds: Vec<Threshold>,
 }
 
 pub struct PreparedLiquidatableAccount {
@@ -77,6 +82,9 @@ impl Liquidator {
             stop_liquidator,
             cache,
             swb_cranker,
+            declared_values: config.general_config.declared_values,
+            #[cfg(feature = "publish_to_db")]
+            publish_thresholds: config.general_config.publish_thresholds,
         })
     }
 
@@ -89,11 +97,11 @@ impl Liquidator {
         self.rebalancer.run()?;
 
         #[cfg(feature = "publish_to_db")]
-        let start = Instant::now();
+        let mut publish_queue =
+            PublishQueue::new(std::mem::take(&mut self.publish_thresholds), Instant::now());
+
         #[cfg(feature = "publish_to_db")]
-        let period = Duration::from_secs(30 * 60);
-        #[cfg(feature = "publish_to_db")]
-        let mut next_publishing = start;
+        let mut next_publishing = publish_queue.pop().unwrap();
         #[cfg(feature = "publish_to_db")]
         let mut supabase = SupabasePublisher::from_env()?;
 
@@ -169,11 +177,14 @@ impl Liquidator {
 
             // TODO: gather info and crank any stale swb oracles
             #[cfg(feature = "publish_to_db")]
-            if Instant::now() > next_publishing {
-                if let Err(e) = self.publish_all_accounts_health(&mut supabase) {
+            if Instant::now() > next_publishing.next {
+                if let Err(e) = self.publish_all_accounts_health(
+                    &mut supabase,
+                    next_publishing.rule.min_liab_value_usd,
+                ) {
                     thread_error!("Failed to publish all accounts' health: {}", e);
                 }
-                next_publishing += period;
+                next_publishing = publish_queue.rotate_next(next_publishing);
             }
         }
         thread_info!("The Liquidator loop is stopped.");
@@ -223,14 +234,18 @@ impl Liquidator {
     }
 
     #[cfg(feature = "publish_to_db")]
-    fn publish_all_accounts_health(&mut self, supabase: &mut SupabasePublisher) -> Result<()> {
+    fn publish_all_accounts_health(
+        &mut self,
+        supabase: &mut SupabasePublisher,
+        min_liab_value_usd: f64,
+    ) -> Result<()> {
         let mut index: usize = 0;
         let total_accs = self.cache.marginfi_accounts.len()?;
         while index < total_accs {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
                 Ok(account) => {
                     if let Err(e) =
-                        self.publish_account_health(&account, supabase, index == total_accs - 1)
+                        self.publish_account_health(&account, supabase, min_liab_value_usd)
                     {
                         thread_error!(
                             "Failed to publish Marginfi account health {}: {:?}",
@@ -250,6 +265,7 @@ impl Liquidator {
             }
             index += 1;
         }
+        supabase.flush_all()?;
 
         Ok(())
     }
@@ -259,13 +275,17 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
         supabase: &mut SupabasePublisher,
-        last_account: bool,
+        min_liab_value_usd: f64,
     ) -> Result<()> {
         let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
             &self.cache,
             &account.lending_account,
             RequirementType::Maintenance,
         )?;
+        if total_weighted_liabilities < min_liab_value_usd {
+            return Ok(());
+        }
+
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         let percentage_health = if total_weighted_assets == I80F48::ZERO {
             if total_weighted_liabilities == I80F48::ZERO {
@@ -287,7 +307,6 @@ impl Liquidator {
             total_weighted_liabilities.to_num::<f64>(),
             maintenance_health.to_num::<f64>(),
             percentage_health,
-            last_account,
         )?;
 
         Ok(())
@@ -503,13 +522,66 @@ impl Liquidator {
             maintenance_health
         );
         if maintenance_health >= I80F48::ZERO {
+            // TODO: revisit this crazy return type
             return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
         }
 
         let asset_bank_wrapper = self.cache.banks.try_get_bank(asset_bank_pk)?;
         let asset_oracle_wrapper = OracleWrapper::build(&self.cache, asset_bank_pk)?;
+        let asset_price = asset_oracle_wrapper
+            .price_adapter
+            .get_price_of_type_ignore_conf(OraclePriceType::RealTime, None)?
+            .to_num::<f64>();
+        if let Some(&declared_value) = self.declared_values.get(&asset_bank_wrapper.bank.mint) {
+            let min_asset_price = declared_value * (1.0 - DECLARED_VALUE_RANGE);
+            if asset_price < min_asset_price {
+                thread_warn!(
+                    "Asset ({}) price is lower than the declared range: {} < {}",
+                    asset_bank_wrapper.bank.mint,
+                    asset_price,
+                    min_asset_price
+                );
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            }
+            let max_asset_price = declared_value * (1.0 + DECLARED_VALUE_RANGE);
+            if asset_price > max_asset_price {
+                thread_warn!(
+                    "Asset ({}) price is higher than the declared range: {} > {}",
+                    asset_bank_wrapper.bank.mint,
+                    asset_price,
+                    max_asset_price
+                );
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            }
+        }
         let liab_bank_wrapper = self.cache.banks.try_get_bank(liab_bank_pk)?;
         let liab_oracle_wrapper = OracleWrapper::build(&self.cache, liab_bank_pk)?;
+        let liab_price = liab_oracle_wrapper
+            .price_adapter
+            .get_price_of_type_ignore_conf(OraclePriceType::RealTime, None)?
+            .to_num::<f64>();
+        if let Some(&declared_value) = self.declared_values.get(&liab_bank_wrapper.bank.mint) {
+            let min_liab_price = declared_value * (1.0 - DECLARED_VALUE_RANGE);
+            if liab_price < min_liab_price {
+                thread_warn!(
+                    "Liability ({}) price is lower than the declared range: {} < {}",
+                    liab_bank_wrapper.bank.mint,
+                    liab_price,
+                    min_liab_price
+                );
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            }
+            let max_liab_price = declared_value * (1.0 + DECLARED_VALUE_RANGE);
+            if liab_price > max_liab_price {
+                thread_warn!(
+                    "Liability ({}) price is higher than the declared range: {} > {}",
+                    liab_bank_wrapper.bank.mint,
+                    liab_price,
+                    max_liab_price
+                );
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            }
+        }
 
         let asset_weight_maint: I80F48 = asset_bank_wrapper.bank.config.asset_weight_maint.into();
         let liab_weight_maint: I80F48 = liab_bank_wrapper.bank.config.liability_weight_maint.into();
