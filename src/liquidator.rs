@@ -3,7 +3,7 @@ use crate::{
     config::Eva01Config,
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     rebalancer::Rebalancer,
-    thread_debug, thread_error, thread_info, thread_trace,
+    thread_debug, thread_error, thread_info, thread_trace, thread_warn,
     utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
     wrappers::{
         liquidator_account::LiquidatorAccount,
@@ -17,7 +17,7 @@ use fixed_macro::types::I80F48;
 use marginfi::state::{
     bank::BankImpl,
     marginfi_account::RequirementType,
-    price::{OraclePriceType, PriceBias},
+    price::{OraclePriceType, PriceAdapter, PriceBias},
 };
 use marginfi_type_crate::{
     constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
@@ -26,14 +26,16 @@ use marginfi_type_crate::{
 use solana_program::pubkey::Pubkey;
 use std::{
     cmp::min,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 use std::{sync::atomic::Ordering, thread};
 
 #[cfg(feature = "publish_to_db")]
-use crate::utils::supabase::SupabasePublisher;
+use crate::utils::supabase::{PublishQueue, SupabasePublisher, Threshold};
+
+const DECLARED_VALUE_RANGE: f64 = 0.5;
 
 pub struct Liquidator {
     liquidator_account: Arc<LiquidatorAccount>,
@@ -44,6 +46,9 @@ pub struct Liquidator {
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
     swb_cranker: SwbCranker,
+    declared_values: HashMap<Pubkey, f64>,
+    #[cfg(feature = "publish_to_db")]
+    pub publish_thresholds: Vec<Threshold>,
 }
 
 pub struct PreparedLiquidatableAccount {
@@ -51,6 +56,7 @@ pub struct PreparedLiquidatableAccount {
     asset_bank: Pubkey,
     liab_bank: Pubkey,
     asset_amount: u64,
+    liab_amount: u64,
     profit: u64,
 }
 
@@ -76,6 +82,9 @@ impl Liquidator {
             stop_liquidator,
             cache,
             swb_cranker,
+            declared_values: config.general_config.declared_values,
+            #[cfg(feature = "publish_to_db")]
+            publish_thresholds: config.general_config.publish_thresholds,
         })
     }
 
@@ -88,11 +97,11 @@ impl Liquidator {
         self.rebalancer.run()?;
 
         #[cfg(feature = "publish_to_db")]
-        let start = Instant::now();
+        let mut publish_queue =
+            PublishQueue::new(std::mem::take(&mut self.publish_thresholds), Instant::now());
+
         #[cfg(feature = "publish_to_db")]
-        let period = Duration::from_secs(30 * 60);
-        #[cfg(feature = "publish_to_db")]
-        let mut next_publishing = start;
+        let mut next_publishing = publish_queue.pop().unwrap();
         #[cfg(feature = "publish_to_db")]
         let mut supabase = SupabasePublisher::from_env()?;
 
@@ -118,6 +127,7 @@ impl Liquidator {
                                         &acc.asset_bank,
                                         &acc.liab_bank,
                                         acc.asset_amount,
+                                        acc.liab_amount,
                                         &stale_swb_oracles,
                                     ) {
                                         thread_error!(
@@ -167,11 +177,14 @@ impl Liquidator {
 
             // TODO: gather info and crank any stale swb oracles
             #[cfg(feature = "publish_to_db")]
-            if Instant::now() > next_publishing {
-                if let Err(e) = self.publish_all_accounts_health(&mut supabase) {
+            if Instant::now() > next_publishing.next {
+                if let Err(e) = self.publish_all_accounts_health(
+                    &mut supabase,
+                    next_publishing.rule.min_liab_value_usd,
+                ) {
                     thread_error!("Failed to publish all accounts' health: {}", e);
                 }
-                next_publishing += period;
+                next_publishing = publish_queue.rotate_next(next_publishing);
             }
         }
         thread_info!("The Liquidator loop is stopped.");
@@ -185,17 +198,26 @@ impl Liquidator {
         let mut result: Vec<PreparedLiquidatableAccount> = vec![];
         while index < self.cache.marginfi_accounts.len()? {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
-                Ok(account) => match self.process_account(&account) {
-                    Ok(acc_opt) => {
-                        if let Some(acc) = acc_opt {
-                            result.push(acc);
+                Ok(account) => {
+                    if account.address == self.liquidator_account.liquidator_address {
+                        continue;
+                    }
+                    match self.process_account(&account) {
+                        Ok(acc_opt) => {
+                            if let Some(acc) = acc_opt {
+                                result.push(acc);
+                            }
+                        }
+                        Err(e) => {
+                            thread_trace!(
+                                "Failed to process account {:?}: {:?}",
+                                account.address,
+                                e
+                            );
+                            ERROR_COUNT.inc();
                         }
                     }
-                    Err(e) => {
-                        thread_trace!("Failed to process account {:?}: {:?}", account.address, e);
-                        ERROR_COUNT.inc();
-                    }
-                },
+                }
                 Err(err) => {
                     thread_error!(
                         "Failed to get Marginfi account by index {}: {:?}",
@@ -212,14 +234,18 @@ impl Liquidator {
     }
 
     #[cfg(feature = "publish_to_db")]
-    fn publish_all_accounts_health(&mut self, supabase: &mut SupabasePublisher) -> Result<()> {
+    fn publish_all_accounts_health(
+        &mut self,
+        supabase: &mut SupabasePublisher,
+        min_liab_value_usd: f64,
+    ) -> Result<()> {
         let mut index: usize = 0;
         let total_accs = self.cache.marginfi_accounts.len()?;
         while index < total_accs {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
                 Ok(account) => {
                     if let Err(e) =
-                        self.publish_account_health(&account, supabase, index == total_accs - 1)
+                        self.publish_account_health(&account, supabase, min_liab_value_usd)
                     {
                         thread_error!(
                             "Failed to publish Marginfi account health {}: {:?}",
@@ -239,6 +265,7 @@ impl Liquidator {
             }
             index += 1;
         }
+        supabase.flush_all()?;
 
         Ok(())
     }
@@ -248,13 +275,17 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
         supabase: &mut SupabasePublisher,
-        last_account: bool,
+        min_liab_value_usd: f64,
     ) -> Result<()> {
         let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
             &self.cache,
             &account.lending_account,
             RequirementType::Maintenance,
         )?;
+        if total_weighted_liabilities < min_liab_value_usd {
+            return Ok(());
+        }
+
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         let percentage_health = if total_weighted_assets == I80F48::ZERO {
             if total_weighted_liabilities == I80F48::ZERO {
@@ -276,7 +307,6 @@ impl Liquidator {
             total_weighted_liabilities.to_num::<f64>(),
             maintenance_health.to_num::<f64>(),
             percentage_health,
-            last_account,
         )?;
 
         Ok(())
@@ -310,18 +340,15 @@ impl Liquidator {
             };
 
         // Calculated max liquidatable amount is the defining factor for liquidation.
-        let (max_liquidatable_amount, profit) = self
-            .compute_max_liquidatable_asset_amount_with_banks(
-                account,
-                &asset_bank_pk,
-                &liab_bank_pk,
-            )?;
+        let (max_liquidatable_asset_amount, max_liquidatable_liab_amount, profit) = self
+            .compute_max_liquidatable_amounts_with_banks(account, &asset_bank_pk, &liab_bank_pk)?;
 
-        if max_liquidatable_amount.is_zero() {
+        if max_liquidatable_asset_amount.is_zero() {
             return Ok(None);
         }
 
-        let max_liab_coverage_value = self.get_max_borrow_for_bank(&liab_bank_pk)?;
+        let (max_liab_coverage_amount, max_liab_coverage_value) =
+            self.get_max_borrow_for_bank(&liab_bank_pk)?;
 
         // Asset
         let asset_bank_wrapper = self.cache.banks.try_get_bank(&asset_bank_pk)?;
@@ -334,10 +361,14 @@ impl Liquidator {
             RequirementType::Initial,
         )?;
 
-        let asset_amount_to_liquidate =
-            min(max_liquidatable_amount, liquidation_asset_amount_capacity);
+        let asset_amount_to_liquidate = min(
+            max_liquidatable_asset_amount,
+            liquidation_asset_amount_capacity,
+        );
+        let liab_amount_to_liquidate = min(max_liquidatable_liab_amount, max_liab_coverage_amount);
 
         let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.90);
+        let slippage_adjusted_liab_amount = liab_amount_to_liquidate * I80F48!(0.90);
 
         thread_debug!(
                 "Liquidation asset amount capacity: {:?}, asset_amount_to_liquidate: {:?}, slippage_adjusted_asset_amount: {:?}",
@@ -349,11 +380,13 @@ impl Liquidator {
             asset_bank: asset_bank_pk,
             liab_bank: liab_bank_pk,
             asset_amount: slippage_adjusted_asset_amount.to_num(),
+            liab_amount: slippage_adjusted_liab_amount.to_num(),
             profit: profit.to_num(),
         }))
     }
 
-    fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> Result<I80F48> {
+    // TODO: simplify this
+    fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> Result<(I80F48, I80F48)> {
         let lq_account = &self
             .cache
             .marginfi_accounts
@@ -430,7 +463,7 @@ impl Liquidator {
             max_borrow_value
         );
 
-        Ok(max_borrow_value)
+        Ok((max_borrow_amount, max_borrow_value))
     }
 
     fn find_liquidation_bank_candidates(
@@ -471,12 +504,12 @@ impl Liquidator {
         Ok(Some((*asset_bank, *liab_bank)))
     }
 
-    fn compute_max_liquidatable_asset_amount_with_banks(
+    fn compute_max_liquidatable_amounts_with_banks(
         &self,
         account: &MarginfiAccountWrapper,
         asset_bank_pk: &Pubkey,
         liab_bank_pk: &Pubkey,
-    ) -> Result<(I80F48, I80F48)> {
+    ) -> Result<(I80F48, I80F48, I80F48)> {
         let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
             &self.cache,
             &account.lending_account,
@@ -489,13 +522,66 @@ impl Liquidator {
             maintenance_health
         );
         if maintenance_health >= I80F48::ZERO {
-            return Ok((I80F48::ZERO, I80F48::ZERO));
+            // TODO: revisit this crazy return type
+            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
         }
 
         let asset_bank_wrapper = self.cache.banks.try_get_bank(asset_bank_pk)?;
         let asset_oracle_wrapper = OracleWrapper::build(&self.cache, asset_bank_pk)?;
+        let asset_price = asset_oracle_wrapper
+            .price_adapter
+            .get_price_of_type_ignore_conf(OraclePriceType::RealTime, None)?
+            .to_num::<f64>();
+        if let Some(&declared_value) = self.declared_values.get(&asset_bank_wrapper.bank.mint) {
+            let min_asset_price = declared_value * (1.0 - DECLARED_VALUE_RANGE);
+            if asset_price < min_asset_price {
+                thread_warn!(
+                    "Asset ({}) price is lower than the declared range: {} < {}",
+                    asset_bank_wrapper.bank.mint,
+                    asset_price,
+                    min_asset_price
+                );
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            }
+            let max_asset_price = declared_value * (1.0 + DECLARED_VALUE_RANGE);
+            if asset_price > max_asset_price {
+                thread_warn!(
+                    "Asset ({}) price is higher than the declared range: {} > {}",
+                    asset_bank_wrapper.bank.mint,
+                    asset_price,
+                    max_asset_price
+                );
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            }
+        }
         let liab_bank_wrapper = self.cache.banks.try_get_bank(liab_bank_pk)?;
         let liab_oracle_wrapper = OracleWrapper::build(&self.cache, liab_bank_pk)?;
+        let liab_price = liab_oracle_wrapper
+            .price_adapter
+            .get_price_of_type_ignore_conf(OraclePriceType::RealTime, None)?
+            .to_num::<f64>();
+        if let Some(&declared_value) = self.declared_values.get(&liab_bank_wrapper.bank.mint) {
+            let min_liab_price = declared_value * (1.0 - DECLARED_VALUE_RANGE);
+            if liab_price < min_liab_price {
+                thread_warn!(
+                    "Liability ({}) price is lower than the declared range: {} < {}",
+                    liab_bank_wrapper.bank.mint,
+                    liab_price,
+                    min_liab_price
+                );
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            }
+            let max_liab_price = declared_value * (1.0 + DECLARED_VALUE_RANGE);
+            if liab_price > max_liab_price {
+                thread_warn!(
+                    "Liability ({}) price is higher than the declared range: {} > {}",
+                    liab_bank_wrapper.bank.mint,
+                    liab_price,
+                    max_liab_price
+                );
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            }
+        }
 
         let asset_weight_maint: I80F48 = asset_bank_wrapper.bank.config.asset_weight_maint.into();
         let liab_weight_maint: I80F48 = liab_bank_wrapper.bank.config.liability_weight_maint.into();
@@ -506,7 +592,7 @@ impl Liquidator {
 
         if all >= I80F48::ZERO {
             thread_debug!("Account {:?} has no liquidatable amount: {:?}, asset_weight_maint: {:?}, liab_weight_maint: {:?}", account.address, all, asset_weight_maint, liab_weight_maint);
-            return Ok((I80F48::ZERO, I80F48::ZERO));
+            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
         }
 
         let underwater_maint_value =
@@ -533,7 +619,7 @@ impl Liquidator {
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
         if liquidator_profit <= self.min_profit {
-            return Ok((I80F48::ZERO, I80F48::ZERO));
+            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
         }
 
         let max_liquidatable_asset_amount = asset_bank_wrapper.calc_amount(
@@ -543,16 +629,27 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
+        let max_liquidatable_liab_amount = liab_bank_wrapper.calc_amount(
+            &liab_oracle_wrapper,
+            max_liquidatable_value,
+            BalanceSide::Liabilities,
+            RequirementType::Maintenance,
+        )?;
+
         thread_debug!("Account {:?} liquidability evaluation:\nTotal weighted Assets {:?}\nTotal weighted Liabilities {:?}\nMaintenance health {:?}\n\
             Asset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
             Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
-            Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nLiquidator profit (USD) {:?}", 
+            Max Liquidatable Value {:?}\nMax Liquidatable Asset Amount {:?}\nMax Liquidatable Liab Amount {:?}\nLiquidator profit (USD) {:?}", 
             account.address, total_weighted_assets, total_weighted_liabilities, maintenance_health,
             asset_bank_wrapper.address, asset_bank_wrapper.bank.config.asset_weight_maint, asset_amount, asset_value,
             liab_bank_wrapper.address, liab_bank_wrapper.bank.config.liability_weight_maint, liab_amount, liab_value,
-            max_liquidatable_value,max_liquidatable_asset_amount, liquidator_profit);
+            max_liquidatable_value, max_liquidatable_asset_amount, max_liquidatable_liab_amount, liquidator_profit);
 
-        Ok((max_liquidatable_asset_amount, liquidator_profit))
+        Ok((
+            max_liquidatable_asset_amount,
+            max_liquidatable_liab_amount,
+            liquidator_profit,
+        ))
     }
 
     /// Gets the balance for a given [`MarginfiAccount`] and [`Bank`]

@@ -163,6 +163,7 @@ impl LiquidatorAccount {
         asset_bank: &Pubkey,
         liab_bank: &Pubkey,
         asset_amount: u64,
+        liab_amount: u64,
         stale_swb_oracles: &HashSet<Pubkey>,
     ) -> Result<(), LiquidationError> {
         let liquidatee_account_address = liquidatee_account.address;
@@ -192,12 +193,25 @@ impl LiquidatorAccount {
         let signer_pk = self.signer.pubkey();
         let liab_mint = liab_bank_wrapper.bank.mint;
 
-        let lending_account = &self
+        let liquidator_account = &self
             .cache
             .marginfi_accounts
             .try_get_account(&self.liquidator_address)
-            .map_err(LiquidationError::from_anyhow_error)?
-            .lending_account;
+            .map_err(LiquidationError::from_anyhow_error)?;
+
+        // TODO: remove
+        if *liab_bank == Pubkey::from_str_const("BeNBJrAh1tZg5sqgt8D6AWKJLD5KkBrfZvtcgd7EuiAR") {
+            let uxd_balance = liquidator_account
+                .get_balance_for_bank(&liab_bank_wrapper)
+                .map(|(value, _)| value.to_num())
+                .unwrap_or(0);
+            if uxd_balance < liab_amount {
+                thread_info!("Not enough UXD collateral: ignoring liquidation");
+                return Ok(());
+            }
+        }
+
+        let lending_account = &liquidator_account.lending_account;
 
         let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
 

@@ -6,6 +6,10 @@ use postgres::{types::ToSql, Client};
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_native_certs;
+use serde::{Deserialize, Deserializer};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::time::{Duration, Instant};
 use std::{cmp::min, env};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
@@ -54,7 +58,6 @@ impl SupabasePublisher {
         liabilities_usd: f64,
         maintenance_health: f64,
         percentage_health: f64,
-        force_flush: bool,
     ) -> Result<()> {
         let now = Utc::now();
         self.buf.push(AccountHealthRow {
@@ -69,11 +72,6 @@ impl SupabasePublisher {
 
         // Flush full batches (may flush multiple batches if buffer grew a lot)
         self.flush_full_batches()?;
-
-        // End-of-batch: flush remainder
-        if force_flush {
-            self.flush_all()?;
-        }
         Ok(())
     }
 
@@ -84,7 +82,7 @@ impl SupabasePublisher {
         Ok(())
     }
 
-    fn flush_all(&mut self) -> Result<()> {
+    pub fn flush_all(&mut self) -> Result<()> {
         while !self.buf.is_empty() {
             let take = min(BATCH_SIZE, self.buf.len());
             self.exec_chunk(take)?;
@@ -197,4 +195,86 @@ fn make_tls() -> anyhow::Result<MakeRustlsConnect> {
         .with_no_client_auth();
 
     Ok(MakeRustlsConnect::new(tls_config))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Threshold {
+    pub min_liab_value_usd: f64,
+    #[serde(deserialize_with = "de_duration_secs")]
+    pub period: Duration,
+}
+
+impl PartialEq for Threshold {
+    fn eq(&self, other: &Self) -> bool {
+        // bitwise equality to avoid 0.0 vs -0.0 surprises
+        self.min_liab_value_usd.to_bits() == other.min_liab_value_usd.to_bits()
+            && self.period == other.period
+    }
+}
+impl Eq for Threshold {}
+
+fn de_duration_secs<'de, D>(de: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let secs = u64::deserialize(de)?;
+    Ok(Duration::from_secs(secs))
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct QItem {
+    pub next: Instant,
+    pub rule: Threshold,
+}
+
+// BinaryHeap is a max-heap; reverse to make it a min-heap by `next`.
+impl Ord for QItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.next.cmp(&self.next)
+    }
+}
+impl PartialOrd for QItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+pub struct PublishQueue(BinaryHeap<QItem>);
+
+impl PublishQueue {
+    /// Seed: 0-rule due now; others due at start + their period.
+    pub fn new(mut rules: Vec<Threshold>, start: Instant) -> Self {
+        // Ensure ascending order; also guarantees the 0-rule exists first if you rely on it.
+        rules.sort_by(|a, b| a.min_liab_value_usd.total_cmp(&b.min_liab_value_usd));
+
+        let heap = rules
+            .into_iter()
+            .map(|rule| {
+                let is_zero = rule.min_liab_value_usd == 0.0; // validated at load time
+                let next = if is_zero { start } else { start + rule.period };
+                QItem { next, rule }
+            })
+            .collect();
+
+        Self(heap)
+    }
+
+    /// Pop the earliest (next_due, rule). Returns None if empty.
+    pub fn pop(&mut self) -> Option<QItem> {
+        self.0.pop()
+    }
+
+    /// Push back with an explicit next time (e.g., old_next + rule.period).
+    fn push(&mut self, next: Instant, rule: Threshold) {
+        self.0.push(QItem { next, rule });
+    }
+
+    /// Reschedules the provided qitem for later and returns the next one in the queue.
+    pub fn rotate_next(&mut self, to_be_rescheduled: QItem) -> QItem {
+        self.push(
+            to_be_rescheduled.next + to_be_rescheduled.rule.period,
+            to_be_rescheduled.rule,
+        );
+        self.pop().unwrap()
+    }
 }
