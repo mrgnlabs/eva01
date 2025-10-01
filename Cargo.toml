@@ -11,6 +11,7 @@ publish_to_db = [
   "rustls-native-certs",
   "rustls-pemfile",
 ]
+pretty_logs = []
 
 [dependencies]
 solana-account-decoder = "=2.1.20"
