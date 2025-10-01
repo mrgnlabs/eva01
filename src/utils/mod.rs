@@ -6,6 +6,7 @@ pub mod swb_cranker;
 use anyhow::{anyhow, Error, Result};
 use backoff::ExponentialBackoff;
 use fixed::types::I80F48;
+use log::{debug, error};
 use marginfi::{
     bank_authority_seed,
     errors::MarginfiError,
@@ -493,83 +494,28 @@ macro_rules! ward {
     };
 }
 
-#[macro_export]
-macro_rules! thread_trace {
-    ($($arg:tt)*) => {
-        log::trace!(
-            "Thread {:?}. {}",
-            std::thread::current().id(),
-            format_args!($($arg)*)
-        )
-    };
-}
-
-#[macro_export]
-macro_rules! thread_debug {
-    ($($arg:tt)*) => {
-        log::debug!(
-            "Thread {:?}. {}",
-            std::thread::current().id(),
-            format_args!($($arg)*)
-        )
-    };
-}
-
-#[macro_export]
-macro_rules! thread_info {
-    ($($arg:tt)*) => {
-        log::info!(
-            "Thread {:?}. {}",
-            std::thread::current().id(),
-            format_args!($($arg)*)
-        )
-    };
-}
-
-#[macro_export]
-macro_rules! thread_warn {
-    ($($arg:tt)*) => {
-        log::warn!(
-            "Thread {:?}. {}",
-            std::thread::current().id(),
-            format_args!($($arg)*)
-        )
-    };
-}
-
-#[macro_export]
-macro_rules! thread_error {
-    ($($arg:tt)*) => {
-        log::error!(
-            "Thread {:?}. {}",
-            std::thread::current().id(),
-            format_args!($($arg)*)
-        )
-    };
-}
-
 pub fn log_genuine_error(prefix: &str, error: Error) {
     match error.downcast::<anchor_lang::error::Error>() {
         Ok(error) => match error {
             anchor_lang::error::Error::AnchorError(anchor_error) => {
                 match MarginfiError::from(anchor_error.error_code_number) {
                     MarginfiError::SwitchboardStalePrice | MarginfiError::PythPushStalePrice => {
-                        thread_debug!("Discarding the oracle stale price error");
+                        debug!("Discarding the oracle stale price error");
                     }
                     MarginfiError::MathError => {
-                        thread_debug!("Discarding the empty staked bank error");
+                        debug!("Discarding the empty staked bank error");
                     }
                     _ => {
-                        thread_error!("{}: MarginfiError - {}", prefix, anchor_error.error_msg);
+                        error!("{}: MarginfiError - {}", prefix, anchor_error.error_msg);
                     }
                 }
             }
 
             anchor_lang::error::Error::ProgramError(program_error) => {
-                thread_error!("{}: ProgramError - {}", prefix, program_error);
+                error!("{}: ProgramError - {}", prefix, program_error);
             }
         },
-        Err(err) => thread_error!("{}: {}", prefix, err),
+        Err(err) => error!("{}: {}", prefix, err),
     }
 }
 

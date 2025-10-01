@@ -7,9 +7,9 @@ use crate::{
     geyser_processor::GeyserProcessor,
     liquidator::Liquidator,
     metrics::{FAILED_LIQUIDATIONS, LIQUIDATION_ATTEMPTS},
-    thread_error, thread_info,
     wrappers::liquidator_account::LiquidatorAccount,
 };
+use log::{error, info};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::Signer};
 use std::{
@@ -18,7 +18,7 @@ use std::{
 };
 
 pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> anyhow::Result<()> {
-    thread_info!(
+    info!(
         "Starting liquidator for group: {:?}",
         config.general_config.marginfi_group_key
     );
@@ -39,7 +39,7 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
     // });
 
     let wallet_pubkey = Keypair::from_bytes(&config.general_config.wallet_keypair)?.pubkey();
-    thread_info!("Liquidator public key: {}", wallet_pubkey);
+    info!("Liquidator public key: {}", wallet_pubkey);
 
     // Solana Clock
     let clock = {
@@ -52,7 +52,7 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
         config.general_config.solana_clock_refresh_interval,
     )?;
 
-    thread_info!("Loading Cache...");
+    info!("Loading Cache...");
     let mut cache = Cache::new(
         wallet_pubkey,
         config.general_config.marginfi_program_id,
@@ -70,7 +70,7 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
 
     let accounts_to_track = get_accounts_to_track(&cache)?;
 
-    thread_info!("Initializing services...");
+    info!("Initializing services...");
 
     // GeyserService -> GeyserProcessor
     // GeyserProcessor -> Liquidator/Rebalancer
@@ -110,44 +110,44 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
         cache,
     )?;
 
-    thread_info!("Starting services...");
+    info!("Starting services...");
 
     let cloned_stop = stop_liquidator.clone();
     thread::spawn(move || clock_manager.start(cloned_stop));
 
     thread::spawn(move || {
         if let Err(e) = liquidator.start() {
-            thread_error!("The Liquidator service failed! {:?}", e);
+            error!("The Liquidator service failed! {:?}", e);
             panic!("Fatal error in the Liquidator service!");
         }
     });
 
     thread::spawn(move || {
         if let Err(e) = geyser_processor.start() {
-            thread_error!("GeyserProcessor failed! {:?}", e);
+            error!("GeyserProcessor failed! {:?}", e);
             panic!("Fatal error in GeyserProcessor!");
         }
     });
 
     thread::spawn(move || {
         if let Err(e) = geyser_service.start() {
-            thread_error!("GeyserService failed! {:?}", e);
+            error!("GeyserService failed! {:?}", e);
             panic!("Fatal error in GeyserService!");
         }
     });
 
-    thread_info!("Entering the Main loop.");
+    info!("Entering the Main loop.");
     let monitor_geyser_rx = geyser_rx.clone();
     while !stop_liquidator.load(std::sync::atomic::Ordering::SeqCst) {
-        thread_info!("Stats: Geyser Channel depth [{}]", monitor_geyser_rx.len(),);
-        thread_info!(
+        info!("Stats: Geyser Channel depth [{}]", monitor_geyser_rx.len(),);
+        info!(
             "Stats: Liqudations [attempts, failed] -> [{},{}]",
             LIQUIDATION_ATTEMPTS.get(),
             FAILED_LIQUIDATIONS.get()
         );
         thread::sleep(std::time::Duration::from_secs(5));
     }
-    thread_info!("The Main loop stopped.");
+    info!("The Main loop stopped.");
 
     Ok(())
 }

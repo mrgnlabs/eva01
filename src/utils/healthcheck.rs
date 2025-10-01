@@ -3,9 +3,8 @@ use std::sync::{
     Arc, Mutex,
 };
 
+use log::{debug, error, info};
 use tiny_http::{Response, Server};
-
-use crate::{thread_debug, thread_error, thread_info};
 
 const HTTP_STATUS_OK: u16 = 200;
 const HTTP_STATUS_NOT_FOUND: u16 = 404;
@@ -51,14 +50,14 @@ impl HealthCheckServer {
         if let Ok(state) = self.health_state.lock() {
             state.to_http_response()
         } else {
-            thread_error!("Failed to acquire lock to get health state");
+            error!("Failed to acquire lock to get health state");
             Response::from_string("Internal Server Error")
                 .with_status_code(HTTP_STATUS_INTERNAL_SERVER_ERROR)
         }
     }
 
     pub fn start(&self) -> anyhow::Result<()> {
-        thread_info!("Running the Healthcheck server on port {}", self.port);
+        info!("Running the Healthcheck server on port {}", self.port);
 
         let server = Server::http(format!("0.0.0.0:{}", self.port))
             .map_err(|e| anyhow::anyhow!("Failed to create the Healthcheck server: {}", e))?;
@@ -67,22 +66,22 @@ impl HealthCheckServer {
             for request in server.incoming_requests() {
                 let response = match request.url() {
                     "/healthz" => {
-                        thread_debug!("Received the '/healthz' request");
+                        debug!("Received the '/healthz' request");
                         self.state_to_http_response()
                     }
                     "/readyz" => {
-                        thread_debug!("Received the '/readyz' request");
+                        debug!("Received the '/readyz' request");
                         self.state_to_http_response()
                     }
                     _ => Response::from_string("Not Found").with_status_code(HTTP_STATUS_NOT_FOUND),
                 };
                 if let Err(e) = request.respond(response) {
-                    thread_info!("Failed to respond to the unknown request: {}", e);
+                    info!("Failed to respond to the unknown request: {}", e);
                 }
             }
         }
 
-        thread_info!("Healthcheck server stopped");
+        info!("Healthcheck server stopped");
 
         Ok(())
     }

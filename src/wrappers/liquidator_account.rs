@@ -8,11 +8,11 @@ use crate::{
         make_withdraw_ix,
     },
     metrics::LIQUIDATION_ATTEMPTS,
-    thread_debug, thread_info, thread_warn,
     utils::{check_asset_tags_matching, swb_cranker::is_stale_swb_price_error},
     wrappers::oracle::OracleWrapper,
 };
 use anyhow::{anyhow, Result};
+use log::{debug, info, warn};
 use marginfi_type_crate::types::BalanceSide;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 
@@ -93,14 +93,14 @@ impl LiquidatorAccount {
             config.marginfi_program_id,
             marginfi_group_id,
         )?;
-        thread_info!(
+        info!(
             "Found {} MarginFi accounts for the provided signer: {:?}",
             accounts.len(),
             accounts
         );
 
         let liquidator_address = if accounts.is_empty() {
-            thread_info!("No MarginFi account found for the provided signer. Creating it...");
+            info!("No MarginFi account found for the provided signer. Creating it...");
             let liquidator_marginfi_account = initialize_marginfi_account(
                 &rpc_client,
                 config.marginfi_program_id,
@@ -113,7 +113,7 @@ impl LiquidatorAccount {
                 .try_get_account(&liquidator_marginfi_account)
                 .is_err()
             {
-                thread_info!("Waiting for the new account info to arrive...");
+                info!("Waiting for the new account info to arrive...");
                 thread::sleep(Duration::from_secs(5));
             }
 
@@ -167,11 +167,9 @@ impl LiquidatorAccount {
         stale_swb_oracles: &HashSet<Pubkey>,
     ) -> Result<(), LiquidationError> {
         let liquidatee_account_address = liquidatee_account.address;
-        thread_info!(
+        info!(
             "Liquidating account {:?} with liquidator account {:?}. Amount: {}",
-            liquidatee_account_address,
-            self.liquidator_address,
-            asset_amount
+            liquidatee_account_address, self.liquidator_address, asset_amount
         );
 
         let asset_bank_wrapper = self
@@ -206,7 +204,7 @@ impl LiquidatorAccount {
                 .map(|(value, _)| value.to_num())
                 .unwrap_or(0);
             if uxd_balance < liab_amount {
-                thread_info!("Not enough UXD collateral: ignoring liquidation");
+                info!("Not enough UXD collateral: ignoring liquidation");
                 return Ok(());
             }
         }
@@ -224,7 +222,7 @@ impl LiquidatorAccount {
             if !check_asset_tags_matching(&bank_to_validate_against.bank, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
-                thread_debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
+                debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
                 return Ok(());
             }
         }
@@ -240,14 +238,13 @@ impl LiquidatorAccount {
                 self.cache.clone(),
             )
             .map_err(LiquidationError::from_anyhow_error)?;
-        thread_debug!(
+        debug!(
             "The Liquidator {} observation accounts: {:?}",
-            &self.liquidator_address,
-            liquidator_observation_accounts
+            &self.liquidator_address, liquidator_observation_accounts
         );
 
         if contains_stale_oracles(stale_swb_oracles, &liquidator_swb_oracles) {
-            thread_warn!("Skipping liquidation attempt because liquidator has stale oracles.");
+            warn!("Skipping liquidation attempt because liquidator has stale oracles.");
             return Ok(());
         }
 
@@ -261,14 +258,13 @@ impl LiquidatorAccount {
                 self.cache.clone(),
             )
             .map_err(LiquidationError::from_anyhow_error)?;
-        thread_debug!(
+        debug!(
             "The Liquidatee {:?} observation accounts: {:?}",
-            liquidatee_account_address,
-            liquidatee_observation_accounts
+            liquidatee_account_address, liquidatee_observation_accounts
         );
 
         if contains_stale_oracles(stale_swb_oracles, &liquidatee_swb_oracles) {
-            thread_warn!("Skipping liquidation attempt because liquidatee has stale oracles.");
+            warn!("Skipping liquidation attempt because liquidatee has stale oracles.");
             return Ok(());
         }
 
@@ -308,7 +304,7 @@ impl LiquidatorAccount {
         // Use LUTs only when your transaction involves a large number of observation accounts.
         let luts: &Vec<AddressLookupTableAccount> = {
             if total_observation_accounts > 22 {
-                thread_debug!(
+                debug!(
                     "Using LUT for liquidating the Account {} .",
                     liquidatee_account_address
                 );
@@ -329,7 +325,7 @@ impl LiquidatorAccount {
         let txn = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
             .map_err(LiquidationError::from_signer_error)?;
 
-        thread_info!(
+        info!(
             "Sending liquidation txn for the Account {} .",
             liquidatee_account_address
         );
@@ -345,10 +341,9 @@ impl LiquidatorAccount {
                 },
             ) {
             Ok(signature) => {
-                thread_info!(
+                info!(
                     "Liquidation txn for the Account {} was confirmed. Signature: {}",
-                    liquidatee_account_address,
-                    signature,
+                    liquidatee_account_address, signature,
                 );
                 Ok(())
             }
@@ -390,7 +385,7 @@ impl LiquidatorAccount {
         } else {
             vec![]
         };
-        thread_debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
+        debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
         let (observation_accounts, _) =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
@@ -429,7 +424,7 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        thread_debug!(
+        debug!(
             "Withdrawing {:?} unscaled tokens of the Mint {} from the Liquidator account {:?}, Bank {:?}, ",
             amount,
             mint,
@@ -450,7 +445,7 @@ impl LiquidatorAccount {
             )
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        thread_debug!("Withdrawal txn: {:?} ", res);
+        debug!("Withdrawal txn: {:?} ", res);
         Ok(())
     }
 
@@ -483,11 +478,9 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        thread_debug!(
+        debug!(
             "Repaying {:?} unscaled tokens to the bank {}, token account {:?}",
-            amount,
-            bank.address,
-            token_account
+            amount, bank.address, token_account
         );
 
         let res = self
@@ -501,10 +494,9 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             );
-        thread_debug!(
+        debug!(
             "The repaying result for account {:?} (without preflight check): {:?} ",
-            marginfi_account,
-            res
+            marginfi_account, res
         );
 
         Ok(())
@@ -545,7 +537,7 @@ impl LiquidatorAccount {
                 recent_blockhash,
             );
 
-        thread_debug!("Depositing {:?}, token account {:?}", amount, token_account);
+        debug!("Depositing {:?}, token account {:?}", amount, token_account);
 
         let res = self
             .rpc_client
@@ -558,10 +550,9 @@ impl LiquidatorAccount {
                     ..Default::default()
                 },
             );
-        thread_debug!(
+        debug!(
             "Depositing result for account {:?} (without preflight check): {:?} ",
-            marginfi_account,
-            res
+            marginfi_account, res
         );
 
         Ok(())
@@ -573,7 +564,7 @@ fn contains_stale_oracles(stale_oracles: &HashSet<Pubkey>, account_oracles: &[Pu
         .iter()
         .find(|oracle| stale_oracles.contains(*oracle))
     {
-        thread_warn!("Found stale oracle: {}.", oracle);
+        warn!("Found stale oracle: {}.", oracle);
         true
     } else {
         false

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
+use log::{error, trace, warn};
 use marginfi::state::price::{
     OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias, SwitchboardPullPriceFeed,
 };
@@ -10,7 +11,7 @@ use switchboard_on_demand_client::PullFeedAccountData;
 
 use crate::{
     cache::Cache,
-    clock_manager, thread_error, thread_warn,
+    clock_manager,
     utils::{find_oracle_keys, load_swb_pull_account_from_bytes},
 };
 
@@ -80,7 +81,7 @@ impl OracleWrapperTrait for OracleWrapper {
                             break;
                         }
                         Err(e) => {
-                            thread_warn!(
+                            warn!(
                             "Failed to deserialize Switchboard Pull account data for Oracle {:?} : {}",
                             oracle_address,
                             e
@@ -107,7 +108,7 @@ impl OracleWrapperTrait for OracleWrapper {
                             break;
                         }
                         Err(e) => {
-                            crate::thread_trace!(
+                            trace!(
                             "Failed to build Pyth Push price adapter for Bank {:?} and Oracle {:?} : {}",
                             bank_address,
                             oracle_address,
@@ -156,10 +157,9 @@ impl OracleWrapperTrait for OracleWrapper {
                 result = Some(oracle_wrapper);
             }
             _ => {
-                thread_error!(
+                error!(
                     "Unsupported Oracle setup for the Bank {:?} : {:?}",
-                    bank_address,
-                    bank_wrapper.bank.config.oracle_setup
+                    bank_address, bank_wrapper.bank.config.oracle_setup
                 )
             }
         }
