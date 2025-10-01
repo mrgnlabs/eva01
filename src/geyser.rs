@@ -1,11 +1,9 @@
-use crate::{
-    clock_manager, config::GeneralConfig, thread_error, thread_info, thread_trace,
-    utils::account_update_to_account, ward,
-};
+use crate::{clock_manager, config::GeneralConfig, utils::account_update_to_account, ward};
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
+use log::{error, info, trace};
 use marginfi_type_crate::types::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::Account, clock::Clock};
@@ -93,13 +91,13 @@ impl GeyserService {
     }
 
     pub fn start(&self) -> Result<()> {
-        thread_info!("Staring GeyserService.");
+        info!("Staring GeyserService.");
 
         let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().copied().collect();
         let tls_config = ClientTlsConfig::new().with_native_roots();
 
         while !self.stop.load(Ordering::Relaxed) {
-            thread_info!("Connecting to Geyser...");
+            info!("Connecting to Geyser...");
             let sub_req = Self::build_geyser_subscribe_request(
                 &tracked_accounts_vec,
                 &self.marginfi_program_id,
@@ -115,17 +113,17 @@ impl GeyserService {
                 .tokio_rt
                 .block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
 
-            thread_info!("Entering the GeyserService loop.");
+            info!("Entering the GeyserService loop.");
             while let Some(msg) = self.tokio_rt.block_on(stream.next()) {
                 match msg {
                     Ok(msg) => {
-                        thread_trace!("Received Geyser msg: {:?}", msg);
+                        trace!("Received Geyser msg: {:?}", msg);
                         let update_oneof = ward!(msg.update_oneof, continue);
                         if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
                             // Make sure that the message is not too old.
                             let clock = clock_manager::get_clock(&self.clock)?;
                             if account.slot < clock.slot {
-                                thread_trace!("Discarding stale message {:?}.", account);
+                                trace!("Discarding stale message {:?}.", account);
                                 continue;
                             }
 
@@ -158,7 +156,7 @@ impl GeyserService {
                         }
                     }
                     Err(error) => {
-                        thread_error!("Received error message from Geyser! {:?}", error);
+                        error!("Received error message from Geyser! {:?}", error);
                     }
                 }
 
@@ -168,7 +166,7 @@ impl GeyserService {
                 }
             }
         }
-        thread_info!("The GeyserService loop is stopped.");
+        info!("The GeyserService loop is stopped.");
 
         Ok(())
     }
@@ -180,7 +178,7 @@ impl GeyserService {
             account: account.clone(),
         };
         if let Err(e) = self.geyser_tx.send(update) {
-            thread_error!("Error channeling update to the Geyser processor! {:?}", e);
+            error!("Error channeling update to the Geyser processor! {:?}", e);
         }
     }
 

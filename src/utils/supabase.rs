@@ -1,7 +1,7 @@
-use crate::thread_debug;
 use anchor_lang::prelude::Pubkey;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use log::debug;
 use postgres::{types::ToSql, Client};
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
@@ -145,7 +145,7 @@ impl SupabasePublisher {
         for _ in 0..5 {
             match self.client.execute(sql, params) {
                 Ok(n) => {
-                    thread_debug!("Wrote {} rows to DB", n);
+                    debug!("Wrote {} rows to DB", n);
                     return Ok(());
                 }
                 Err(e) if is_transient(&e) => {

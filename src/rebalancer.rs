@@ -1,7 +1,6 @@
 use crate::{
     cache::Cache,
     config::Eva01Config,
-    thread_debug, thread_error, thread_info, thread_trace,
     utils::{
         self, build_emode_config, calc_total_weighted_assets_liabs, calc_weighted_bank_assets,
         calc_weighted_bank_liabs, find_oracle_keys, get_free_collateral, swb_cranker::SwbCranker,
@@ -22,6 +21,7 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
+use log::{debug, error, info, trace};
 use marginfi::state::{marginfi_account::RequirementType, price::PriceBias};
 use marginfi_type_crate::{
     constants::EXP_10_I80F48,
@@ -115,16 +115,15 @@ impl Rebalancer {
         match self.needs_to_be_rebalanced(&lq_acc) {
             Ok(should_rebalance) => {
                 if should_rebalance {
-                    thread_info!("Running the Rebalancing process...");
+                    info!("Running the Rebalancing process...");
                     self.rebalance_accounts();
-                    thread_info!("The Rebalancing process is complete.");
+                    info!("The Rebalancing process is complete.");
                 }
             }
             Err(error) => {
-                thread_error!(
+                error!(
                     "Failed to check if the Liquidator account {} needs to be rebalanced: {}",
-                    &self.liquidator_account.liquidator_address,
-                    error
+                    &self.liquidator_account.liquidator_address, error
                 );
             }
         }
@@ -182,18 +181,16 @@ impl Rebalancer {
             return Ok(());
         }
 
-        thread_debug!(
+        debug!(
             "Depositing {} of preferred token to the Swap mint bank {:?}.",
-            amount,
-            &self.swap_mint_bank
+            amount, &self.swap_mint_bank
         );
 
         let bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank)?;
         if let Err(error) = self.liquidator_account.deposit(&bank_wrapper, amount) {
-            thread_error!(
+            error!(
                 "Failed to deposit to the Bank ({:?}): {:?}",
-                &self.swap_mint_bank,
-                error
+                &self.swap_mint_bank, error
             );
         }
 
@@ -202,36 +199,36 @@ impl Rebalancer {
 
     fn rebalance_accounts(&mut self) {
         if let Err(error) = self.crank_active_swb_oracles() {
-            thread_error!(
+            error!(
                 "Failed to crank Swb Oracles for the Liquidator banks: {}",
                 error
             )
         }
 
         if let Err(error) = self.repay_liabilities() {
-            thread_error!("Failed to repay liabilities! {}", error)
+            error!("Failed to repay liabilities! {}", error)
         }
 
         let sold_mints = self
             .sell_non_preferred_deposits()
-            .map_err(|e| thread_error!("Failed to sell non preferred assets! {}", e))
+            .map_err(|e| error!("Failed to sell non preferred assets! {}", e))
             .unwrap_or_default();
-        thread_debug!(
+        debug!(
             "Sold assets for {:?} non-preferred mints.",
             sold_mints.len()
         );
 
         let amount = self
             .drain_tokens_from_token_accounts()
-            .map_err(|e| thread_error!("Failed to drain the Liquidator's tokens! {}", e))
+            .map_err(|e| error!("Failed to drain the Liquidator's tokens! {}", e))
             .unwrap_or_default();
-        thread_debug!(
+        debug!(
             "Drained {:?} tokens from the Liquidator's token accounts.",
             amount
         );
 
         if let Err(error) = self.deposit_preferred_token() {
-            thread_error!("Failed to deposit preferred token: {}", error)
+            error!("Failed to deposit preferred token: {}", error)
         }
     }
 
@@ -249,15 +246,14 @@ impl Rebalancer {
 
         let mut sold_mints = HashSet::new();
 
-        thread_debug!("Selling non-preferred assets.");
+        debug!("Selling non-preferred assets.");
 
         for bank_pk in non_preferred_assets {
             match self.withdraw_and_sell_asset(&bank_pk, &liquidator_account) {
                 Err(error) => {
-                    thread_error!(
+                    error!(
                         "Failed to withdraw and sell asset for the Bank ({}): {:?}",
-                        bank_pk,
-                        error
+                        bank_pk, error
                     );
                 }
                 Ok(mint_pk) => {
@@ -277,13 +273,12 @@ impl Rebalancer {
         let liabilities = lq_account.get_liabilities_shares();
 
         if !liabilities.is_empty() {
-            thread_debug!("Repaying liabilities.");
+            debug!("Repaying liabilities.");
             for (_, bank_pk) in liabilities {
                 if let Err(err) = self.repay_liability(bank_pk, &lq_account) {
-                    thread_error!(
+                    error!(
                         "Failed to repay liability for the Bank ({}): {:?}",
-                        bank_pk,
-                        err
+                        bank_pk, err
                     );
                 }
             }
@@ -305,10 +300,9 @@ impl Rebalancer {
     ) -> anyhow::Result<()> {
         let bank_wrapper = self.cache.banks.try_get_bank(&bank_pk)?;
 
-        thread_debug!(
+        debug!(
             "Evaluating the {:?} Bank liability for the Liquidator account {:?}.",
-            &bank_pk,
-            lq_account.address
+            &bank_pk, lq_account.address
         );
 
         // Get the balance for the liability bank and check if it's valid
@@ -333,16 +327,14 @@ impl Rebalancer {
             BalanceSide::Liabilities,
         )?;
         if liab_usd_value < self.token_account_dust_threshold {
-            thread_debug!(
+            debug!(
                 "The {:?} unscaled Liability tokens of Bank {:?} are below the dust threshold {}.",
-                liab_balance,
-                bank_pk,
-                self.token_account_dust_threshold
+                liab_balance, bank_pk, self.token_account_dust_threshold
             );
             return Ok(());
         }
 
-        thread_debug!(
+        debug!(
             "The {:?} unscaled Liability tokens of the Bank {:?} need to be repaid with {:?} tokens of the preferred asset Bank {:?}, Mint {:?}.",
             liab_balance,
             bank_pk,
@@ -378,7 +370,7 @@ impl Rebalancer {
 
         let amount_to_swap = min(liab_balance + withdraw_amount, required_swap_token);
         if amount_to_swap.is_positive() {
-            thread_debug!(
+            debug!(
                 "Swapping the {:?} unscaled tokens of the Mint {:?} to the tokens of the Bank {:?} ",
                 amount_to_swap,
                 self.swap_mint,
@@ -391,7 +383,7 @@ impl Rebalancer {
             )?;
         }
 
-        thread_debug!("Repaying liability for the Bank {}", bank_pk);
+        debug!("Repaying liability for the Bank {}", bank_pk);
 
         let token_balance = self
             .get_token_balance_for_mint(&bank_wrapper.bank.mint)
@@ -419,14 +411,14 @@ impl Rebalancer {
                             return Ok(true);
                         }
                     }
-                    Err(error) => thread_error!(
+                    Err(error) => error!(
                         "Failed compute the Liquidator's non preferred Token {}, mint {} value for balance evaluation: {}",
                         token_address,
                         mint_address,
                         error
                     ),
                 },
-                Err(error) => thread_debug!(
+                Err(error) => debug!(
                     "Skipping evaluation of the Liquidator's non preferred Token {} balance, mint {}. Cause: {}",
                     token_address,
                     mint_address,
@@ -473,7 +465,7 @@ impl Rebalancer {
                             self.swap_mint,
                         )?;
                     } else {
-                        thread_debug!(
+                        debug!(
                                 "The {:?} unscaled Liquidator's Token {:?} amount is below the dust threshold {}.",
                                 wrapper.get_amount(),
                                 &token,
@@ -481,7 +473,7 @@ impl Rebalancer {
                             );
                     }
                 }
-                Err(error) => thread_trace!(
+                Err(error) => trace!(
                     "Not draining the Liquidator's token {} because failed to obtain the token wrapper: {}",
                     token,
                     error
@@ -525,7 +517,7 @@ impl Rebalancer {
                 input_mint
             ));
         }
-        thread_info!("Jupiter swap: {} -> {}", input_mint, output_mint);
+        info!("Jupiter swap: {} -> {}", input_mint, output_mint);
         let jup_swap_client = JupiterSwapApiClient::new(self.jup_swap_api_url.clone());
 
         let quote_response = self
@@ -560,12 +552,9 @@ impl Rebalancer {
 
         tx = VersionedTransaction::try_new(tx.message, &[&self.signer])?;
 
-        thread_info!(
+        info!(
             "Swapping unscaled {} tokens of mint {} to {} tokens of mint {} ...",
-            amount,
-            input_mint,
-            out_amount,
-            output_mint
+            amount, input_mint, out_amount, output_mint
         );
 
         let sig = self
@@ -579,7 +568,7 @@ impl Rebalancer {
                     ..Default::default()
                 },
             )?;
-        thread_info!("The swap txn is finalized. Sig: {:?}", sig);
+        info!("The swap txn is finalized. Sig: {:?}", sig);
 
         Ok(out_amount)
     }
@@ -654,19 +643,17 @@ impl Rebalancer {
             Ok(account) => match utils::accessor::amount(account.data()) {
                 Ok(amount) => Some(I80F48::from_num(amount)),
                 Err(error) => {
-                    thread_error!(
+                    error!(
                         "Failed to obtain balance amount for the Token {}: {}",
-                        token_account_address,
-                        error
+                        token_account_address, error
                     );
                     None
                 }
             },
             Err(error) => {
-                thread_error!(
+                error!(
                     "Failed to get the Token account {}: {}",
-                    token_account_address,
-                    error
+                    token_account_address, error
                 );
                 None
             }

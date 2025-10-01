@@ -1,12 +1,11 @@
 use bincode::deserialize;
+use log::{debug, error, info};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::clock::Clock;
 use solana_sdk::sysvar::{self};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use crate::{thread_debug, thread_error, thread_info};
 
 // TODO: merge into Cache
 pub struct ClockManager {
@@ -21,7 +20,7 @@ impl ClockManager {
         rpc_url: String,
         refresh_interval_sec: u64,
     ) -> anyhow::Result<Self> {
-        thread_info!("Initializing ClockManager with RPC URL: {}", rpc_url);
+        info!("Initializing ClockManager with RPC URL: {}", rpc_url);
 
         let rpc_client = RpcClient::new(rpc_url);
         //        let clock = Arc::new(Mutex::new(fetch_clock(&rpc_client)?));
@@ -35,10 +34,10 @@ impl ClockManager {
     }
 
     pub fn start(&mut self, stop_liquidator: Arc<AtomicBool>) {
-        thread_info!("Starting the ClockManager loop.");
+        info!("Starting the ClockManager loop.");
         while !stop_liquidator.load(Ordering::Relaxed) {
             std::thread::sleep(self.refresh_interval);
-            thread_debug!("Updating the Solana Clock...");
+            debug!("Updating the Solana Clock...");
             match fetch_clock(&self.rpc_client) {
                 Ok(clock) => {
                     match self.clock.lock() {
@@ -46,13 +45,13 @@ impl ClockManager {
                             *clock_guard = clock;
                         }
                         Err(err) => {
-                            thread_error!("Failed to lock the clock mutex for update: {:?}", err);
+                            error!("Failed to lock the clock mutex for update: {:?}", err);
                         }
                     }
-                    thread_debug!("Updated the Solana Clock: {:?}", self.clock);
+                    debug!("Updated the Solana Clock: {:?}", self.clock);
                 }
                 Err(e) => {
-                    thread_error!("Failed to update the Solana Clock! {:?}", e);
+                    error!("Failed to update the Solana Clock! {:?}", e);
                 }
             }
         }
