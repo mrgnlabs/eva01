@@ -137,7 +137,8 @@ impl OracleWrapperTrait for OracleWrapper {
                     (&mint_oracle_address, &mut mint_oracle).into_account_info();
 
                 let sol_pool_oracle_address = *oracle_addresses.get(2).unwrap();
-                let mut sol_pool_oracle = cache.oracles.try_get_account(&mint_oracle_address)?;
+                let mut sol_pool_oracle =
+                    cache.oracles.try_get_account(&sol_pool_oracle_address)?;
                 let sol_pool_account_info =
                     (&sol_pool_oracle_address, &mut sol_pool_oracle).into_account_info();
 
