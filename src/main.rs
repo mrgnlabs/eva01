@@ -8,6 +8,8 @@ use std::{
         Arc,
     },
 };
+#[cfg(not(feature = "pretty_logs"))]
+use {env_logger::Target, log::Level, std::io::Write as _};
 
 /// Prometheus metrics
 mod metrics;
@@ -45,8 +47,7 @@ mod cache;
 mod cache_loader;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Assemble logger, with INFO as default log level
-    Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_logging();
 
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("Panic occurred: {:#?}", panic_info);
@@ -82,4 +83,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     crate::cli::main_entry(stop)?;
 
     Ok(())
+}
+
+fn init_logging() {
+    let mut b = Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    #[cfg(feature = "pretty_logs")]
+    b.init();
+    #[cfg(not(feature = "pretty_logs"))]
+    b.target(Target::Stdout)
+        .format(|buf, record| {
+            let sev = match record.level() {
+                Level::Error => "ERROR",
+                Level::Warn => "WARNING",
+                Level::Info => "INFO",
+                Level::Debug => "DEBUG",
+                Level::Trace => "DEBUG",
+            };
+            writeln!(
+                buf,
+                "{{\"severity\":\"{}\",\"message\":\"{}\",\"target\":\"{}\"}}",
+                sev,
+                record.args(),
+                record.target(),
+            )
+        })
+        .init();
 }
