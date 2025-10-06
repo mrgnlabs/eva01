@@ -69,9 +69,9 @@ impl GeyserProcessor {
             AccountType::Marginfi => {
                 let marginfi_account =
                     bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
-                self.cache.marginfi_accounts.try_insert({
-                    MarginfiAccountWrapper::new(msg.address, marginfi_account.lending_account)
-                })?;
+                self.cache
+                    .marginfi_accounts
+                    .try_insert(MarginfiAccountWrapper::new(msg.address, marginfi_account))?;
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
             }

@@ -1,4 +1,5 @@
 pub mod healthcheck;
+pub mod lut_cache;
 #[cfg(feature = "publish_to_db")]
 pub mod supabase;
 pub mod swb_cranker;

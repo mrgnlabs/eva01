@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use anchor_spl::associated_token;
 use anyhow::Ok;
 use log::{debug, error, info, warn};
-use marginfi_type_crate::types::{Bank, MarginfiAccount};
+use marginfi_type_crate::types::{Bank, MarginfiAccount, MarginfiGroup};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
     rpc_client::RpcClient,
@@ -55,6 +55,11 @@ impl CacheLoader {
     }
 
     pub fn load_cache(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        let marginfi_group_account = self.rpc_client.get_account(&cache.marginfi_group_address)?;
+        let marginfi_group =
+            bytemuck::from_bytes::<MarginfiGroup>(&marginfi_group_account.data[8..]);
+        cache.global_fee_wallet = marginfi_group.fee_state_cache.global_fee_wallet;
+
         self.load_luts(cache)?;
         self.load_marginfi_accounts(cache)?;
         self.load_banks(cache)?;
@@ -118,10 +123,7 @@ impl CacheLoader {
         {
             if let Some(account) = account_opt {
                 let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-                let maw = MarginfiAccountWrapper {
-                    address: *address,
-                    lending_account: marginfi_account.lending_account,
-                };
+                let maw = MarginfiAccountWrapper::new(*address, marginfi_account);
                 cache.marginfi_accounts.try_insert(maw)?;
             } else {
                 warn!("Couldn't load Marginfi account for key: {}", *address);

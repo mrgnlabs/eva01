@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use accounts::MarginfiAccountsCache;
 use anyhow::Result;
 use banks::BanksCache;
+use marginfi_type_crate::constants::FEE_STATE_SEED;
 use mints::MintsCache;
 use oracles::OraclesCache;
 use solana_sdk::{address_lookup_table::AddressLookupTableAccount, clock::Clock, pubkey::Pubkey};
@@ -30,6 +31,8 @@ pub struct Cache {
     pub tokens: TokensCache,
     pub clock: Arc<Mutex<Clock>>,
     pub luts: Vec<AddressLookupTableAccount>,
+    pub global_fee_state_key: Pubkey,
+    pub global_fee_wallet: Pubkey,
 }
 
 impl Cache {
@@ -39,6 +42,8 @@ impl Cache {
         marginfi_group_address: Pubkey,
         clock: Arc<Mutex<Clock>>,
     ) -> Self {
+        let (global_fee_state_key, _) =
+            Pubkey::find_program_address(&[FEE_STATE_SEED.as_bytes()], &marginfi_program_id);
         Self {
             signer_pk,
             marginfi_program_id,
@@ -50,6 +55,8 @@ impl Cache {
             tokens: TokensCache::default(),
             clock,
             luts: vec![],
+            global_fee_state_key,
+            global_fee_wallet: Pubkey::default(),
         }
     }
 

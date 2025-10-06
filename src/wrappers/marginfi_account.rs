@@ -5,23 +5,25 @@ use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::bank::BankImpl;
-use marginfi_type_crate::types::{BalanceSide, LendingAccount, OracleSetup};
+use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone)]
 pub struct MarginfiAccountWrapper {
     pub address: Pubkey,
+    pub liquidation_record: Pubkey,
     pub lending_account: LendingAccount,
 }
 
 type Shares = Vec<(I80F48, Pubkey)>;
 
 impl MarginfiAccountWrapper {
-    pub fn new(address: Pubkey, lending_account: LendingAccount) -> Self {
+    pub fn new(address: Pubkey, account: &MarginfiAccount) -> Self {
         MarginfiAccountWrapper {
             address,
-            lending_account,
+            liquidation_record: account.liquidation_record,
+            lending_account: account.lending_account,
         }
     }
 
@@ -222,6 +224,7 @@ pub mod test_utils {
             };
             Self {
                 address: Pubkey::new_unique(),
+                liquidation_record: Pubkey::default(),
                 lending_account,
             }
         }
@@ -262,6 +265,7 @@ pub mod test_utils {
             };
             Self {
                 address: Pubkey::new_unique(),
+                liquidation_record: Pubkey::default(),
                 lending_account,
             }
         }

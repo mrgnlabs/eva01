@@ -3,7 +3,10 @@ use crate::{
     config::Eva01Config,
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     rebalancer::Rebalancer,
-    utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
+    utils::{
+        calc_total_weighted_assets_liabs, get_free_collateral, lut_cache::LutCache,
+        swb_cranker::SwbCranker,
+    },
     wrappers::{
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
@@ -95,6 +98,7 @@ impl Liquidator {
         }
 
         self.rebalancer.run()?;
+        let mut lut_cache = LutCache::new();
 
         #[cfg(feature = "publish_to_db")]
         let mut publish_queue =
@@ -122,6 +126,22 @@ impl Liquidator {
                             Ok(acc_opt) => {
                                 if let Some(acc) = acc_opt {
                                     let start = Instant::now();
+                                    if acc.liquidatee_account.liquidation_record
+                                        == Pubkey::default()
+                                    {
+                                        if let Err(e) = &self
+                                            .liquidator_account
+                                            .init_liq_record(&acc.liquidatee_account)
+                                        {
+                                            error!(
+                                            "Failed to initialize liquidation record for account {:?}, error: {:?}",
+                                            candidate.liquidatee_account.address, e
+                                        );
+                                            FAILED_LIQUIDATIONS.inc();
+                                            ERROR_COUNT.inc();
+                                            continue;
+                                        }
+                                    }
                                     if let Err(e) = &self.liquidator_account.liquidate(
                                         &acc.liquidatee_account,
                                         &acc.asset_bank,
@@ -129,6 +149,7 @@ impl Liquidator {
                                         acc.asset_amount,
                                         acc.liab_amount,
                                         &stale_swb_oracles,
+                                        &mut lut_cache,
                                     ) {
                                         error!(
                                             "Failed to liquidate account {:?}, error: {:?}",
