@@ -1,12 +1,12 @@
 use crate::{
     cache::Cache,
     geyser::{AccountType, GeyserUpdate},
-    thread_debug, thread_error, thread_info,
     utils::log_genuine_error,
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
+use log::{debug, error, info};
 use marginfi_type_crate::types::MarginfiAccount;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -36,7 +36,7 @@ impl GeyserProcessor {
     }
 
     pub fn start(&self) -> Result<()> {
-        thread_info!("Staring the GeyserProcessor loop.");
+        info!("Staring the GeyserProcessor loop.");
         while !self.stop.load(Ordering::Relaxed) {
             match self.geyser_rx.recv() {
                 Ok(geyser_update) => {
@@ -45,20 +45,19 @@ impl GeyserProcessor {
                     }
                 }
                 Err(error) => {
-                    thread_error!("Geyser processor error: {}!", error);
+                    error!("Geyser processor error: {}!", error);
                 }
             }
         }
-        thread_info!("The GeyserProcessor loop is stopped.");
+        info!("The GeyserProcessor loop is stopped.");
         Ok(())
     }
 
     fn process_update(&self, msg: GeyserUpdate) -> Result<()> {
         let msg_account = msg.account.clone();
-        thread_debug!(
+        debug!(
             "Processing the {:?} {:?} update.",
-            msg.account_type,
-            msg.address
+            msg.account_type, msg.address
         );
 
         match msg.account_type {

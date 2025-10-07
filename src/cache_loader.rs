@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anchor_spl::associated_token;
 use anyhow::Ok;
+use log::{debug, error, info, warn};
 use marginfi_type_crate::types::{Bank, MarginfiAccount};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
@@ -23,7 +24,6 @@ use solana_sdk::{
 use crate::{
     cache::Cache,
     geyser::AccountType,
-    thread_debug, thread_error, thread_info, thread_warn,
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
@@ -66,7 +66,7 @@ impl CacheLoader {
     }
 
     fn load_luts(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        thread_info!("Loading LUTs.");
+        info!("Loading LUTs.");
 
         let lut_accounts = self.rpc_client.get_multiple_accounts(&self.lut_addresses)?;
 
@@ -89,20 +89,20 @@ impl CacheLoader {
 
         luts.into_iter().for_each(|lut| cache.add_lut(lut));
 
-        thread_info!("Loaded {} LUTs.", &cache.luts.len());
+        info!("Loaded {} LUTs.", &cache.luts.len());
 
         Ok(())
     }
 
     fn load_marginfi_accounts(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        thread_info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
+        info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
         let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
             &cache.marginfi_program_id,
             &cache.marginfi_group_address,
         )?;
 
-        thread_info!("Loading marginfi accounts...");
+        info!("Loading marginfi accounts...");
         let marginfi_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
             &marginfi_accounts_pubkeys,
@@ -124,11 +124,11 @@ impl CacheLoader {
                 };
                 cache.marginfi_accounts.try_insert(maw)?;
             } else {
-                thread_warn!("Couldn't load Marginfi account for key: {}", *address);
+                warn!("Couldn't load Marginfi account for key: {}", *address);
             }
         }
 
-        thread_info!(
+        info!(
             "Loaded {} marginfi accounts in {:?}",
             marginfi_accounts.len(),
             start.elapsed()
@@ -142,7 +142,7 @@ impl CacheLoader {
         marginfi_program_id: &Pubkey,
         marginfi_group_address: &Pubkey,
     ) -> anyhow::Result<Vec<Pubkey>> {
-        thread_info!("Loading marginfi account addresses...");
+        info!("Loading marginfi account addresses...");
         let marginfi_account_addresses = &self.rpc_client.get_program_accounts_with_config(
             marginfi_program_id,
             RpcProgramAccountsConfig {
@@ -176,7 +176,7 @@ impl CacheLoader {
             .map(|(pubkey, _)| *pubkey)
             .collect();
 
-        thread_info!(
+        info!(
             "Loaded {} marginfi account addresses.",
             marginfi_account_pubkeys.len()
         );
@@ -191,7 +191,7 @@ impl CacheLoader {
 
         let program: Program<Arc<Keypair>> = anchor_client.program(cache.marginfi_program_id)?;
 
-        thread_info!("Loading banks...");
+        info!("Loading banks...");
         for (bank_address, bank) in program
             .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
                 BANK_GROUP_PK_OFFSET,
@@ -200,16 +200,16 @@ impl CacheLoader {
             .iter()
         {
             cache.banks.insert(*bank_address, *bank);
-            thread_debug!("Loaded the Bank {:?}.", bank_address);
+            debug!("Loaded the Bank {:?}.", bank_address);
         }
 
-        thread_info!("Loaded {} banks", cache.banks.len());
+        info!("Loaded {} banks", cache.banks.len());
 
         Ok(())
     }
 
     fn load_oracles(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        thread_info!("Loading Oracles...");
+        info!("Loading Oracles...");
 
         let oracle_addresses = cache.banks.get_oracles().into_iter().collect::<Vec<_>>();
         let oracle_accounts = batch_get_multiple_accounts(
@@ -224,19 +224,19 @@ impl CacheLoader {
             .collect();
 
         for (oracle_address, oracle_account) in oracle_map.iter() {
-            thread_debug!("Loaded the Oracle {:?} .", oracle_address);
+            debug!("Loaded the Oracle {:?} .", oracle_address);
             cache
                 .oracles
                 .try_insert(*oracle_address, oracle_account.clone())?;
         }
 
-        thread_info!("Loaded {} Oracles.", cache.oracles.len()?);
+        info!("Loaded {} Oracles.", cache.oracles.len()?);
 
         Ok(())
     }
 
     fn load_mints(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        thread_info!("Loading Mints");
+        info!("Loading Mints");
         let mint_addresses = cache.banks.get_mints();
         let mint_accounts = batch_get_multiple_accounts(
             &self.rpc_client,
@@ -255,18 +255,18 @@ impl CacheLoader {
                 cache
                     .mints
                     .insert(*mint_address, mint_account.clone(), token_address);
-                thread_debug!("Loaded the Mint {:?}.", mint_address);
+                debug!("Loaded the Mint {:?}.", mint_address);
             } else {
-                thread_error!("Mint account {:?} not found.", mint_address);
+                error!("Mint account {:?} not found.", mint_address);
             }
         }
 
-        thread_info!("Loaded {} mints.", cache.mints.len());
+        info!("Loaded {} mints.", cache.mints.len());
         Ok(())
     }
 
     fn load_tokens(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        thread_info!("Loading Token accounts...");
+        info!("Loading Token accounts...");
 
         let token_addresses = cache.mints.get_tokens();
         let token_accounts = batch_get_multiple_accounts(
@@ -284,17 +284,17 @@ impl CacheLoader {
                     cache
                         .tokens
                         .try_insert(*token_address, token_account.clone(), mint_address)?;
-                    thread_debug!("Loaded the Token account {:?}.", token_address);
+                    debug!("Loaded the Token account {:?}.", token_address);
                 }
                 None => {
                     new_token_addresses.push(*token_address);
                 }
             }
         }
-        thread_info!("Loaded {}  Token accounts.", cache.tokens.len()?);
+        info!("Loaded {}  Token accounts.", cache.tokens.len()?);
 
         if !new_token_addresses.is_empty() {
-            thread_info!("Creating {} new Token accounts", new_token_addresses.len());
+            info!("Creating {} new Token accounts", new_token_addresses.len());
 
             let mut instructions: Vec<Instruction> = vec![];
             for token_address in &new_token_addresses {
@@ -312,7 +312,7 @@ impl CacheLoader {
 
             self.create_token_accounts(instructions)?;
 
-            thread_info!("Fetching newly created Token accounts...");
+            info!("Fetching newly created Token accounts...");
             let new_token_accounts = batch_get_multiple_accounts(
                 &self.rpc_client,
                 &new_token_addresses,
@@ -328,13 +328,13 @@ impl CacheLoader {
                         new_token_account.clone(),
                         mint_address,
                     )?;
-                    thread_debug!(
+                    debug!(
                         "Fetched the newly created Token account {:?}.",
                         new_token_address
                     );
                 }
             }
-            thread_info!(
+            info!(
                 "Fetched {} newly created Token accounts.",
                 new_token_addresses.len()
             );
@@ -359,7 +359,7 @@ impl CacheLoader {
                     recent_blockhash,
                 );
 
-                thread_info!("Registering {} new Token accounts...", chunk.len());
+                info!("Registering {} new Token accounts...", chunk.len());
 
                 let sig = self
                     .rpc_client
@@ -373,7 +373,7 @@ impl CacheLoader {
                         },
                     )?;
 
-                thread_info!(
+                info!(
                     "{} new Token accounts were successfully registered. Txn sig: {:?}",
                     chunk.len(),
                     sig
