@@ -312,20 +312,37 @@ impl LiquidatorAccount {
             "The Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address, liquidatee_observation_accounts
         );
-        let liquidatee_observation_accounts_num = liquidatee_observation_accounts.len();
 
         if contains_stale_oracles(stale_swb_oracles, &liquidatee_swb_oracles) {
             warn!("Skipping liquidation attempt because liquidatee has stale oracles.");
             return Ok(());
         }
         let mut ixs = Vec::new();
-        ixs.push(self.cu_limit_ix.clone());
+        let (out_amount, jup) = self
+            .swap(asset_mint, liab_mint, asset_amount)
+            .map_err(LiquidationError::from_anyhow_error)?;
+
+        let repay_amount = (0.95 * (out_amount as f64)) as u64;
+        info!(
+            "Exchanging {} ({}) for {} ({}) and trying to repay {} (out of {}).",
+            asset_amount,
+            asset_mint,
+            out_amount,
+            liab_mint,
+            repay_amount,
+            liab_amount
+        );
+
+        if jup.compute_unit_limit == 0 {
+            ixs.push(self.cu_limit_ix.clone());
+        }
 
         let start_ix = make_start_liquidate_ix(
             self.program_id,
             liquidatee_account_address,
-            self.liquidator_address,
-            liquidator_account.liquidation_record,
+            signer_pk,
+            liquidatee_account.liquidation_record,
+            liquidatee_observation_accounts.as_ref(),
         );
         ixs.push(start_ix);
 
@@ -342,15 +359,11 @@ impl LiquidatorAccount {
             &asset_bank_wrapper,
             asset_mint_wrapper.token,
             asset_mint_wrapper.account.owner,
-            liquidatee_observation_accounts,
+            liquidatee_observation_accounts.as_ref(),
             asset_amount,
             None,
         );
         ixs.push(withdraw_ix);
-
-        let (out_amount, jup) = self
-            .swap(asset_mint, liab_mint, asset_amount)
-            .map_err(LiquidationError::from_anyhow_error)?;
 
         ixs.extend(jup.compute_budget_instructions);
 
@@ -377,7 +390,7 @@ impl LiquidatorAccount {
             &liab_bank_wrapper,
             liab_mint_wrapper.token,
             liab_mint_wrapper.account.owner,
-            out_amount,
+            repay_amount,
             None,
         );
         ixs.push(repay_ix);
@@ -385,10 +398,11 @@ impl LiquidatorAccount {
         let end_ix = make_end_liquidate_ix(
             self.program_id,
             liquidatee_account_address,
-            self.liquidator_address,
-            liquidator_account.liquidation_record,
+            signer_pk,
+            liquidatee_account.liquidation_record,
             self.cache.global_fee_state_key,
             self.cache.global_fee_wallet,
+            liquidatee_observation_accounts.as_ref(),
         );
         ixs.push(end_ix);
 
@@ -403,15 +417,8 @@ impl LiquidatorAccount {
             .get_latest_blockhash()
             .map_err(|e| LiquidationError::from_anyhow_error(anyhow!(e)))?;
 
-        // Use LUTs only when your transaction involves a large number of observation accounts.
         let mut luts: Vec<AddressLookupTableAccount> = Vec::new();
-        if liquidatee_observation_accounts_num > 22 {
-            debug!(
-                "Using LUT for liquidating the Account {} .",
-                liquidatee_account_address
-            );
-            luts.extend(self.cache.luts.clone());
-        }
+        luts.extend(self.cache.luts.clone());
 
         let jup_luts = lut_cache
             .fetch_missing(&self.rpc_client, &jup.address_lookup_table_addresses)
@@ -538,7 +545,7 @@ impl LiquidatorAccount {
             bank,
             token_account,
             self.cache.mints.try_get_account(&mint)?.account.owner,
-            observation_accounts,
+            observation_accounts.as_ref(),
             amount,
             withdraw_all,
         );

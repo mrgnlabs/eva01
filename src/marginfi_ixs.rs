@@ -28,13 +28,14 @@ pub fn make_init_liquidation_record_ix(
         ],
         &marginfi_program_id,
     );
-    let accounts = marginfi::accounts::InitLiquidationRecord {
+    let mut accounts = marginfi::accounts::InitLiquidationRecord {
         marginfi_account: liquidatee_account,
         fee_payer,
         liquidation_record,
         system_program: system_program::id(),
     }
-    .to_account_metas(Some(true));
+    .to_account_metas(None);
+    mark_signer(&mut accounts, fee_payer);
 
     Instruction {
         program_id: marginfi_program_id,
@@ -49,14 +50,22 @@ pub fn make_start_liquidate_ix(
     liquidatee_account: Pubkey,
     liquidator_account: Pubkey,
     liquidation_record: Pubkey,
+    observation_accounts: &[Pubkey],
 ) -> Instruction {
-    let accounts = marginfi::accounts::StartLiquidation {
+    let mut accounts = marginfi::accounts::StartLiquidation {
         marginfi_account: liquidatee_account,
         liquidation_receiver: liquidator_account,
         liquidation_record,
         instruction_sysvar: sysvar::instructions::id(),
     }
-    .to_account_metas(Some(true));
+    .to_account_metas(None);
+    mark_signer(&mut accounts, liquidator_account);
+
+    accounts.extend(
+        observation_accounts
+            .iter()
+            .map(|a| AccountMeta::new_readonly(a.key(), false)),
+    );
 
     Instruction {
         program_id: marginfi_program_id,
@@ -85,9 +94,9 @@ pub fn make_deposit_ix(
         bank: bank.address,
         group: marginfi_group,
     }
-    .to_account_metas(Some(true));
-
+    .to_account_metas(None);
     maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
+    mark_signer(&mut accounts, signer);
 
     Instruction {
         program_id: marginfi_program_id,
@@ -121,9 +130,9 @@ pub fn make_repay_ix(
         bank: bank.address,
         group: marginfi_group,
     }
-    .to_account_metas(Some(true));
-
+    .to_account_metas(None);
     maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
+    mark_signer(&mut accounts, signer);
 
     Instruction {
         program_id: marginfi_program_id,
@@ -141,7 +150,7 @@ pub fn make_withdraw_ix(
     bank: &BankWrapper,
     destination_token_account: Pubkey,
     token_program: Pubkey,
-    observation_accounts: Vec<Pubkey>,
+    observation_accounts: &[Pubkey],
     amount: u64,
     withdraw_all: Option<bool>,
 ) -> Instruction {
@@ -159,8 +168,8 @@ pub fn make_withdraw_ix(
         group: marginfi_group,
     }
     .to_account_metas(Some(true));
-
     maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
+    mark_signer(&mut accounts, signer);
 
     trace!(
         "make_withdraw_ix: observation_accounts: {:?}",
@@ -192,8 +201,9 @@ pub fn make_end_liquidate_ix(
     liquidation_record: Pubkey,
     fee_state: Pubkey,
     global_fee_wallet: Pubkey,
+    observation_accounts: &[Pubkey],
 ) -> Instruction {
-    let accounts = marginfi::accounts::EndLiquidation {
+    let mut accounts = marginfi::accounts::EndLiquidation {
         marginfi_account: liquidatee_account,
         liquidation_receiver: liquidator_account,
         liquidation_record,
@@ -201,7 +211,14 @@ pub fn make_end_liquidate_ix(
         global_fee_wallet,
         system_program: system_program::id(),
     }
-    .to_account_metas(Some(true));
+    .to_account_metas(None);
+    mark_signer(&mut accounts, liquidator_account);
+
+    accounts.extend(
+        observation_accounts
+            .iter()
+            .map(|a| AccountMeta::new_readonly(a.key(), false)),
+    );
 
     Instruction {
         program_id: marginfi_program_id,
@@ -275,4 +292,13 @@ pub fn initialize_marginfi_account(
     );
 
     Ok(marginfi_account_key.pubkey())
+}
+
+fn mark_signer(
+    accounts: &mut [solana_sdk::instruction::AccountMeta],
+    signer: solana_sdk::pubkey::Pubkey,
+) {
+    for m in accounts.iter_mut() {
+        m.is_signer = m.pubkey == signer;
+    }
 }
