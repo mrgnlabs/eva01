@@ -14,13 +14,18 @@ on:
       apps:
         description: 'List of apps to build and deploy (as JSON array)'
         required: true
-        default: '["eva"]'
+        default: '["eva","eva-hp"]'
         type: string
+      force_build:
+        description: 'Force build image from scratch (ignores environment-based logic)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-and-push:
     name: Build & Push ${{ matrix.app }}
-    if: ${{ github.event.inputs.environment == 'stage' }}
+    if: ${{ github.event.inputs.environment == 'stage' || (github.event.inputs.environment == 'prod' && github.event.inputs.force_build == 'true') }}
     runs-on: ubuntu-latest
     strategy:
       matrix: 
@@ -47,7 +52,7 @@ jobs:
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Build and Push Image to Stage
+      - name: Build and Push Image
         run: |
           image_name=${{ matrix.app }}
           image_tag="${image_name%.Dockerfile}"
@@ -55,7 +60,7 @@ jobs:
           echo "Building $image_name.Dockerfile as $tag..."
           docker buildx build \
             --file ${{ matrix.app }}.Dockerfile \
-            --tag us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:stage \
+            --tag us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:${{ github.event.inputs.environment }} \
             --tag us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:${{ steps.vars.outputs.sha_short }} \
             --platform linux/amd64 \
             --cache-from type=registry,ref=us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:build-cache \
@@ -70,7 +75,7 @@ jobs:
       matrix: 
         app: ${{ fromJSON(github.event.inputs.apps) }}
       fail-fast: false
-    if: ${{ github.event.inputs.environment == 'prod' }}
+    if: ${{ github.event.inputs.environment == 'prod' && github.event.inputs.force_build != 'true' }}
 
     steps:
       - uses: actions/checkout@v3
