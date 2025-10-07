@@ -219,6 +219,7 @@ impl Liquidator {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
                 Ok(account) => {
                     if account.address == self.liquidator_account.liquidator_address {
+                        index += 1;
                         continue;
                     }
                     match self.process_account(&account) {
