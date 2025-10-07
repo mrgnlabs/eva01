@@ -14,7 +14,7 @@ on:
       apps:
         description: 'List of apps to build and deploy (as JSON array)'
         required: true
-        default: '["eva"]'
+        default: '["eva","eva-hp"]'
         type: string
       force_build:
         description: 'Force build image from scratch (ignores environment-based logic)'
