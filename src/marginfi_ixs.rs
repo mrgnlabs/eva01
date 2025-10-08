@@ -227,6 +227,76 @@ pub fn make_end_liquidate_ix(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn make_liquidate_ix(
+    marginfi_program_id: Pubkey,
+    marginfi_group: Pubkey,
+    marginfi_account: Pubkey,
+    asset_bank: &BankWrapper,
+    asset_bank_oracle: Pubkey,
+    liab_bank: &BankWrapper,
+    liab_bank_oracle: Pubkey,
+    signer: Pubkey,
+    liquidatee_marginfi_account: Pubkey,
+    token_program: Pubkey,
+    observation_accounts: &[Pubkey],
+    asset_amount: u64,
+) -> Instruction {
+    let accounts_raw = marginfi::accounts::LendingAccountLiquidate {
+        group: marginfi_group,
+        asset_bank: asset_bank.address,
+        liab_bank: liab_bank.address,
+        liquidator_marginfi_account: marginfi_account,
+        authority: signer,
+        liquidatee_marginfi_account,
+        bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
+            &liab_bank.address,
+            &marginfi_program_id,
+        ),
+        bank_liquidity_vault: liab_bank.bank.liquidity_vault,
+        bank_insurance_vault: liab_bank.bank.insurance_vault,
+        token_program,
+    };
+    let mut accounts = accounts_raw.to_account_metas(Some(true));
+
+    info!(
+        r#"LendingAccountLiquidate: ( 
+        group: {:?}, 
+        liquidator_marginfi_account: {:?}, 
+        liquidatee_marginfi_account: {:?}, 
+        asset_bank: {:?}, 
+        asset_bank_oracle: {:?}, 
+        liab_bank: {:?}, 
+        liab_bank_oracle: {:?} 
+        )"#,
+        accounts_raw.group,
+        accounts_raw.liquidator_marginfi_account,
+        accounts_raw.liquidatee_marginfi_account,
+        accounts_raw.asset_bank,
+        asset_bank_oracle,
+        accounts_raw.liab_bank,
+        liab_bank_oracle,
+    );
+    maybe_add_bank_mint(&mut accounts, liab_bank.bank.mint, &token_program);
+
+    accounts.extend([
+        AccountMeta::new_readonly(asset_bank_oracle, false),
+        AccountMeta::new_readonly(liab_bank_oracle, false),
+    ]);
+
+    accounts.extend(
+        observation_accounts
+            .iter()
+            .map(|a| AccountMeta::new_readonly(a.key(), false)),
+    );
+
+    Instruction {
+        program_id: marginfi_program_id,
+        accounts,
+        data: marginfi::instruction::LendingAccountLiquidate { asset_amount }.data(),
+    }
+}
+
 fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_program: &Pubkey) {
     if token_program == &token_2022::ID {
         debug!("!!!Adding mint account to accounts!!!");

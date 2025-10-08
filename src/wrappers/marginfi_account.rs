@@ -109,6 +109,22 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
+    pub fn contains_kamino_position(
+        lending_account: &LendingAccount,
+        cache: Arc<Cache>,
+    ) -> Result<bool> {
+        for balance in &lending_account.balances {
+            if !balance.is_active() {
+                continue;
+            }
+            let bank = cache.banks.try_get_bank(&balance.bank_pk)?;
+            if bank.bank.config.asset_tag == 3u8 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
