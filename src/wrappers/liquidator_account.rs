@@ -247,11 +247,6 @@ impl LiquidatorAccount {
         lut_cache: &mut LutCache,
     ) -> Result<(), LiquidationError> {
         let liquidatee_account_address = liquidatee_account.address;
-        info!(
-            "Liquidating account {:?} with liquidator account {:?}. Amount: {}",
-            liquidatee_account_address, self.liquidator_address, asset_amount
-        );
-
         let asset_bank_wrapper = self
             .cache
             .banks
@@ -314,7 +309,6 @@ impl LiquidatorAccount {
         );
 
         if contains_stale_oracles(stale_swb_oracles, &liquidatee_swb_oracles) {
-            warn!("Skipping liquidation attempt because liquidatee has stale oracles.");
             return Ok(());
         }
 
@@ -493,9 +487,10 @@ impl LiquidatorAccount {
             .map_err(LiquidationError::from_signer_error)?;
 
         info!(
-            "Sending liquidation tx for the Account {} .",
-            liquidatee_account_address
+            "Liquidating account {:?} with liquidator account {:?}. Amount: {}",
+            liquidatee_account_address, self.liquidator_address, asset_amount
         );
+
         match self
             .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
@@ -761,7 +756,7 @@ fn contains_stale_oracles(stale_oracles: &HashSet<Pubkey>, account_oracles: &[Pu
         .iter()
         .find(|oracle| stale_oracles.contains(*oracle))
     {
-        warn!("Found stale oracle: {}.", oracle);
+        debug!("Found stale oracle: {}.", oracle);
         true
     } else {
         false
