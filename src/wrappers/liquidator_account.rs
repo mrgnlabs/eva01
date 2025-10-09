@@ -287,17 +287,6 @@ impl LiquidatorAccount {
         }
 
         let lending_account = &liquidator_account.lending_account;
-
-        let use_old_way = MarginfiAccountWrapper::contains_kamino_position(
-            &liquidator_account.lending_account,
-            self.cache.clone(),
-        )
-        .map_err(LiquidationError::from_anyhow_error)?
-            || MarginfiAccountWrapper::contains_kamino_position(
-                &liquidatee_account.lending_account,
-                self.cache.clone(),
-            )
-            .map_err(LiquidationError::from_anyhow_error)?;
         for bank_to_validate_against in [&asset_bank_wrapper, &liab_bank_wrapper] {
             if !check_asset_tags_matching(&bank_to_validate_against.bank, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
@@ -331,6 +320,17 @@ impl LiquidatorAccount {
 
         let mut luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
         let mut ixs = Vec::new();
+
+        let use_old_way = MarginfiAccountWrapper::contains_kamino_position(
+            &liquidator_account.lending_account,
+            self.cache.clone(),
+        )
+        .map_err(LiquidationError::from_anyhow_error)?
+            || MarginfiAccountWrapper::contains_kamino_position(
+                &liquidatee_account.lending_account,
+                self.cache.clone(),
+            )
+            .map_err(LiquidationError::from_anyhow_error)?;
 
         if use_old_way {
             let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];

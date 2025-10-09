@@ -5,7 +5,7 @@ use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::bank::BankImpl;
-use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
+use marginfi_type_crate::{constants::ASSET_TAG_KAMINO, types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup}};
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashSet, sync::Arc};
 
@@ -118,7 +118,7 @@ impl MarginfiAccountWrapper {
                 continue;
             }
             let bank = cache.banks.try_get_bank(&balance.bank_pk)?;
-            if bank.bank.config.asset_tag == 3u8 {
+            if bank.bank.config.asset_tag == ASSET_TAG_KAMINO {
                 return Ok(true);
             }
         }
