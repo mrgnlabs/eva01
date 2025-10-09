@@ -5,7 +5,10 @@ use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::bank::BankImpl;
-use marginfi_type_crate::{constants::ASSET_TAG_KAMINO, types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup}};
+use marginfi_type_crate::{
+    constants::ASSET_TAG_KAMINO,
+    types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup},
+};
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashSet, sync::Arc};
 
@@ -148,45 +151,53 @@ impl MarginfiAccountWrapper {
 
         let mut swb_oracles = vec![];
         // Add bank oracles
-        let observation_accounts = bank_pks.iter().flat_map(|bank_pk| {
+        let mut observation_accounts: Vec<Pubkey> = vec![];
+        for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
             let oracle_wrapper = T::build(&cache, bank_pk)?;
             debug!(
                 "Observation account Bank: {:?}, asset tag type: {:?}.",
                 bank_pk, bank_wrapper.bank.config.asset_tag
             );
-            if matches!(
-                bank_wrapper.bank.config.oracle_setup,
-                OracleSetup::SwitchboardPull
-            ) {
-                swb_oracles.push(oracle_wrapper.get_address());
-            }
+            let bank_and_oracles: Vec<Pubkey> = match bank_wrapper.bank.config.oracle_setup {
+                OracleSetup::PythPushOracle => {
+                    vec![*bank_pk, oracle_wrapper.get_address()]
+                }
+                OracleSetup::SwitchboardPull => {
+                    swb_oracles.push(oracle_wrapper.get_address());
+                    vec![*bank_pk, oracle_wrapper.get_address()]
+                }
+                OracleSetup::StakedWithPythPush => {
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                        bank_wrapper.bank.config.oracle_keys[2],
+                    ]
+                }
+                OracleSetup::KaminoPythPush => {
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
+                OracleSetup::KaminoSwitchboardPull => {
+                    swb_oracles.push(oracle_wrapper.get_address());
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
+                _ => {
+                    return Err(Error::msg("Unsupported Oracle setup"));
+                }
+            };
+            observation_accounts.extend(bank_and_oracles);
+        }
 
-            if bank_wrapper.bank.config.oracle_keys[1] != Pubkey::default()
-                && bank_wrapper.bank.config.oracle_keys[2] != Pubkey::default()
-            {
-                debug!(
-                    "Observation accounts for the bank {:?} will contain Oracle keys!",
-                    bank_pk
-                );
-                Ok::<Vec<Pubkey>, Error>(vec![
-                    *bank_pk,
-                    oracle_wrapper.get_address(),
-                    bank_wrapper.bank.config.oracle_keys[1],
-                    bank_wrapper.bank.config.oracle_keys[2],
-                ])
-            } else {
-                Ok(vec![*bank_pk, oracle_wrapper.get_address()])
-            }
-        });
-
-        let res = (
-            observation_accounts
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>(),
-            swb_oracles,
-        );
+        let res = (observation_accounts, swb_oracles);
 
         Ok(res)
     }

@@ -156,6 +156,33 @@ impl OracleWrapperTrait for OracleWrapper {
                 let oracle_wrapper = Self::new(bank_oracle_address, adapter);
                 result = Some(oracle_wrapper);
             }
+            OracleSetup::KaminoPythPush => {
+                if oracle_addresses.len() != 2 {
+                    return Err(anyhow!(
+                        "KaminoPythPush setup requires exactly 2 oracle keys, but found {} for the Bank {:?}.",
+                        oracle_addresses.len(), bank_address
+                    ));
+                }
+
+                let bank_oracle_address = *oracle_addresses.first().unwrap();
+                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
+                let bank_oracle_account_info =
+                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
+
+                let reserve_oracle_address = *oracle_addresses.get(1).unwrap();
+                let mut reserve_oracle = cache.oracles.try_get_account(&reserve_oracle_address)?;
+                let reserve_oracle_account_info =
+                    (&reserve_oracle_address, &mut reserve_oracle).into_account_info();
+
+                let adapter = OraclePriceFeedAdapter::try_from_bank_config(
+                    &bank_wrapper.bank.config,
+                    &[bank_oracle_account_info, reserve_oracle_account_info],
+                    &clock_manager::get_clock(&cache.clock)?,
+                )?;
+
+                let oracle_wrapper = Self::new(bank_oracle_address, adapter);
+                result = Some(oracle_wrapper);
+            }
             _ => {
                 error!(
                     "Unsupported Oracle setup for the Bank {:?} : {:?}",

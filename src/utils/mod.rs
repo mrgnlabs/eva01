@@ -19,7 +19,7 @@ use marginfi::{
     },
 };
 use marginfi_type_crate::{
-    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_SOL, ASSET_TAG_STAKED},
+    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED},
     types::{
         reconcile_emode_configs, Balance, BalanceSide, Bank, BankConfig, EmodeConfig,
         LendingAccount, RiskTier,
@@ -531,6 +531,8 @@ pub fn check_asset_tags_matching(bank: &Bank, lending_account: &LendingAccount) 
                 ASSET_TAG_DEFAULT => has_default_asset = true,
                 ASSET_TAG_SOL => { /* Do nothing, SOL can mix with any asset type */ }
                 ASSET_TAG_STAKED => has_staked_asset = true,
+                // Kamino isn't strictly a default asset but it's close enough
+                ASSET_TAG_KAMINO => has_default_asset = true,
                 _ => panic!("unsupported asset tag"),
             }
         }
