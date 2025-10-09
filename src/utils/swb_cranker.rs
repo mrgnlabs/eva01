@@ -20,7 +20,7 @@ use std::sync::{
     Arc,
 };
 use switchboard_on_demand_client::{
-    FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
+    CrossbarClient, FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
 };
 use tokio::runtime::{Builder, Runtime};
 
@@ -73,7 +73,8 @@ impl SwbCranker {
 
         // Prefer private gateway from env; fall back to first on-chain gateway
         let swb_gateway = if let Some(url) = config.crossbar_api_url.as_ref() {
-            Gateway::new(url.to_string())
+            let crossbar = CrossbarClient::new(url.as_str(), false);
+            tokio_rt.block_on(queue.fetch_gateway_from_crossbar(&crossbar))?
         } else {
             tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone()
         };
