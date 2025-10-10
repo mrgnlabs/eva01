@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use anchor_lang::AccountDeserialize;
 use anchor_spl::associated_token;
 use anyhow::Ok;
 use log::{debug, error, info, warn};
@@ -24,6 +25,7 @@ use solana_sdk::{
 use crate::{
     cache::Cache,
     geyser::AccountType,
+    kamino_lending,
     utils::{batch_get_multiple_accounts, BatchLoadingConfig},
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
@@ -66,6 +68,7 @@ impl CacheLoader {
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
         self.load_tokens(cache)?;
+        self.load_kamino_reserves(cache)?;
 
         Ok(())
     }
@@ -383,6 +386,37 @@ impl CacheLoader {
 
                 Ok(())
             })?;
+
+        Ok(())
+    }
+
+    fn load_kamino_reserves(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        info!("Loading Kamino Reserves...");
+
+        let reserve_addresses = cache
+            .banks
+            .get_kamino_reserves()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let reserve_accounts = batch_get_multiple_accounts(
+            &self.rpc_client,
+            &reserve_addresses,
+            BatchLoadingConfig::DEFAULT,
+        )?;
+        for (address, account) in reserve_addresses.iter().zip(reserve_accounts.iter()) {
+            if let Some(account) = account {
+                debug!("Loaded the Kamino Reserve: {:?}", address);
+                let mut data: &[u8] = &account.data;
+                let reserve = kamino_lending::accounts::Reserve::try_deserialize(&mut data)?;
+                cache
+                    .kamino_reserves
+                    .insert(*address, (reserve.lending_market, reserve.farm_collateral));
+            } else {
+                error!("Reserve account {:?} not found.", address);
+            }
+        }
+
+        info!("Loaded {} Kamino Reserves.", cache.kamino_reserves.len());
 
         Ok(())
     }

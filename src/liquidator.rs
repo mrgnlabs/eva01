@@ -111,6 +111,7 @@ impl Liquidator {
 
         info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
+            info!("Waiting for any data change...");
             if self.run_liquidation.load(Ordering::Relaxed) {
                 info!("Running the Liquidation process...");
                 self.run_liquidation.store(false, Ordering::Relaxed);
@@ -200,6 +201,7 @@ impl Liquidator {
                 if let Err(e) = self.publish_all_accounts_health(
                     &mut supabase,
                     next_publishing.rule.min_liab_value_usd,
+                    next_publishing.rule.period.as_secs(),
                 ) {
                     error!("Failed to publish all accounts' health: {}", e);
                 }
@@ -253,6 +255,7 @@ impl Liquidator {
         &mut self,
         supabase: &mut SupabasePublisher,
         min_liab_value_usd: f64,
+        schedule: u64,
     ) -> Result<()> {
         let mut index: usize = 0;
         let total_accs = self.cache.marginfi_accounts.len()?;
@@ -260,7 +263,7 @@ impl Liquidator {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
                 Ok(account) => {
                     if let Err(e) =
-                        self.publish_account_health(&account, supabase, min_liab_value_usd)
+                        self.publish_account_health(&account, supabase, min_liab_value_usd, schedule)
                     {
                         error!(
                             "Failed to publish Marginfi account health {}: {:?}",
@@ -289,6 +292,7 @@ impl Liquidator {
         account: &MarginfiAccountWrapper,
         supabase: &mut SupabasePublisher,
         min_liab_value_usd: f64,
+        schedule: u64,
     ) -> Result<()> {
         let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
             &self.cache,
@@ -320,6 +324,7 @@ impl Liquidator {
             total_weighted_liabilities.to_num::<f64>(),
             maintenance_health.to_num::<f64>(),
             percentage_health,
+            schedule,
         )?;
 
         Ok(())

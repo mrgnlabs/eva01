@@ -16,7 +16,6 @@ use crate::{
 };
 
 pub trait OracleWrapperTrait {
-    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self;
     fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self>
     where
         Self: Sized;
@@ -31,17 +30,11 @@ pub trait OracleWrapperTrait {
 
 #[derive(Clone)]
 pub struct OracleWrapper {
-    pub address: Pubkey,
+    pub addresses: Vec<Pubkey>,
     pub price_adapter: OraclePriceFeedAdapter,
 }
 
 impl OracleWrapperTrait for OracleWrapper {
-    fn new(address: Pubkey, price_adapter: OraclePriceFeedAdapter) -> Self {
-        Self {
-            address,
-            price_adapter,
-        }
-    }
     fn get_price_of_type(
         &self,
         oracle_type: OraclePriceType,
@@ -54,8 +47,9 @@ impl OracleWrapperTrait for OracleWrapper {
     }
 
     fn get_address(&self) -> Pubkey {
-        self.address
+        self.addresses[0]
     }
+
     fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self> {
         let bank_wrapper = cache.banks.try_get_bank(bank_address)?;
         let oracle_addresses = find_oracle_keys(&bank_wrapper.bank.config);
@@ -76,7 +70,10 @@ impl OracleWrapperTrait for OracleWrapper {
                                 OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
                                     feed: Box::new((&swb_feed).into()),
                                 });
-                            let oracle_wrapper = Self::new(oracle_address, price_adapter);
+                            let oracle_wrapper = Self {
+                                addresses: vec![oracle_address],
+                                price_adapter,
+                            };
                             result = Some(oracle_wrapper);
                             break;
                         }
@@ -103,7 +100,10 @@ impl OracleWrapperTrait for OracleWrapper {
                         &clock_manager::get_clock(&cache.clock)?,
                     ) {
                         Result::Ok(price_adapter) => {
-                            let oracle_wrapper = Self::new(oracle_address, price_adapter);
+                            let oracle_wrapper = Self {
+                                addresses: vec![oracle_address],
+                                price_adapter,
+                            };
                             result = Some(oracle_wrapper);
                             break;
                         }
@@ -143,7 +143,7 @@ impl OracleWrapperTrait for OracleWrapper {
                 let sol_pool_account_info =
                     (&sol_pool_oracle_address, &mut sol_pool_oracle).into_account_info();
 
-                let adapter = OraclePriceFeedAdapter::try_from_bank_config(
+                let price_adapter = OraclePriceFeedAdapter::try_from_bank_config(
                     &bank_wrapper.bank.config,
                     &[
                         bank_oracle_account_info,
@@ -153,7 +153,14 @@ impl OracleWrapperTrait for OracleWrapper {
                     &clock_manager::get_clock(&cache.clock)?,
                 )?;
 
-                let oracle_wrapper = Self::new(bank_oracle_address, adapter);
+                let oracle_wrapper = Self {
+                    addresses: vec![
+                        bank_oracle_address,
+                        mint_oracle_address,
+                        sol_pool_oracle_address,
+                    ],
+                    price_adapter,
+                };
                 result = Some(oracle_wrapper);
             }
             OracleSetup::KaminoPythPush => {
@@ -174,13 +181,46 @@ impl OracleWrapperTrait for OracleWrapper {
                 let reserve_oracle_account_info =
                     (&reserve_oracle_address, &mut reserve_oracle).into_account_info();
 
-                let adapter = OraclePriceFeedAdapter::try_from_bank_config(
+                let price_adapter = OraclePriceFeedAdapter::try_from_bank_config(
                     &bank_wrapper.bank.config,
                     &[bank_oracle_account_info, reserve_oracle_account_info],
                     &clock_manager::get_clock(&cache.clock)?,
                 )?;
 
-                let oracle_wrapper = Self::new(bank_oracle_address, adapter);
+                let oracle_wrapper = Self {
+                    addresses: [bank_oracle_address, reserve_oracle_address].to_vec(),
+                    price_adapter,
+                };
+                result = Some(oracle_wrapper);
+            }
+            OracleSetup::KaminoSwitchboardPull => {
+                if oracle_addresses.len() != 2 {
+                    return Err(anyhow!(
+                        "KaminoSwitchboardPull setup requires exactly 2 oracle keys, but found {} for the Bank {:?}.",
+                        oracle_addresses.len(), bank_address
+                    ));
+                }
+
+                let bank_oracle_address = *oracle_addresses.first().unwrap();
+                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
+                let bank_oracle_account_info =
+                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
+
+                let reserve_oracle_address = *oracle_addresses.get(1).unwrap();
+                let mut reserve_oracle = cache.oracles.try_get_account(&reserve_oracle_address)?;
+                let reserve_oracle_account_info =
+                    (&reserve_oracle_address, &mut reserve_oracle).into_account_info();
+
+                let price_adapter = OraclePriceFeedAdapter::try_from_bank_config(
+                    &bank_wrapper.bank.config,
+                    &[bank_oracle_account_info, reserve_oracle_account_info],
+                    &clock_manager::get_clock(&cache.clock)?,
+                )?;
+
+                let oracle_wrapper = Self {
+                    addresses: [bank_oracle_address, reserve_oracle_address].to_vec(),
+                    price_adapter,
+                };
                 result = Some(oracle_wrapper);
             }
             _ => {
@@ -265,10 +305,6 @@ pub mod test_utils {
     }
 
     impl OracleWrapperTrait for TestOracleWrapper {
-        fn new(_: Pubkey, _: OraclePriceFeedAdapter) -> Self {
-            panic!("The new method is not implemented for TestOracleWrapper.");
-        }
-
         fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self> {
             let bank_wrapper = cache.banks.try_get_bank(bank_address)?;
             if matches!(

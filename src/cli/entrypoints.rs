@@ -137,9 +137,7 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
     });
 
     info!("Entering the Main loop.");
-    let monitor_geyser_rx = geyser_rx.clone();
     while !stop_liquidator.load(std::sync::atomic::Ordering::SeqCst) {
-        info!("Stats: Geyser Channel depth [{}]", monitor_geyser_rx.len(),);
         info!(
             "Stats: Liqudations [attempts, failed] -> [{},{}]",
             LIQUIDATION_ATTEMPTS.get(),

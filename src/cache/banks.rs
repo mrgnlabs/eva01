@@ -36,6 +36,19 @@ impl BanksCache {
             .collect()
     }
 
+    pub fn get_kamino_reserves(&self) -> HashSet<Pubkey> {
+        self.banks
+            .iter()
+            .filter_map(|(_, bank)| {
+                if bank.bank.kamino_reserve == Pubkey::default() {
+                    None
+                } else {
+                    Some(bank.bank.kamino_reserve)
+                }
+            })
+            .collect()
+    }
+
     pub fn try_get_account_for_mint(&self, mint_address: &Pubkey) -> Result<Pubkey> {
         self.mint_to_bank
             .get(mint_address)

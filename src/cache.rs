@@ -4,7 +4,10 @@ pub mod mints;
 mod oracles;
 mod tokens;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use accounts::MarginfiAccountsCache;
 use anyhow::Result;
@@ -33,6 +36,7 @@ pub struct Cache {
     pub luts: Vec<AddressLookupTableAccount>,
     pub global_fee_state_key: Pubkey,
     pub global_fee_wallet: Pubkey,
+    pub kamino_reserves: HashMap<Pubkey, (Pubkey, Pubkey)>,
 }
 
 impl Cache {
@@ -57,9 +61,11 @@ impl Cache {
             luts: vec![],
             global_fee_state_key,
             global_fee_wallet: Pubkey::default(),
+            kamino_reserves: HashMap::new(),
         }
     }
 
+    // TODO: merge with the Jup Swap LUTs
     pub fn add_lut(&mut self, lut: AddressLookupTableAccount) {
         self.luts.push(lut)
     }

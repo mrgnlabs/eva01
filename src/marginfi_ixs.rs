@@ -234,7 +234,8 @@ pub fn make_liquidate_ix(
     marginfi_account: Pubkey,
     asset_bank: &BankWrapper,
     liab_bank: &BankWrapper,
-    oracles: &[Pubkey],
+    asset_oracles: &[Pubkey],
+    liab_oracles: &[Pubkey],
     signer: Pubkey,
     liquidatee_marginfi_account: Pubkey,
     token_program: Pubkey,
@@ -265,19 +266,26 @@ pub fn make_liquidate_ix(
         liquidatee_marginfi_account: {:?}, 
         asset_bank: {:?}, 
         liab_bank: {:?}, 
-        oracles: {:?} 
+        asset oracles: {:?},
+        liab oracles: {:?}
         )"#,
         accounts_raw.group,
         accounts_raw.liquidator_marginfi_account,
         accounts_raw.liquidatee_marginfi_account,
         accounts_raw.asset_bank,
         accounts_raw.liab_bank,
-        oracles,
+        asset_oracles,
+        liab_oracles,
     );
     maybe_add_bank_mint(&mut accounts, liab_bank.bank.mint, &token_program);
 
     accounts.extend(
-        oracles
+        asset_oracles
+            .iter()
+            .map(|oracle| AccountMeta::new_readonly(*oracle, false)),
+    );
+    accounts.extend(
+        liab_oracles
             .iter()
             .map(|oracle| AccountMeta::new_readonly(*oracle, false)),
     );

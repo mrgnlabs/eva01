@@ -15,7 +15,7 @@ use crate::{
     },
     wrappers::oracle::{OracleWrapper, OracleWrapperTrait},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use jupiter_swap_api_client::{
     quote::QuoteRequest,
     swap::{PrioritizationType, SwapInstructionsResponse, SwapRequest},
@@ -313,10 +313,11 @@ impl LiquidatorAccount {
             return Ok(());
         }
 
+        let mut used_swb_oracles: Vec<Pubkey> = liquidatee_swb_oracles.clone();
         let mut luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
         let mut ixs = Vec::new();
 
-        let use_old_way = MarginfiAccountWrapper::contains_kamino_position(
+        let kamino_liquidation = MarginfiAccountWrapper::contains_kamino_position(
             &liquidator_account.lending_account,
             self.cache.clone(),
         )
@@ -327,7 +328,7 @@ impl LiquidatorAccount {
             )
             .map_err(LiquidationError::from_anyhow_error)?;
 
-        if use_old_way {
+        if true {
             let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
             let banks_to_exclude: Vec<Pubkey> = vec![];
             let (liquidator_observation_accounts, liquidator_swb_oracles) =
@@ -348,6 +349,8 @@ impl LiquidatorAccount {
                 return Ok(());
             }
 
+            used_swb_oracles.extend(liquidator_swb_oracles.clone());
+
             let joined_observation_accounts = liquidator_observation_accounts
                 .iter()
                 .chain(liquidatee_observation_accounts.iter())
@@ -365,11 +368,8 @@ impl LiquidatorAccount {
                 self.liquidator_address,
                 &asset_bank_wrapper,
                 &liab_bank_wrapper,
-                &[
-                    asset_oracle_wrapper.address,
-                    asset_bank_wrapper.bank.kamino_reserve,
-                    liab_oracle_wrapper.address,
-                ],
+                asset_oracle_wrapper.addresses.as_slice(),
+                liab_oracle_wrapper.addresses.as_slice(),
                 signer_pk,
                 liquidatee_account_address,
                 self.cache
@@ -383,29 +383,35 @@ impl LiquidatorAccount {
             );
             ixs.push(self.cu_limit_ix.clone());
 
-            // TODO: load from reserve acc
-            let lending_market =
-                Pubkey::from_str_const("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
-            let reserve_oracle =
-                Pubkey::from_str_const("3NJYftD5sjVfxSnUdZ1wVML8f3aC6mp1CXCL6L7TnU8C");
+            if kamino_liquidation {
+                let &(lending_market, reserve_oracle) = self
+                    .cache
+                    .kamino_reserves
+                    .get(&asset_bank_wrapper.bank.kamino_reserve)
+                    .context(format!(
+                        "Couldn't find the data for kamino reserve: {}",
+                        asset_bank_wrapper.bank.kamino_reserve
+                    ))
+                    .map_err(LiquidationError::from_anyhow_error)?;
 
-            // TODO: refresh ALL reserves
-            let refresh_reserve_ix = make_refresh_reserve_ix(
-                asset_bank_wrapper.bank.kamino_reserve,
-                lending_market,
-                None,
-                None,
-                None,
-                Some(reserve_oracle),
-            );
-            ixs.push(refresh_reserve_ix);
+                // TODO: refresh ALL reserves
+                let refresh_reserve_ix = make_refresh_reserve_ix(
+                    asset_bank_wrapper.bank.kamino_reserve,
+                    lending_market,
+                    None,
+                    None,
+                    None,
+                    Some(reserve_oracle),
+                );
+                ixs.push(refresh_reserve_ix);
 
-            let refresh_obligation_ix = make_refresh_obligation_ix(
-                asset_bank_wrapper.bank.kamino_obligation,
-                lending_market,
-                &[asset_bank_wrapper.bank.kamino_reserve],
-            );
-            ixs.push(refresh_obligation_ix);
+                let refresh_obligation_ix = make_refresh_obligation_ix(
+                    asset_bank_wrapper.bank.kamino_obligation,
+                    lending_market,
+                    &[asset_bank_wrapper.bank.kamino_reserve],
+                );
+                ixs.push(refresh_obligation_ix);
+            }
 
             ixs.push(liquidate_ix);
         } else {
@@ -541,7 +547,7 @@ impl LiquidatorAccount {
             Err(err) => {
                 let mut swb_oracles: Vec<Pubkey> = vec![];
                 if is_stale_swb_price_error(&err) {
-                    swb_oracles = liquidatee_swb_oracles;
+                    swb_oracles = used_swb_oracles;
                 }
                 Err(LiquidationError::from_anyhow_error_with_keys(
                     anyhow!(
