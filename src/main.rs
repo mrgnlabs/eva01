@@ -19,9 +19,9 @@ mod metrics;
 mod geyser;
 mod geyser_processor;
 
+mod kamino_ixs;
 /// IXs for marginfi and Kamino
 mod marginfi_ixs;
-mod kamino_ixs;
 
 /// Liquidator is responsible to liquidate MarginfiAccounts
 mod liquidator;

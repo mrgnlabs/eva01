@@ -276,7 +276,11 @@ pub fn make_liquidate_ix(
     );
     maybe_add_bank_mint(&mut accounts, liab_bank.bank.mint, &token_program);
 
-    accounts.extend(oracles.iter().map(|oracle| AccountMeta::new_readonly(*oracle, false)));
+    accounts.extend(
+        oracles
+            .iter()
+            .map(|oracle| AccountMeta::new_readonly(*oracle, false)),
+    );
 
     accounts.extend(
         observation_accounts

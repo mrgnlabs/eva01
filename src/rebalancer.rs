@@ -105,7 +105,6 @@ impl Rebalancer {
     }
 
     pub fn run(&mut self) -> anyhow::Result<()> {
-        return Ok(());
         let lq_acc = self
             .cache
             .marginfi_accounts

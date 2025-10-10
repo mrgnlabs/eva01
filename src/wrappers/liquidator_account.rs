@@ -1,12 +1,19 @@
 use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
-    cache::Cache, cli::setup::marginfi_account_by_authority, config::GeneralConfig, kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix}, marginfi_ixs::{
+    cache::Cache,
+    cli::setup::marginfi_account_by_authority,
+    config::GeneralConfig,
+    kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix},
+    marginfi_ixs::{
         initialize_marginfi_account, make_deposit_ix, make_end_liquidate_ix,
         make_init_liquidation_record_ix, make_liquidate_ix, make_repay_ix, make_start_liquidate_ix,
         make_withdraw_ix,
-    }, metrics::LIQUIDATION_ATTEMPTS, utils::{
+    },
+    metrics::LIQUIDATION_ATTEMPTS,
+    utils::{
         check_asset_tags_matching, lut_cache::LutCache, swb_cranker::is_stale_swb_price_error,
-    }, wrappers::oracle::{OracleWrapper, OracleWrapperTrait}
+    },
+    wrappers::oracle::{OracleWrapper, OracleWrapperTrait},
 };
 use anyhow::{anyhow, Result};
 use jupiter_swap_api_client::{
@@ -358,8 +365,11 @@ impl LiquidatorAccount {
                 self.liquidator_address,
                 &asset_bank_wrapper,
                 &liab_bank_wrapper,
-                &[asset_oracle_wrapper.address, asset_bank_wrapper.bank.kamino_reserve,
-                liab_oracle_wrapper.address],
+                &[
+                    asset_oracle_wrapper.address,
+                    asset_bank_wrapper.bank.kamino_reserve,
+                    liab_oracle_wrapper.address,
+                ],
                 signer_pk,
                 liquidatee_account_address,
                 self.cache
@@ -373,11 +383,28 @@ impl LiquidatorAccount {
             );
             ixs.push(self.cu_limit_ix.clone());
 
+            // TODO: load from reserve acc
+            let lending_market =
+                Pubkey::from_str_const("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
+            let reserve_oracle =
+                Pubkey::from_str_const("3NJYftD5sjVfxSnUdZ1wVML8f3aC6mp1CXCL6L7TnU8C");
+
             // TODO: refresh ALL reserves
-            let refresh_reserve_ix = make_refresh_reserve_ix(asset_bank_wrapper.bank.kamino_reserve, lending_market, pyth_oracle, None, None, None);
+            let refresh_reserve_ix = make_refresh_reserve_ix(
+                asset_bank_wrapper.bank.kamino_reserve,
+                lending_market,
+                None,
+                None,
+                None,
+                Some(reserve_oracle),
+            );
             ixs.push(refresh_reserve_ix);
 
-            let refresh_obligation_ix = make_refresh_obligation_ix(asset_bank_wrapper.bank.kamino_obligation, lending_market);
+            let refresh_obligation_ix = make_refresh_obligation_ix(
+                asset_bank_wrapper.bank.kamino_obligation,
+                lending_market,
+                &[asset_bank_wrapper.bank.kamino_reserve],
+            );
             ixs.push(refresh_obligation_ix);
 
             ixs.push(liquidate_ix);
