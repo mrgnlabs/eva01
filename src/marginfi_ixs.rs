@@ -15,7 +15,6 @@ use solana_sdk::{
 
 use crate::{utils::find_bank_liquidity_vault_authority, wrappers::bank::BankWrapper};
 
-#[allow(clippy::too_many_arguments)]
 pub fn make_init_liquidation_record_ix(
     marginfi_program_id: Pubkey,
     liquidatee_account: Pubkey,
@@ -44,7 +43,6 @@ pub fn make_init_liquidation_record_ix(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn make_start_liquidate_ix(
     marginfi_program_id: Pubkey,
     liquidatee_account: Pubkey,
@@ -74,7 +72,6 @@ pub fn make_start_liquidate_ix(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn make_deposit_ix(
     marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
@@ -193,7 +190,6 @@ pub fn make_withdraw_ix(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn make_end_liquidate_ix(
     marginfi_program_id: Pubkey,
     liquidatee_account: Pubkey,

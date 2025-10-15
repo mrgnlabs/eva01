@@ -127,8 +127,11 @@ impl Liquidator {
                             Ok(acc_opt) => {
                                 if let Some(acc) = acc_opt {
                                     let start = Instant::now();
-                                    if acc.liquidatee_account.liquidation_record
-                                        == Pubkey::default()
+                                    // TODO: re-enable once a portfolio keeping solution is found
+                                    let create_liquidation_record = false;
+                                    if create_liquidation_record
+                                        && acc.liquidatee_account.liquidation_record
+                                            == Pubkey::default()
                                     {
                                         if let Err(e) = &self
                                             .liquidator_account
@@ -152,13 +155,16 @@ impl Liquidator {
                                         &stale_swb_oracles,
                                         &mut lut_cache,
                                     ) {
-                                        error!(
-                                            "Failed to liquidate account {:?}, error: {:?}",
-                                            candidate.liquidatee_account.address, e.error
-                                        );
-                                        FAILED_LIQUIDATIONS.inc();
-                                        ERROR_COUNT.inc();
-                                        stale_swb_oracles.extend(&e.keys);
+                                        if e.keys.is_empty() {
+                                            error!(
+                                                "Failed to liquidate account {:?}, error: {:?}",
+                                                candidate.liquidatee_account.address, e.error
+                                            );
+                                            FAILED_LIQUIDATIONS.inc();
+                                            ERROR_COUNT.inc();
+                                        } else {
+                                            stale_swb_oracles.extend(&e.keys);
+                                        }
                                     }
                                     let duration = start.elapsed().as_secs_f64();
                                     LIQUIDATION_LATENCY.observe(duration);
@@ -262,9 +268,12 @@ impl Liquidator {
         while index < total_accs {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
                 Ok(account) => {
-                    if let Err(e) =
-                        self.publish_account_health(&account, supabase, min_liab_value_usd, schedule)
-                    {
+                    if let Err(e) = self.publish_account_health(
+                        &account,
+                        supabase,
+                        min_liab_value_usd,
+                        schedule,
+                    ) {
                         error!(
                             "Failed to publish Marginfi account health {}: {:?}",
                             account.address, e
@@ -324,7 +333,7 @@ impl Liquidator {
             total_weighted_liabilities.to_num::<f64>(),
             maintenance_health.to_num::<f64>(),
             percentage_health,
-            schedule,
+            schedule as i64,
         )?;
 
         Ok(())

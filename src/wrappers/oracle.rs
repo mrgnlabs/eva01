@@ -151,17 +151,25 @@ impl OracleWrapperTrait for OracleWrapper {
                         sol_pool_account_info,
                     ],
                     &clock_manager::get_clock(&cache.clock)?,
-                )?;
-
-                let oracle_wrapper = Self {
-                    addresses: vec![
-                        bank_oracle_address,
-                        mint_oracle_address,
-                        sol_pool_oracle_address,
-                    ],
-                    price_adapter,
-                };
-                result = Some(oracle_wrapper);
+                );
+                match price_adapter {
+                    Ok(price_adapter) => {
+                        let oracle_wrapper = Self {
+                            addresses: vec![
+                                bank_oracle_address,
+                                mint_oracle_address,
+                                sol_pool_oracle_address,
+                            ],
+                            price_adapter,
+                        };
+                        result = Some(oracle_wrapper);
+                    }
+                    Err(_e) => {
+                        // TODO: re-enable when dealing with Staked liquidations
+                        // error!("Error when calculating asset price: {}", e);
+                        result = None;
+                    }
+                }
             }
             OracleSetup::KaminoPythPush => {
                 if oracle_addresses.len() != 2 {

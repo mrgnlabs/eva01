@@ -55,7 +55,6 @@ pub struct Rebalancer {
 }
 
 impl Rebalancer {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Eva01Config,
         liquidator_account: Arc<LiquidatorAccount>,

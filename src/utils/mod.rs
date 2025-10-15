@@ -47,6 +47,14 @@ use crate::{
 };
 use std::cmp::max;
 
+#[derive(Clone, Copy)]
+pub enum KaminoOracleSetup {
+    Pyth(Pubkey),
+    Switchboard(Pubkey),
+    SwitchboardTWAP(Pubkey),
+    Scope(Pubkey),
+}
+
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
     pub max_concurrent_calls: usize,

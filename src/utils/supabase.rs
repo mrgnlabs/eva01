@@ -32,7 +32,7 @@ pub struct AccountHealthRow {
     pub percentage_health: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub schedule: u64,
+    pub schedule: i64,
 }
 
 impl SupabasePublisher {
@@ -59,7 +59,7 @@ impl SupabasePublisher {
         liabilities_usd: f64,
         maintenance_health: f64,
         percentage_health: f64,
-        schedule: u64,
+        schedule: i64,
     ) -> Result<()> {
         let now = Utc::now();
         self.buf.push(AccountHealthRow {

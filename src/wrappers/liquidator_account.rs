@@ -236,7 +236,6 @@ impl LiquidatorAccount {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn liquidate(
         &self,
         liquidatee_account: &MarginfiAccountWrapper,
@@ -296,7 +295,7 @@ impl LiquidatorAccount {
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];
-        let (liquidatee_observation_accounts, liquidatee_swb_oracles) =
+        let (liquidatee_observation_accounts, liquidatee_swb_oracles, mut kamino_reserves) =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &liquidatee_account.lending_account,
                 &banks_to_include,
@@ -313,43 +312,32 @@ impl LiquidatorAccount {
             return Ok(());
         }
 
-        let mut used_swb_oracles: Vec<Pubkey> = liquidatee_swb_oracles.clone();
         let mut luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
         let mut ixs = Vec::new();
 
-        let kamino_liquidation = MarginfiAccountWrapper::contains_kamino_position(
-            &liquidator_account.lending_account,
-            self.cache.clone(),
-        )
-        .map_err(LiquidationError::from_anyhow_error)?
-            || MarginfiAccountWrapper::contains_kamino_position(
-                &liquidatee_account.lending_account,
+        let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
+        let banks_to_exclude: Vec<Pubkey> = vec![];
+        let (liquidator_observation_accounts, liquidator_swb_oracles, liquidator_kamino_reserves) =
+            MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
+                lending_account,
+                &banks_to_include,
+                &banks_to_exclude,
                 self.cache.clone(),
             )
             .map_err(LiquidationError::from_anyhow_error)?;
+        debug!(
+            "The Liquidator {} observation accounts: {:?}",
+            &self.liquidator_address, liquidator_observation_accounts
+        );
 
-        if true {
-            let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
-            let banks_to_exclude: Vec<Pubkey> = vec![];
-            let (liquidator_observation_accounts, liquidator_swb_oracles) =
-                MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
-                    lending_account,
-                    &banks_to_include,
-                    &banks_to_exclude,
-                    self.cache.clone(),
-                )
-                .map_err(LiquidationError::from_anyhow_error)?;
-            debug!(
-                "The Liquidator {} observation accounts: {:?}",
-                &self.liquidator_address, liquidator_observation_accounts
-            );
+        kamino_reserves.extend(liquidator_kamino_reserves);
 
+        let old_way = true;
+        if old_way {
             if contains_stale_oracles(stale_swb_oracles, &liquidator_swb_oracles) {
                 warn!("Skipping liquidation attempt because liquidator has stale oracles.");
                 return Ok(());
             }
-
-            used_swb_oracles.extend(liquidator_swb_oracles.clone());
 
             let joined_observation_accounts = liquidator_observation_accounts
                 .iter()
@@ -383,32 +371,25 @@ impl LiquidatorAccount {
             );
             ixs.push(self.cu_limit_ix.clone());
 
-            if kamino_liquidation {
-                let &(lending_market, reserve_oracle) = self
+            for kamino_reserve in kamino_reserves {
+                let &(lending_market, oracle_setup) = self
                     .cache
                     .kamino_reserves
-                    .get(&asset_bank_wrapper.bank.kamino_reserve)
+                    .get(&kamino_reserve)
                     .context(format!(
                         "Couldn't find the data for kamino reserve: {}",
-                        asset_bank_wrapper.bank.kamino_reserve
+                        kamino_reserve
                     ))
                     .map_err(LiquidationError::from_anyhow_error)?;
 
-                // TODO: refresh ALL reserves
-                let refresh_reserve_ix = make_refresh_reserve_ix(
-                    asset_bank_wrapper.bank.kamino_reserve,
-                    lending_market,
-                    None,
-                    None,
-                    None,
-                    Some(reserve_oracle),
-                );
+                let refresh_reserve_ix =
+                    make_refresh_reserve_ix(kamino_reserve, lending_market, oracle_setup);
                 ixs.push(refresh_reserve_ix);
 
                 let refresh_obligation_ix = make_refresh_obligation_ix(
                     asset_bank_wrapper.bank.kamino_obligation,
                     lending_market,
-                    &[asset_bank_wrapper.bank.kamino_reserve],
+                    &[kamino_reserve],
                 );
                 ixs.push(refresh_obligation_ix);
             }
@@ -547,11 +528,12 @@ impl LiquidatorAccount {
             Err(err) => {
                 let mut swb_oracles: Vec<Pubkey> = vec![];
                 if is_stale_swb_price_error(&err) {
-                    swb_oracles = used_swb_oracles;
+                    swb_oracles.extend(liquidatee_swb_oracles);
+                    swb_oracles.extend(liquidator_swb_oracles);
                 }
                 Err(LiquidationError::from_anyhow_error_with_keys(
                     anyhow!(
-                        "Liquidation txn for the Account {} failed: {} ",
+                        "Liquidation tx for the Account {} failed: {} ",
                         liquidatee_account_address,
                         err
                     ),
@@ -614,7 +596,7 @@ impl LiquidatorAccount {
         };
         debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let (observation_accounts, _) =
+        let (observation_accounts, _, _) =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &self
                     .cache

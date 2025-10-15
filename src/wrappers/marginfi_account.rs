@@ -5,10 +5,7 @@ use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::bank::BankImpl;
-use marginfi_type_crate::{
-    constants::ASSET_TAG_KAMINO,
-    types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup},
-};
+use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashSet, sync::Arc};
 
@@ -112,28 +109,12 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    pub fn contains_kamino_position(
-        lending_account: &LendingAccount,
-        cache: Arc<Cache>,
-    ) -> Result<bool> {
-        for balance in &lending_account.balances {
-            if !balance.is_active() {
-                continue;
-            }
-            let bank = cache.banks.try_get_bank(&balance.bank_pk)?;
-            if bank.bank.config.asset_tag == ASSET_TAG_KAMINO {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         cache: Arc<Cache>,
-    ) -> Result<(Vec<Pubkey>, Vec<Pubkey>)> {
+    ) -> Result<(Vec<Pubkey>, Vec<Pubkey>, HashSet<Pubkey>)> {
         let mut bank_pks: HashSet<Pubkey> =
             MarginfiAccountWrapper::get_active_banks(lending_account)
                 .into_iter()
@@ -150,8 +131,9 @@ impl MarginfiAccountWrapper {
         bank_pks.sort_by(|a, b| b.cmp(a));
 
         let mut swb_oracles = vec![];
-        // Add bank oracles
         let mut observation_accounts: Vec<Pubkey> = vec![];
+        let mut kamino_reserves = HashSet::new();
+
         for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
             let oracle_wrapper = T::build(&cache, bank_pk)?;
@@ -176,6 +158,7 @@ impl MarginfiAccountWrapper {
                     ]
                 }
                 OracleSetup::KaminoPythPush => {
+                    kamino_reserves.insert(bank_wrapper.bank.kamino_reserve);
                     vec![
                         *bank_pk,
                         oracle_wrapper.get_address(),
@@ -183,6 +166,7 @@ impl MarginfiAccountWrapper {
                     ]
                 }
                 OracleSetup::KaminoSwitchboardPull => {
+                    kamino_reserves.insert(bank_wrapper.bank.kamino_reserve);
                     swb_oracles.push(oracle_wrapper.get_address());
                     vec![
                         *bank_pk,
@@ -197,9 +181,7 @@ impl MarginfiAccountWrapper {
             observation_accounts.extend(bank_and_oracles);
         }
 
-        let res = (observation_accounts, swb_oracles);
-
-        Ok(res)
+        Ok((observation_accounts, swb_oracles, kamino_reserves))
     }
 }
 
@@ -430,7 +412,8 @@ mod tests {
                     usdc_bank.address,
                     usdc_bank.bank.config.oracle_keys[0],
                 ],
-                vec![]
+                vec![],
+                HashSet::new()
             )
         );
     }
@@ -449,7 +432,7 @@ mod tests {
                 cache
             )
             .unwrap(),
-            (vec![], vec![])
+            (vec![], vec![], HashSet::new())
         );
     }
 
@@ -488,7 +471,8 @@ mod tests {
                     usdc_bank_wrapper.address,
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
-                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]] // Bonk oracle is the only switchboard oracle
+                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                HashSet::new()
             )
         );
     }
@@ -529,7 +513,8 @@ mod tests {
                     usdc_bank_wrapper.address,
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
-                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]] // Bonk oracle is the only switchboard oracle
+                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                HashSet::new()
             )
         );
     }

@@ -26,7 +26,7 @@ use crate::{
     cache::Cache,
     geyser::AccountType,
     kamino_lending,
-    utils::{batch_get_multiple_accounts, BatchLoadingConfig},
+    utils::{batch_get_multiple_accounts, BatchLoadingConfig, KaminoOracleSetup},
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
 use anchor_client::Program;
@@ -408,9 +408,53 @@ impl CacheLoader {
                 debug!("Loaded the Kamino Reserve: {:?}", address);
                 let mut data: &[u8] = &account.data;
                 let reserve = kamino_lending::accounts::Reserve::try_deserialize(&mut data)?;
+                let kamino_oracle_setup =
+                    if reserve.config.token_info.pyth_configuration.price != Pubkey::default() {
+                        KaminoOracleSetup::Pyth(reserve.config.token_info.pyth_configuration.price)
+                    } else if reserve
+                        .config
+                        .token_info
+                        .switchboard_configuration
+                        .price_aggregator
+                        != Pubkey::default()
+                    {
+                        KaminoOracleSetup::Switchboard(
+                            reserve
+                                .config
+                                .token_info
+                                .switchboard_configuration
+                                .price_aggregator,
+                        )
+                    } else if reserve
+                        .config
+                        .token_info
+                        .switchboard_configuration
+                        .twap_aggregator
+                        != Pubkey::default()
+                    {
+                        KaminoOracleSetup::SwitchboardTWAP(
+                            reserve
+                                .config
+                                .token_info
+                                .switchboard_configuration
+                                .twap_aggregator,
+                        )
+                    } else if reserve.config.token_info.scope_configuration.price_feed
+                        != Pubkey::default()
+                    {
+                        KaminoOracleSetup::Scope(
+                            reserve.config.token_info.scope_configuration.price_feed,
+                        )
+                    } else {
+                        return Err(anyhow!(
+                            "Unknown OracleSetup found for Kamino Reserve: {:?}",
+                            address
+                        ));
+                    };
+
                 cache
                     .kamino_reserves
-                    .insert(*address, (reserve.lending_market, reserve.farm_collateral));
+                    .insert(*address, (reserve.lending_market, kamino_oracle_setup));
             } else {
                 error!("Reserve account {:?} not found.", address);
             }
