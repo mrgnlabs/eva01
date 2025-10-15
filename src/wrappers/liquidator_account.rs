@@ -623,15 +623,14 @@ impl LiquidatorAccount {
             withdraw_all,
         );
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let ixs: Vec<Instruction> = vec![self.cu_limit_ix.clone(), withdraw_ix];
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
 
-        let tx: solana_sdk::transaction::Transaction =
-            solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[self.cu_limit_ix.clone(), withdraw_ix],
-                Some(&signer_pk),
-                &[&self.signer],
-                recent_blockhash,
-            );
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         debug!(
             "Withdrawing {:?} unscaled tokens of the Mint {} from the Liquidator account {:?}, Bank {:?}, ",
@@ -654,7 +653,7 @@ impl LiquidatorAccount {
             )
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        debug!("Withdrawal txn: {:?} ", res);
+        debug!("Withdrawal tx: {:?} ", res);
         Ok(())
     }
 
@@ -677,15 +676,14 @@ impl LiquidatorAccount {
             repay_all,
         );
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let ixs: Vec<Instruction> = vec![self.cu_limit_ix.clone(), repay_ix];
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
 
-        let tx: solana_sdk::transaction::Transaction =
-            solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[repay_ix.clone()],
-                Some(&signer_pk),
-                &[&self.signer],
-                recent_blockhash,
-            );
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         debug!(
             "Repaying {:?} unscaled tokens to the bank {}, token account {:?}",
