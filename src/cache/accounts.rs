@@ -76,6 +76,7 @@ mod tests {
     fn create_test_account(address: Pubkey) -> MarginfiAccountWrapper {
         MarginfiAccountWrapper {
             address,
+            liquidation_record: Pubkey::default(),
             lending_account: LendingAccount {
                 balances: [Balance {
                     active: 1,

@@ -5,23 +5,25 @@ use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use log::debug;
 use marginfi::state::bank::BankImpl;
-use marginfi_type_crate::types::{BalanceSide, LendingAccount, OracleSetup};
+use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone)]
 pub struct MarginfiAccountWrapper {
     pub address: Pubkey,
+    pub liquidation_record: Pubkey,
     pub lending_account: LendingAccount,
 }
 
 type Shares = Vec<(I80F48, Pubkey)>;
 
 impl MarginfiAccountWrapper {
-    pub fn new(address: Pubkey, lending_account: LendingAccount) -> Self {
+    pub fn new(address: Pubkey, account: &MarginfiAccount) -> Self {
         MarginfiAccountWrapper {
             address,
-            lending_account,
+            liquidation_record: account.liquidation_record,
+            lending_account: account.lending_account,
         }
     }
 
@@ -112,7 +114,7 @@ impl MarginfiAccountWrapper {
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         cache: Arc<Cache>,
-    ) -> Result<(Vec<Pubkey>, Vec<Pubkey>)> {
+    ) -> Result<(Vec<Pubkey>, Vec<Pubkey>, HashSet<Pubkey>)> {
         let mut bank_pks: HashSet<Pubkey> =
             MarginfiAccountWrapper::get_active_banks(lending_account)
                 .into_iter()
@@ -129,48 +131,57 @@ impl MarginfiAccountWrapper {
         bank_pks.sort_by(|a, b| b.cmp(a));
 
         let mut swb_oracles = vec![];
-        // Add bank oracles
-        let observation_accounts = bank_pks.iter().flat_map(|bank_pk| {
+        let mut observation_accounts: Vec<Pubkey> = vec![];
+        let mut kamino_reserves = HashSet::new();
+
+        for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
             let oracle_wrapper = T::build(&cache, bank_pk)?;
             debug!(
                 "Observation account Bank: {:?}, asset tag type: {:?}.",
                 bank_pk, bank_wrapper.bank.config.asset_tag
             );
-            if matches!(
-                bank_wrapper.bank.config.oracle_setup,
-                OracleSetup::SwitchboardPull
-            ) {
-                swb_oracles.push(oracle_wrapper.get_address());
-            }
+            let bank_and_oracles: Vec<Pubkey> = match bank_wrapper.bank.config.oracle_setup {
+                OracleSetup::PythPushOracle => {
+                    vec![*bank_pk, oracle_wrapper.get_address()]
+                }
+                OracleSetup::SwitchboardPull => {
+                    swb_oracles.push(oracle_wrapper.get_address());
+                    vec![*bank_pk, oracle_wrapper.get_address()]
+                }
+                OracleSetup::StakedWithPythPush => {
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                        bank_wrapper.bank.config.oracle_keys[2],
+                    ]
+                }
+                OracleSetup::KaminoPythPush => {
+                    kamino_reserves.insert(bank_wrapper.bank.kamino_reserve);
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
+                OracleSetup::KaminoSwitchboardPull => {
+                    kamino_reserves.insert(bank_wrapper.bank.kamino_reserve);
+                    swb_oracles.push(oracle_wrapper.get_address());
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
+                _ => {
+                    return Err(Error::msg("Unsupported Oracle setup"));
+                }
+            };
+            observation_accounts.extend(bank_and_oracles);
+        }
 
-            if bank_wrapper.bank.config.oracle_keys[1] != Pubkey::default()
-                && bank_wrapper.bank.config.oracle_keys[2] != Pubkey::default()
-            {
-                debug!(
-                    "Observation accounts for the bank {:?} will contain Oracle keys!",
-                    bank_pk
-                );
-                Ok::<Vec<Pubkey>, Error>(vec![
-                    *bank_pk,
-                    oracle_wrapper.get_address(),
-                    bank_wrapper.bank.config.oracle_keys[1],
-                    bank_wrapper.bank.config.oracle_keys[2],
-                ])
-            } else {
-                Ok(vec![*bank_pk, oracle_wrapper.get_address()])
-            }
-        });
-
-        let res = (
-            observation_accounts
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>(),
-            swb_oracles,
-        );
-
-        Ok(res)
+        Ok((observation_accounts, swb_oracles, kamino_reserves))
     }
 }
 
@@ -222,6 +233,7 @@ pub mod test_utils {
             };
             Self {
                 address: Pubkey::new_unique(),
+                liquidation_record: Pubkey::default(),
                 lending_account,
             }
         }
@@ -262,6 +274,7 @@ pub mod test_utils {
             };
             Self {
                 address: Pubkey::new_unique(),
+                liquidation_record: Pubkey::default(),
                 lending_account,
             }
         }
@@ -399,7 +412,8 @@ mod tests {
                     usdc_bank.address,
                     usdc_bank.bank.config.oracle_keys[0],
                 ],
-                vec![]
+                vec![],
+                HashSet::new()
             )
         );
     }
@@ -418,7 +432,7 @@ mod tests {
                 cache
             )
             .unwrap(),
-            (vec![], vec![])
+            (vec![], vec![], HashSet::new())
         );
     }
 
@@ -457,7 +471,8 @@ mod tests {
                     usdc_bank_wrapper.address,
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
-                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]] // Bonk oracle is the only switchboard oracle
+                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                HashSet::new()
             )
         );
     }
@@ -498,7 +513,8 @@ mod tests {
                     usdc_bank_wrapper.address,
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
-                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]] // Bonk oracle is the only switchboard oracle
+                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                HashSet::new()
             )
         );
     }

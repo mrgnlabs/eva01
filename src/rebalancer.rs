@@ -55,7 +55,6 @@ pub struct Rebalancer {
 }
 
 impl Rebalancer {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Eva01Config,
         liquidator_account: Arc<LiquidatorAccount>,
@@ -74,8 +73,8 @@ impl Rebalancer {
             .try_get_account_for_mint(&config.rebalancer_config.swap_mint)?;
 
         let token_account_dust_threshold = config.rebalancer_config.token_account_dust_threshold;
-        let jup_swap_api_url = config.rebalancer_config.jup_swap_api_url;
-        let slippage_bps = config.rebalancer_config.slippage_bps;
+        let jup_swap_api_url = config.general_config.jup_swap_api_url.clone();
+        let slippage_bps = config.general_config.slippage_bps;
         let compute_unit_price_micro_lamports = ComputeUnitPriceMicroLamports::MicroLamports(
             config.general_config.compute_unit_price_micro_lamports,
         );

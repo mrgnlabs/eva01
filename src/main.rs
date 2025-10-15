@@ -1,3 +1,4 @@
+use anchor_lang::declare_program;
 use env_logger::Builder;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use std::{
@@ -18,7 +19,8 @@ mod metrics;
 mod geyser;
 mod geyser_processor;
 
-/// IX's for marginfi
+mod kamino_ixs;
+/// IXs for marginfi and Kamino
 mod marginfi_ixs;
 
 /// Liquidator is responsible to liquidate MarginfiAccounts
@@ -45,6 +47,8 @@ mod clock_manager;
 
 mod cache;
 mod cache_loader;
+
+declare_program!(kamino_lending);
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();

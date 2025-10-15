@@ -71,6 +71,14 @@ impl Eva01Config {
 
         let declared_values = load_declared_values_from_env()?;
 
+        let jup_swap_api_url = std::env::var("JUP_SWAP_API_URL")
+            .expect("JUP_SWAP_API_URL environment variable is not set");
+
+        let slippage_bps: u16 = std::env::var("SLIPPAGE_BPS")
+            .expect("SLIPPAGE_BPS environment variable is not set")
+            .parse()
+            .expect("Invalid SLIPPAGE_BPS number: {:#?}");
+
         let general_config = GeneralConfig {
             rpc_url,
             yellowstone_endpoint,
@@ -88,6 +96,8 @@ impl Eva01Config {
             declared_values,
             #[cfg(feature = "publish_to_db")]
             publish_thresholds: load_thresholds_from_env()?,
+            jup_swap_api_url,
+            slippage_bps,
         };
 
         // Liquidator process configuration
@@ -109,19 +119,9 @@ impl Eva01Config {
         )
         .expect("Invalid SWAP_MINT Pubkey");
 
-        let jup_swap_api_url = std::env::var("JUP_SWAP_API_URL")
-            .expect("JUP_SWAP_API_URL environment variable is not set");
-
-        let slippage_bps: u16 = std::env::var("SLIPPAGE_BPS")
-            .expect("SLIPPAGE_BPS environment variable is not set")
-            .parse()
-            .expect("Invalid SLIPPAGE_BPS number: {:#?}");
-
         let rebalancer_config = RebalancerCfg {
             token_account_dust_threshold: I80F48::from_num(token_account_dust_threshold),
             swap_mint,
-            jup_swap_api_url,
-            slippage_bps,
         };
 
         Ok(Eva01Config {
@@ -203,6 +203,8 @@ pub struct GeneralConfig {
     pub declared_values: HashMap<Pubkey, f64>,
     #[cfg(feature = "publish_to_db")]
     pub publish_thresholds: Vec<Threshold>,
+    pub jup_swap_api_url: String,
+    pub slippage_bps: u16,
 }
 
 impl GeneralConfig {
@@ -227,7 +229,9 @@ impl std::fmt::Display for GeneralConfig {
                  - Marginfi Group: {:?}\n\
                  - Address Lookup Tables: {:?}\n\
                  - Solana Clock Refresh Interval: {}\n\
-                 - Healthcheck Port: {}",
+                 - Healthcheck Port: {}\n\
+                 - Jup Swap Api URL: {}\n\
+                 - Slippage bps: {}",
             self.yellowstone_endpoint,
             self.compute_unit_price_micro_lamports,
             self.compute_unit_limit,
@@ -237,6 +241,8 @@ impl std::fmt::Display for GeneralConfig {
             self.address_lookup_tables,
             self.solana_clock_refresh_interval,
             self.healthcheck_port,
+            self.jup_swap_api_url,
+            self.slippage_bps,
         )
     }
 }
@@ -262,8 +268,6 @@ impl std::fmt::Display for LiquidatorCfg {
 pub struct RebalancerCfg {
     pub token_account_dust_threshold: I80F48,
     pub swap_mint: Pubkey,
-    pub jup_swap_api_url: String,
-    pub slippage_bps: u16,
 }
 
 impl std::fmt::Display for RebalancerCfg {
@@ -272,13 +276,8 @@ impl std::fmt::Display for RebalancerCfg {
             f,
             "Rebalancer Config: \n\
                 - Token account dust threshold: {}\n\
-                - Swap mint: {}\n\
-                - Jup Swap Api URL: {}\n\
-                - Slippage bps: {}\n",
-            self.token_account_dust_threshold,
-            self.swap_mint,
-            self.jup_swap_api_url,
-            self.slippage_bps,
+                - Swap mint: {}",
+            self.token_account_dust_threshold, self.swap_mint,
         )
     }
 }

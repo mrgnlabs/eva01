@@ -1,9 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
+use anchor_lang::AccountDeserialize;
 use anchor_spl::associated_token;
 use anyhow::Ok;
 use log::{debug, error, info, warn};
-use marginfi_type_crate::types::{Bank, MarginfiAccount};
+use marginfi_type_crate::types::{Bank, MarginfiAccount, MarginfiGroup};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
     rpc_client::RpcClient,
@@ -24,7 +25,8 @@ use solana_sdk::{
 use crate::{
     cache::Cache,
     geyser::AccountType,
-    utils::{batch_get_multiple_accounts, BatchLoadingConfig},
+    kamino_lending,
+    utils::{batch_get_multiple_accounts, BatchLoadingConfig, KaminoOracleSetup},
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
 use anchor_client::Program;
@@ -55,12 +57,18 @@ impl CacheLoader {
     }
 
     pub fn load_cache(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        let marginfi_group_account = self.rpc_client.get_account(&cache.marginfi_group_address)?;
+        let marginfi_group =
+            bytemuck::from_bytes::<MarginfiGroup>(&marginfi_group_account.data[8..]);
+        cache.global_fee_wallet = marginfi_group.fee_state_cache.global_fee_wallet;
+
         self.load_luts(cache)?;
         self.load_marginfi_accounts(cache)?;
         self.load_banks(cache)?;
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
         self.load_tokens(cache)?;
+        self.load_kamino_reserves(cache)?;
 
         Ok(())
     }
@@ -118,10 +126,7 @@ impl CacheLoader {
         {
             if let Some(account) = account_opt {
                 let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-                let maw = MarginfiAccountWrapper {
-                    address: *address,
-                    lending_account: marginfi_account.lending_account,
-                };
+                let maw = MarginfiAccountWrapper::new(*address, marginfi_account);
                 cache.marginfi_accounts.try_insert(maw)?;
             } else {
                 warn!("Couldn't load Marginfi account for key: {}", *address);
@@ -381,6 +386,81 @@ impl CacheLoader {
 
                 Ok(())
             })?;
+
+        Ok(())
+    }
+
+    fn load_kamino_reserves(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        info!("Loading Kamino Reserves...");
+
+        let reserve_addresses = cache
+            .banks
+            .get_kamino_reserves()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let reserve_accounts = batch_get_multiple_accounts(
+            &self.rpc_client,
+            &reserve_addresses,
+            BatchLoadingConfig::DEFAULT,
+        )?;
+        for (address, account) in reserve_addresses.iter().zip(reserve_accounts.iter()) {
+            if let Some(account) = account {
+                debug!("Loaded the Kamino Reserve: {:?}", address);
+                let mut data: &[u8] = &account.data;
+                let reserve = kamino_lending::accounts::Reserve::try_deserialize(&mut data)?;
+                let kamino_oracle_setup =
+                    if reserve.config.token_info.pyth_configuration.price != Pubkey::default() {
+                        KaminoOracleSetup::Pyth(reserve.config.token_info.pyth_configuration.price)
+                    } else if reserve
+                        .config
+                        .token_info
+                        .switchboard_configuration
+                        .price_aggregator
+                        != Pubkey::default()
+                    {
+                        KaminoOracleSetup::Switchboard(
+                            reserve
+                                .config
+                                .token_info
+                                .switchboard_configuration
+                                .price_aggregator,
+                        )
+                    } else if reserve
+                        .config
+                        .token_info
+                        .switchboard_configuration
+                        .twap_aggregator
+                        != Pubkey::default()
+                    {
+                        KaminoOracleSetup::SwitchboardTWAP(
+                            reserve
+                                .config
+                                .token_info
+                                .switchboard_configuration
+                                .twap_aggregator,
+                        )
+                    } else if reserve.config.token_info.scope_configuration.price_feed
+                        != Pubkey::default()
+                    {
+                        KaminoOracleSetup::Scope(
+                            reserve.config.token_info.scope_configuration.price_feed,
+                        )
+                    } else {
+                        return Err(anyhow!(
+                            "Unknown OracleSetup found for Kamino Reserve: {:?}",
+                            address
+                        ));
+                    };
+
+                cache
+                    .kamino_reserves
+                    .insert(*address, (reserve.lending_market, kamino_oracle_setup));
+            } else {
+                error!("Reserve account {:?} not found.", address);
+            }
+        }
+
+        info!("Loaded {} Kamino Reserves.", cache.kamino_reserves.len());
 
         Ok(())
     }

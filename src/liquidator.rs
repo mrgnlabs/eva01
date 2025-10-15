@@ -3,7 +3,10 @@ use crate::{
     config::Eva01Config,
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS, LIQUIDATION_LATENCY},
     rebalancer::Rebalancer,
-    utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
+    utils::{
+        calc_total_weighted_assets_liabs, get_free_collateral, lut_cache::LutCache,
+        swb_cranker::SwbCranker,
+    },
     wrappers::{
         liquidator_account::LiquidatorAccount,
         marginfi_account::MarginfiAccountWrapper,
@@ -95,6 +98,7 @@ impl Liquidator {
         }
 
         self.rebalancer.run()?;
+        let mut lut_cache = LutCache::new();
 
         #[cfg(feature = "publish_to_db")]
         let mut publish_queue =
@@ -107,6 +111,7 @@ impl Liquidator {
 
         info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
+            info!("Waiting for any data change...");
             if self.run_liquidation.load(Ordering::Relaxed) {
                 info!("Running the Liquidation process...");
                 self.run_liquidation.store(false, Ordering::Relaxed);
@@ -122,6 +127,25 @@ impl Liquidator {
                             Ok(acc_opt) => {
                                 if let Some(acc) = acc_opt {
                                     let start = Instant::now();
+                                    // TODO: re-enable once a portfolio keeping solution is found
+                                    let create_liquidation_record = false;
+                                    if create_liquidation_record
+                                        && acc.liquidatee_account.liquidation_record
+                                            == Pubkey::default()
+                                    {
+                                        if let Err(e) = &self
+                                            .liquidator_account
+                                            .init_liq_record(&acc.liquidatee_account)
+                                        {
+                                            error!(
+                                            "Failed to initialize liquidation record for account {:?}, error: {:?}",
+                                            candidate.liquidatee_account.address, e
+                                        );
+                                            FAILED_LIQUIDATIONS.inc();
+                                            ERROR_COUNT.inc();
+                                            continue;
+                                        }
+                                    }
                                     if let Err(e) = &self.liquidator_account.liquidate(
                                         &acc.liquidatee_account,
                                         &acc.asset_bank,
@@ -129,14 +153,18 @@ impl Liquidator {
                                         acc.asset_amount,
                                         acc.liab_amount,
                                         &stale_swb_oracles,
+                                        &mut lut_cache,
                                     ) {
-                                        error!(
-                                            "Failed to liquidate account {:?}, error: {:?}",
-                                            candidate.liquidatee_account.address, e.error
-                                        );
-                                        FAILED_LIQUIDATIONS.inc();
-                                        ERROR_COUNT.inc();
-                                        stale_swb_oracles.extend(&e.keys);
+                                        if e.keys.is_empty() {
+                                            error!(
+                                                "Failed to liquidate account {:?}, error: {:?}",
+                                                candidate.liquidatee_account.address, e.error
+                                            );
+                                            FAILED_LIQUIDATIONS.inc();
+                                            ERROR_COUNT.inc();
+                                        } else {
+                                            stale_swb_oracles.extend(&e.keys);
+                                        }
                                     }
                                     let duration = start.elapsed().as_secs_f64();
                                     LIQUIDATION_LATENCY.observe(duration);
@@ -179,6 +207,7 @@ impl Liquidator {
                 if let Err(e) = self.publish_all_accounts_health(
                     &mut supabase,
                     next_publishing.rule.min_liab_value_usd,
+                    next_publishing.rule.period.as_secs(),
                 ) {
                     error!("Failed to publish all accounts' health: {}", e);
                 }
@@ -232,15 +261,19 @@ impl Liquidator {
         &mut self,
         supabase: &mut SupabasePublisher,
         min_liab_value_usd: f64,
+        schedule: u64,
     ) -> Result<()> {
         let mut index: usize = 0;
         let total_accs = self.cache.marginfi_accounts.len()?;
         while index < total_accs {
             match self.cache.marginfi_accounts.try_get_account_by_index(index) {
                 Ok(account) => {
-                    if let Err(e) =
-                        self.publish_account_health(&account, supabase, min_liab_value_usd)
-                    {
+                    if let Err(e) = self.publish_account_health(
+                        &account,
+                        supabase,
+                        min_liab_value_usd,
+                        schedule,
+                    ) {
                         error!(
                             "Failed to publish Marginfi account health {}: {:?}",
                             account.address, e
@@ -268,6 +301,7 @@ impl Liquidator {
         account: &MarginfiAccountWrapper,
         supabase: &mut SupabasePublisher,
         min_liab_value_usd: f64,
+        schedule: u64,
     ) -> Result<()> {
         let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
             &self.cache,
@@ -299,6 +333,7 @@ impl Liquidator {
             total_weighted_liabilities.to_num::<f64>(),
             maintenance_health.to_num::<f64>(),
             percentage_health,
+            schedule as i64,
         )?;
 
         Ok(())

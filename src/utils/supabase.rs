@@ -14,7 +14,7 @@ use std::{cmp::min, env};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 const BATCH_SIZE: usize = 2000;
-const COLS_PER_ROW: usize = 7;
+const COLS_PER_ROW: usize = 8;
 
 pub struct SupabasePublisher {
     db_url: String,
@@ -32,6 +32,7 @@ pub struct AccountHealthRow {
     pub percentage_health: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub schedule: i64,
 }
 
 impl SupabasePublisher {
@@ -58,6 +59,7 @@ impl SupabasePublisher {
         liabilities_usd: f64,
         maintenance_health: f64,
         percentage_health: f64,
+        schedule: i64,
     ) -> Result<()> {
         let now = Utc::now();
         self.buf.push(AccountHealthRow {
@@ -68,6 +70,7 @@ impl SupabasePublisher {
             percentage_health,
             created_at: now,
             updated_at: now,
+            schedule,
         });
 
         // Flush full batches (may flush multiple batches if buffer grew a lot)
@@ -103,14 +106,15 @@ impl SupabasePublisher {
             }
             let base = i * COLS_PER_ROW;
             values.push_str(&format!(
-                "(${},${},${},${},${},${},${})",
+                "(${},${},${},${},${},${},${},${})",
                 base + 1,
                 base + 2,
                 base + 3,
                 base + 4,
                 base + 5,
                 base + 6,
-                base + 7
+                base + 7,
+                base + 8
             ));
             params.extend_from_slice(&[
                 &r.account_address,
@@ -120,12 +124,13 @@ impl SupabasePublisher {
                 &r.percentage_health,
                 &r.created_at,
                 &r.updated_at,
+                &r.schedule,
             ]);
         }
 
         let sql = format!(
             "INSERT INTO {} \
-             (account_address, assets_usd, liabilities_usd, maintenance_health, percentage_health, created_at, updated_at) \
+             (account_address, assets_usd, liabilities_usd, maintenance_health, percentage_health, created_at, updated_at, schedule) \
              VALUES {}",
             self.table, values
         );

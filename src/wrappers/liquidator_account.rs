@@ -3,20 +3,29 @@ use crate::{
     cache::Cache,
     cli::setup::marginfi_account_by_authority,
     config::GeneralConfig,
+    kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix},
     marginfi_ixs::{
-        initialize_marginfi_account, make_deposit_ix, make_liquidate_ix, make_repay_ix,
+        initialize_marginfi_account, make_deposit_ix, make_end_liquidate_ix,
+        make_init_liquidation_record_ix, make_liquidate_ix, make_repay_ix, make_start_liquidate_ix,
         make_withdraw_ix,
     },
     metrics::LIQUIDATION_ATTEMPTS,
-    utils::{check_asset_tags_matching, swb_cranker::is_stale_swb_price_error},
-    wrappers::oracle::OracleWrapper,
+    utils::{
+        check_asset_tags_matching, lut_cache::LutCache, swb_cranker::is_stale_swb_price_error,
+    },
+    wrappers::oracle::{OracleWrapper, OracleWrapperTrait},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use jupiter_swap_api_client::{
+    quote::QuoteRequest,
+    swap::{PrioritizationType, SwapInstructionsResponse, SwapRequest},
+    transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
+    JupiterSwapApiClient,
+};
 use log::{debug, info, warn};
 use marginfi_type_crate::types::BalanceSide;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 
-use crate::wrappers::oracle::OracleWrapperTrait;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     address_lookup_table::AddressLookupTableAccount,
@@ -31,6 +40,7 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use std::{collections::HashSet, sync::Arc, thread, time::Duration};
+use tokio::runtime::{Builder, Runtime};
 
 #[derive(Debug)]
 pub struct LiquidationError {
@@ -74,6 +84,10 @@ pub struct LiquidatorAccount {
     rpc_client: RpcClient,
     cu_limit_ix: Instruction,
     pub cache: Arc<Cache>,
+    jup_swap_client: JupiterSwapApiClient,
+    slippage_bps: u16,
+    compute_unit_price_micro_lamports: ComputeUnitPriceMicroLamports,
+    tokio_rt: Runtime,
 }
 
 impl LiquidatorAccount {
@@ -123,6 +137,16 @@ impl LiquidatorAccount {
         };
 
         let preferred_mint_bank = cache.banks.try_get_account_for_mint(&preferred_mint)?;
+        let jup_swap_client = JupiterSwapApiClient::new(config.jup_swap_api_url.clone());
+        let slippage_bps = config.slippage_bps;
+        let compute_unit_price_micro_lamports =
+            ComputeUnitPriceMicroLamports::MicroLamports(config.compute_unit_price_micro_lamports);
+
+        let tokio_rt = Builder::new_multi_thread()
+            .thread_name("rebalancer")
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
 
         Ok(Self {
             liquidator_address,
@@ -135,6 +159,10 @@ impl LiquidatorAccount {
                 config.compute_unit_limit,
             ),
             cache,
+            jup_swap_client,
+            slippage_bps,
+            compute_unit_price_micro_lamports,
+            tokio_rt,
         })
     }
 
@@ -157,6 +185,57 @@ impl LiquidatorAccount {
         Ok(validation_result.unwrap_or(false))
     }
 
+    pub fn init_liq_record(&self, liquidatee_account: &MarginfiAccountWrapper) -> Result<()> {
+        info!(
+            "Initializing liquidation record for account {:?} with liquidator account {:?}.",
+            liquidatee_account.address, self.liquidator_address
+        );
+
+        let signer_pk = self.signer.pubkey();
+        let init_ix =
+            make_init_liquidation_record_ix(self.program_id, liquidatee_account.address, signer_pk);
+
+        let recent_blockhash = self
+            .rpc_client
+            .get_latest_blockhash()
+            .map_err(|e| anyhow!(e))?;
+
+        let msg = Message::try_compile(&signer_pk, &[init_ix.clone()], &[], recent_blockhash)
+            .map_err(|e| anyhow!(e))?;
+
+        let txn = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+            .map_err(|e| anyhow!(e))?;
+
+        info!(
+            "Sending liquidation tx for the Account {} .",
+            liquidatee_account.address
+        );
+        match self
+            .rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &txn,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: false,
+                    preflight_commitment: Some(CommitmentLevel::Processed),
+                    ..Default::default()
+                },
+            ) {
+            Ok(signature) => {
+                info!(
+                    "Liquidation record init tx for the Account {} was confirmed. Signature: {}",
+                    liquidatee_account.address, signature,
+                );
+                Ok(())
+            }
+            Err(err) => Err(anyhow!(
+                "Liquidation record init tx for the Account {} failed: {} ",
+                liquidatee_account.address,
+                err
+            )),
+        }
+    }
+
     pub fn liquidate(
         &self,
         liquidatee_account: &MarginfiAccountWrapper,
@@ -165,19 +244,13 @@ impl LiquidatorAccount {
         asset_amount: u64,
         liab_amount: u64,
         stale_swb_oracles: &HashSet<Pubkey>,
+        lut_cache: &mut LutCache,
     ) -> Result<(), LiquidationError> {
         let liquidatee_account_address = liquidatee_account.address;
-        info!(
-            "Liquidating account {:?} with liquidator account {:?}. Amount: {}",
-            liquidatee_account_address, self.liquidator_address, asset_amount
-        );
-
         let asset_bank_wrapper = self
             .cache
             .banks
             .try_get_bank(asset_bank)
-            .map_err(LiquidationError::from_anyhow_error)?;
-        let asset_oracle_wrapper = OracleWrapper::build(&self.cache, asset_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
 
         let liab_bank_wrapper = self
@@ -185,10 +258,9 @@ impl LiquidatorAccount {
             .banks
             .try_get_bank(liab_bank)
             .map_err(LiquidationError::from_anyhow_error)?;
-        let liab_oracle_wrapper = OracleWrapper::build(&self.cache, liab_bank)
-            .map_err(LiquidationError::from_anyhow_error)?;
 
         let signer_pk = self.signer.pubkey();
+        let asset_mint = asset_bank_wrapper.bank.mint;
         let liab_mint = liab_bank_wrapper.bank.mint;
 
         let liquidator_account = &self
@@ -210,47 +282,20 @@ impl LiquidatorAccount {
         }
 
         let lending_account = &liquidator_account.lending_account;
-
-        let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
-
-        for bank_pk in banks_to_include.iter() {
-            let bank_to_validate_against = self
-                .cache
-                .banks
-                .try_get_bank(bank_pk)
-                .map_err(LiquidationError::from_anyhow_error)?;
+        for bank_to_validate_against in [&asset_bank_wrapper, &liab_bank_wrapper] {
             if !check_asset_tags_matching(&bank_to_validate_against.bank, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
-                debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_pk);
+                debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_to_validate_against.address);
                 return Ok(());
             }
         }
 
         LIQUIDATION_ATTEMPTS.inc();
 
-        let banks_to_exclude: Vec<Pubkey> = vec![];
-        let (liquidator_observation_accounts, liquidator_swb_oracles) =
-            MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
-                lending_account,
-                &banks_to_include,
-                &banks_to_exclude,
-                self.cache.clone(),
-            )
-            .map_err(LiquidationError::from_anyhow_error)?;
-        debug!(
-            "The Liquidator {} observation accounts: {:?}",
-            &self.liquidator_address, liquidator_observation_accounts
-        );
-
-        if contains_stale_oracles(stale_swb_oracles, &liquidator_swb_oracles) {
-            warn!("Skipping liquidation attempt because liquidator has stale oracles.");
-            return Ok(());
-        }
-
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];
-        let (liquidatee_observation_accounts, liquidatee_swb_oracles) =
+        let (liquidatee_observation_accounts, liquidatee_swb_oracles, mut kamino_reserves) =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &liquidatee_account.lending_account,
                 &banks_to_include,
@@ -264,75 +309,208 @@ impl LiquidatorAccount {
         );
 
         if contains_stale_oracles(stale_swb_oracles, &liquidatee_swb_oracles) {
-            warn!("Skipping liquidation attempt because liquidatee has stale oracles.");
             return Ok(());
         }
 
-        let joined_observation_accounts = liquidator_observation_accounts
-            .iter()
-            .chain(liquidatee_observation_accounts.iter())
-            .copied()
-            .collect::<Vec<_>>();
+        let mut luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
+        let mut ixs = Vec::new();
 
-        let total_observation_accounts = joined_observation_accounts.len();
-
-        let liquidate_ix = make_liquidate_ix(
-            self.program_id,
-            self.group,
-            self.liquidator_address,
-            &asset_bank_wrapper,
-            asset_oracle_wrapper.address,
-            &liab_bank_wrapper,
-            liab_oracle_wrapper.address,
-            signer_pk,
-            liquidatee_account_address,
-            self.cache
-                .mints
-                .try_get_account(&liab_mint)
-                .map_err(LiquidationError::from_anyhow_error)?
-                .account
-                .owner,
-            joined_observation_accounts,
-            asset_amount,
+        let banks_to_include: Vec<Pubkey> = vec![*liab_bank, *asset_bank];
+        let banks_to_exclude: Vec<Pubkey> = vec![];
+        let (liquidator_observation_accounts, liquidator_swb_oracles, liquidator_kamino_reserves) =
+            MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
+                lending_account,
+                &banks_to_include,
+                &banks_to_exclude,
+                self.cache.clone(),
+            )
+            .map_err(LiquidationError::from_anyhow_error)?;
+        debug!(
+            "The Liquidator {} observation accounts: {:?}",
+            &self.liquidator_address, liquidator_observation_accounts
         );
 
+        kamino_reserves.extend(liquidator_kamino_reserves);
+
+        let old_way = true;
+        if old_way {
+            if contains_stale_oracles(stale_swb_oracles, &liquidator_swb_oracles) {
+                warn!("Skipping liquidation attempt because liquidator has stale oracles.");
+                return Ok(());
+            }
+
+            let joined_observation_accounts = liquidator_observation_accounts
+                .iter()
+                .chain(liquidatee_observation_accounts.iter())
+                .copied()
+                .collect::<Vec<_>>();
+
+            let asset_oracle_wrapper = OracleWrapper::build(&self.cache, asset_bank)
+                .map_err(LiquidationError::from_anyhow_error)?;
+            let liab_oracle_wrapper = OracleWrapper::build(&self.cache, liab_bank)
+                .map_err(LiquidationError::from_anyhow_error)?;
+
+            let liquidate_ix = make_liquidate_ix(
+                self.program_id,
+                self.group,
+                self.liquidator_address,
+                &asset_bank_wrapper,
+                &liab_bank_wrapper,
+                asset_oracle_wrapper.addresses.as_slice(),
+                liab_oracle_wrapper.addresses.as_slice(),
+                signer_pk,
+                liquidatee_account_address,
+                self.cache
+                    .mints
+                    .try_get_account(&liab_mint)
+                    .map_err(LiquidationError::from_anyhow_error)?
+                    .account
+                    .owner,
+                joined_observation_accounts.as_ref(),
+                asset_amount,
+            );
+            ixs.push(self.cu_limit_ix.clone());
+
+            for kamino_reserve in kamino_reserves {
+                let &(lending_market, oracle_setup) = self
+                    .cache
+                    .kamino_reserves
+                    .get(&kamino_reserve)
+                    .context(format!(
+                        "Couldn't find the data for kamino reserve: {}",
+                        kamino_reserve
+                    ))
+                    .map_err(LiquidationError::from_anyhow_error)?;
+
+                let refresh_reserve_ix =
+                    make_refresh_reserve_ix(kamino_reserve, lending_market, oracle_setup);
+                ixs.push(refresh_reserve_ix);
+
+                let refresh_obligation_ix = make_refresh_obligation_ix(
+                    asset_bank_wrapper.bank.kamino_obligation,
+                    lending_market,
+                    &[kamino_reserve],
+                );
+                ixs.push(refresh_obligation_ix);
+            }
+
+            ixs.push(liquidate_ix);
+        } else {
+            let (out_amount, jup) = self
+                .swap(asset_mint, liab_mint, asset_amount)
+                .map_err(LiquidationError::from_anyhow_error)?;
+
+            let repay_amount = (0.95 * (out_amount as f64)) as u64;
+            info!(
+                "Exchanging {} ({}) for {} ({}) and trying to repay {} (out of {}).",
+                asset_amount, asset_mint, out_amount, liab_mint, repay_amount, liab_amount
+            );
+
+            if jup.compute_unit_limit == 0 {
+                ixs.push(self.cu_limit_ix.clone());
+            }
+
+            let start_ix = make_start_liquidate_ix(
+                self.program_id,
+                liquidatee_account_address,
+                signer_pk,
+                liquidatee_account.liquidation_record,
+                liquidatee_observation_accounts.as_ref(),
+            );
+            ixs.push(start_ix);
+
+            let asset_mint_wrapper = self
+                .cache
+                .mints
+                .try_get_account(&asset_mint)
+                .map_err(LiquidationError::from_anyhow_error)?;
+            let withdraw_ix = make_withdraw_ix(
+                self.program_id,
+                self.group,
+                liquidatee_account_address,
+                signer_pk,
+                &asset_bank_wrapper,
+                asset_mint_wrapper.token,
+                asset_mint_wrapper.account.owner,
+                liquidatee_observation_accounts.as_ref(),
+                asset_amount,
+                None,
+            );
+            ixs.push(withdraw_ix);
+
+            ixs.extend(jup.compute_budget_instructions);
+
+            if let Some(ix) = jup.token_ledger_instruction {
+                ixs.push(ix);
+            }
+
+            ixs.extend(jup.setup_instructions);
+            ixs.push(jup.swap_instruction);
+            if let Some(ix) = jup.cleanup_instruction {
+                ixs.push(ix);
+            }
+
+            let liab_mint_wrapper = self
+                .cache
+                .mints
+                .try_get_account(&liab_mint)
+                .map_err(LiquidationError::from_anyhow_error)?;
+            let repay_ix = make_repay_ix(
+                self.program_id,
+                self.group,
+                liquidatee_account_address,
+                signer_pk,
+                &liab_bank_wrapper,
+                liab_mint_wrapper.token,
+                liab_mint_wrapper.account.owner,
+                repay_amount,
+                None,
+            );
+            ixs.push(repay_ix);
+
+            let end_ix = make_end_liquidate_ix(
+                self.program_id,
+                liquidatee_account_address,
+                signer_pk,
+                liquidatee_account.liquidation_record,
+                self.cache.global_fee_state_key,
+                self.cache.global_fee_wallet,
+                liquidatee_observation_accounts.as_ref(),
+            );
+            ixs.push(end_ix);
+
+            if matches!(
+                jup.prioritization_type,
+                Some(PrioritizationType::Jito { .. })
+            ) {
+                ixs.extend(jup.other_instructions);
+            }
+
+            let jup_luts = lut_cache
+                .fetch_missing(&self.rpc_client, &jup.address_lookup_table_addresses)
+                .map_err(LiquidationError::from_anyhow_error)?;
+            luts.extend(jup_luts);
+        }
         let recent_blockhash = self
             .rpc_client
             .get_latest_blockhash()
             .map_err(|e| LiquidationError::from_anyhow_error(anyhow!(e)))?;
 
-        // Use LUTs only when your transaction involves a large number of observation accounts.
-        let luts: &Vec<AddressLookupTableAccount> = {
-            if total_observation_accounts > 22 {
-                debug!(
-                    "Using LUT for liquidating the Account {} .",
-                    liquidatee_account_address
-                );
-                &self.cache.luts
-            } else {
-                &vec![]
-            }
-        };
+        let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)
+            .map_err(LiquidationError::from_compile_error)?;
 
-        let msg = Message::try_compile(
-            &signer_pk,
-            &[self.cu_limit_ix.clone(), liquidate_ix.clone()],
-            luts,
-            recent_blockhash,
-        )
-        .map_err(LiquidationError::from_compile_error)?;
-
-        let txn = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
             .map_err(LiquidationError::from_signer_error)?;
 
         info!(
-            "Sending liquidation txn for the Account {} .",
-            liquidatee_account_address
+            "Liquidating account {:?} with liquidator account {:?}. Amount: {}",
+            liquidatee_account_address, self.liquidator_address, asset_amount
         );
+
         match self
             .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
-                &txn,
+                &tx,
                 CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
@@ -342,7 +520,7 @@ impl LiquidatorAccount {
             ) {
             Ok(signature) => {
                 info!(
-                    "Liquidation txn for the Account {} was confirmed. Signature: {}",
+                    "Liquidation tx for the Account {} was confirmed. Signature: {}",
                     liquidatee_account_address, signature,
                 );
                 Ok(())
@@ -350,16 +528,12 @@ impl LiquidatorAccount {
             Err(err) => {
                 let mut swb_oracles: Vec<Pubkey> = vec![];
                 if is_stale_swb_price_error(&err) {
-                    swb_oracles = liquidator_swb_oracles;
-                    for swb_oracle in liquidatee_swb_oracles.into_iter() {
-                        if !swb_oracles.contains(&swb_oracle) {
-                            swb_oracles.push(swb_oracle);
-                        }
-                    }
+                    swb_oracles.extend(liquidatee_swb_oracles);
+                    swb_oracles.extend(liquidator_swb_oracles);
                 }
                 Err(LiquidationError::from_anyhow_error_with_keys(
                     anyhow!(
-                        "Liquidation txn for the Account {} failed: {} ",
+                        "Liquidation tx for the Account {} failed: {} ",
                         liquidatee_account_address,
                         err
                     ),
@@ -367,6 +541,41 @@ impl LiquidatorAccount {
                 ))
             }
         }
+    }
+
+    fn swap(
+        &self,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+        amount: u64,
+    ) -> Result<(u64, SwapInstructionsResponse)> {
+        let quote = self
+            .tokio_rt
+            .block_on(self.jup_swap_client.quote(&QuoteRequest {
+                input_mint,
+                output_mint,
+                amount,
+                slippage_bps: self.slippage_bps,
+                ..Default::default()
+            }))?;
+
+        let out_amount = quote.out_amount;
+
+        let si = self
+            .tokio_rt
+            .block_on(self.jup_swap_client.swap_instructions(&SwapRequest {
+                user_public_key: self.signer.pubkey(),
+                quote_response: quote.clone(),
+                config: TransactionConfig {
+                    wrap_and_unwrap_sol: false,
+                    compute_unit_price_micro_lamports: Some(
+                        self.compute_unit_price_micro_lamports.clone(),
+                    ),
+                    ..Default::default()
+                },
+            }))?;
+
+        Ok((out_amount, si))
     }
 
     pub fn withdraw(
@@ -387,7 +596,7 @@ impl LiquidatorAccount {
         };
         debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let (observation_accounts, _) =
+        let (observation_accounts, _, _) =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &self
                     .cache
@@ -409,20 +618,19 @@ impl LiquidatorAccount {
             bank,
             token_account,
             self.cache.mints.try_get_account(&mint)?.account.owner,
-            observation_accounts,
+            observation_accounts.as_ref(),
             amount,
             withdraw_all,
         );
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let ixs: Vec<Instruction> = vec![self.cu_limit_ix.clone(), withdraw_ix];
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
 
-        let tx: solana_sdk::transaction::Transaction =
-            solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[self.cu_limit_ix.clone(), withdraw_ix],
-                Some(&signer_pk),
-                &[&self.signer],
-                recent_blockhash,
-            );
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         debug!(
             "Withdrawing {:?} unscaled tokens of the Mint {} from the Liquidator account {:?}, Bank {:?}, ",
@@ -445,7 +653,7 @@ impl LiquidatorAccount {
             )
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        debug!("Withdrawal txn: {:?} ", res);
+        debug!("Withdrawal tx: {:?} ", res);
         Ok(())
     }
 
@@ -468,15 +676,14 @@ impl LiquidatorAccount {
             repay_all,
         );
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let ixs: Vec<Instruction> = vec![self.cu_limit_ix.clone(), repay_ix];
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
 
-        let tx: solana_sdk::transaction::Transaction =
-            solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[repay_ix.clone()],
-                Some(&signer_pk),
-                &[&self.signer],
-                recent_blockhash,
-            );
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         debug!(
             "Repaying {:?} unscaled tokens to the bank {}, token account {:?}",
@@ -564,7 +771,7 @@ fn contains_stale_oracles(stale_oracles: &HashSet<Pubkey>, account_oracles: &[Pu
         .iter()
         .find(|oracle| stale_oracles.contains(*oracle))
     {
-        warn!("Found stale oracle: {}.", oracle);
+        debug!("Found stale oracle: {}.", oracle);
         true
     } else {
         false
