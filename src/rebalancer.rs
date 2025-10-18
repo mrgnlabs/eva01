@@ -325,13 +325,6 @@ impl Rebalancer {
             RequirementType::Equity,
             BalanceSide::Liabilities,
         )?;
-        if liab_usd_value < self.token_account_dust_threshold {
-            debug!(
-                "The {:?} unscaled Liability tokens of Bank {:?} are below the dust threshold {}.",
-                liab_balance, bank_pk, self.token_account_dust_threshold
-            );
-            return Ok(());
-        }
 
         debug!(
             "The {:?} unscaled Liability tokens of the Bank {:?} need to be repaid with {:?} tokens of the preferred asset Bank {:?}, Mint {:?}.",

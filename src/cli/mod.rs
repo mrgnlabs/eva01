@@ -13,9 +13,6 @@ use std::sync::Mutex;
 /// Entrypoints for the Eva
 pub mod entrypoints;
 
-/// A wizard-like setup menu for creating the liquidator configuration
-pub mod setup;
-
 /// Main entrypoint for Eva
 pub fn main_entry(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
     let config = Eva01Config::new()?;

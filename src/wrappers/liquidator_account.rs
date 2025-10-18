@@ -1,7 +1,6 @@
 use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     cache::Cache,
-    cli::setup::marginfi_account_by_authority,
     config::GeneralConfig,
     kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix},
     marginfi_ixs::{
@@ -11,7 +10,8 @@ use crate::{
     },
     metrics::LIQUIDATION_ATTEMPTS,
     utils::{
-        check_asset_tags_matching, lut_cache::LutCache, swb_cranker::is_stale_swb_price_error,
+        check_asset_tags_matching, lut_cache::LutCache, marginfi_account_by_authority,
+        swb_cranker::is_stale_swb_price_error,
     },
     wrappers::oracle::{OracleWrapper, OracleWrapperTrait},
 };

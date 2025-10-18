@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::config::GeneralConfig;
 use anyhow::Result;
 use solana_client::{
@@ -15,10 +13,6 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use std::str::FromStr;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use switchboard_on_demand_client::{
     CrossbarClient, FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
 };
@@ -31,16 +25,6 @@ use solana_client::client_error::ClientErrorKind;
 pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
 
 pub const SWB_STALE_PRICE_ERROR_CODE: &str = "17a1";
-
-struct ResetFlag {
-    flag: Arc<AtomicBool>,
-}
-
-impl Drop for ResetFlag {
-    fn drop(&mut self) {
-        self.flag.store(false, Ordering::SeqCst);
-    }
-}
 
 pub struct SwbCranker {
     tokio_rt: Runtime,
@@ -97,7 +81,6 @@ impl SwbCranker {
                 payer: self.payer.pubkey(),
                 gateway: self.swb_gateway.clone(),
                 num_signatures: Some(1),
-                //                    debug: Some(true),
                 ..Default::default()
             },
         ))?;
@@ -107,7 +90,7 @@ impl SwbCranker {
             .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?
             .0;
 
-        let txn = VersionedTransaction::try_new(
+        let tx = VersionedTransaction::try_new(
             VersionedMessage::V0(v0::Message::try_compile(
                 &self.payer.pubkey(),
                 &crank_ix,
@@ -119,7 +102,7 @@ impl SwbCranker {
 
         self.rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
-                &txn,
+                &tx,
                 CommitmentConfig::finalized(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
