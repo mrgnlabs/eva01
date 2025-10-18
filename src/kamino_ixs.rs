@@ -1,5 +1,6 @@
 use anchor_lang::{prelude::AccountMeta, Id, InstructionData, ToAccountMetas};
 
+use marginfi::accounts::KaminoWithdraw;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
 use crate::{
@@ -59,3 +60,27 @@ pub fn make_refresh_obligation_ix(
         data: kamino::args::RefreshObligation.data(),
     }
 }
+
+// pub fn make_kamino_withdraw_ix(
+//     obligation: Pubkey,
+//     lending_market: Pubkey,
+//     remaining: &[Pubkey],
+// ) -> Instruction {
+//     let mut accounts = KaminoWithdraw {
+//         lending_market,
+//         obligation,
+//     }
+//     .to_account_metas(None);
+
+//     accounts.extend(
+//         remaining
+//             .iter()
+//             .map(|a| AccountMeta::new_readonly(*a, false)),
+//     );
+
+//     Instruction {
+//         program_id: KaminoLending::id(),
+//         accounts,
+//         data: kamino::args::RefreshObligation.data(),
+//     }
+// }
