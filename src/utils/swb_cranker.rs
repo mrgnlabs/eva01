@@ -1,4 +1,3 @@
-use crate::config::GeneralConfig;
 use anyhow::Result;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
@@ -21,6 +20,8 @@ use tokio::runtime::{Builder, Runtime};
 use solana_client::client_error::ClientError;
 use solana_client::client_error::ClientErrorKind;
 
+use crate::config::Eva01Config;
+
 //TODO: parametrize the Swb Program ID.
 pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
 
@@ -35,7 +36,7 @@ pub struct SwbCranker {
 }
 
 impl SwbCranker {
-    pub fn new(config: &GeneralConfig) -> Result<Self> {
+    pub fn new(config: &Eva01Config) -> Result<Self> {
         let payer = Keypair::from_bytes(&config.wallet_keypair)?;
 
         let tokio_rt = Builder::new_multi_thread()

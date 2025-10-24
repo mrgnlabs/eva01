@@ -49,6 +49,7 @@ mod cache;
 mod cache_loader;
 
 declare_program!(kamino_lending);
+declare_program!(kamino_farms);
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();

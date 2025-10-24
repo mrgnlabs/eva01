@@ -13,7 +13,10 @@ use solana_sdk::{
     system_program, sysvar,
 };
 
-use crate::{utils::find_bank_liquidity_vault_authority, wrappers::bank::BankWrapper};
+use crate::{
+    utils::find_bank_liquidity_vault_authority,
+    wrappers::{bank::BankWrapper, mint::MintWrapper},
+};
 
 pub fn make_init_liquidation_record_ix(
     marginfi_program_id: Pubkey,
@@ -145,17 +148,16 @@ pub fn make_withdraw_ix(
     marginfi_account: Pubkey,
     signer: Pubkey,
     bank: &BankWrapper,
-    destination_token_account: Pubkey,
-    token_program: Pubkey,
+    mint_wrapper: &MintWrapper,
     observation_accounts: &[Pubkey],
     amount: u64,
-    withdraw_all: Option<bool>,
+    withdraw_all: bool,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountWithdraw {
         marginfi_account,
-        destination_token_account,
+        destination_token_account: mint_wrapper.token,
         liquidity_vault: bank.bank.liquidity_vault,
-        token_program,
+        token_program: mint_wrapper.account.owner,
         authority: signer,
         bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
             &bank.address,
@@ -165,7 +167,7 @@ pub fn make_withdraw_ix(
         group: marginfi_group,
     }
     .to_account_metas(Some(true));
-    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
+    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &mint_wrapper.account.owner);
     mark_signer(&mut accounts, signer);
 
     trace!(
@@ -184,7 +186,7 @@ pub fn make_withdraw_ix(
         accounts,
         data: marginfi::instruction::LendingAccountWithdraw {
             amount,
-            withdraw_all,
+            withdraw_all: Some(withdraw_all),
         }
         .data(),
     }
@@ -220,82 +222,6 @@ pub fn make_end_liquidate_ix(
         program_id: marginfi_program_id,
         accounts,
         data: marginfi::instruction::EndLiquidation.data(),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn make_liquidate_ix(
-    marginfi_program_id: Pubkey,
-    marginfi_group: Pubkey,
-    marginfi_account: Pubkey,
-    asset_bank: &BankWrapper,
-    liab_bank: &BankWrapper,
-    asset_oracles: &[Pubkey],
-    liab_oracles: &[Pubkey],
-    signer: Pubkey,
-    liquidatee_marginfi_account: Pubkey,
-    token_program: Pubkey,
-    observation_accounts: &[Pubkey],
-    asset_amount: u64,
-) -> Instruction {
-    let accounts_raw = marginfi::accounts::LendingAccountLiquidate {
-        group: marginfi_group,
-        asset_bank: asset_bank.address,
-        liab_bank: liab_bank.address,
-        liquidator_marginfi_account: marginfi_account,
-        authority: signer,
-        liquidatee_marginfi_account,
-        bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
-            &liab_bank.address,
-            &marginfi_program_id,
-        ),
-        bank_liquidity_vault: liab_bank.bank.liquidity_vault,
-        bank_insurance_vault: liab_bank.bank.insurance_vault,
-        token_program,
-    };
-    let mut accounts = accounts_raw.to_account_metas(Some(true));
-
-    info!(
-        r#"LendingAccountLiquidate: ( 
-        group: {:?}, 
-        liquidator_marginfi_account: {:?}, 
-        liquidatee_marginfi_account: {:?}, 
-        asset_bank: {:?}, 
-        liab_bank: {:?}, 
-        asset oracles: {:?},
-        liab oracles: {:?}
-        )"#,
-        accounts_raw.group,
-        accounts_raw.liquidator_marginfi_account,
-        accounts_raw.liquidatee_marginfi_account,
-        accounts_raw.asset_bank,
-        accounts_raw.liab_bank,
-        asset_oracles,
-        liab_oracles,
-    );
-    maybe_add_bank_mint(&mut accounts, liab_bank.bank.mint, &token_program);
-
-    accounts.extend(
-        asset_oracles
-            .iter()
-            .map(|oracle| AccountMeta::new_readonly(*oracle, false)),
-    );
-    accounts.extend(
-        liab_oracles
-            .iter()
-            .map(|oracle| AccountMeta::new_readonly(*oracle, false)),
-    );
-
-    accounts.extend(
-        observation_accounts
-            .iter()
-            .map(|a| AccountMeta::new_readonly(*a, false)),
-    );
-
-    Instruction {
-        program_id: marginfi_program_id,
-        accounts,
-        data: marginfi::instruction::LendingAccountLiquidate { asset_amount }.data(),
     }
 }
 

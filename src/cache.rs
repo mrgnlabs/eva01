@@ -19,9 +19,16 @@ use solana_sdk::{address_lookup_table::AddressLookupTableAccount, clock::Clock, 
 use tokens::TokensCache;
 
 use crate::{
-    utils::{accessor, KaminoOracleSetup},
+    kamino_lending::accounts::Reserve,
+    utils::accessor,
     wrappers::{oracle::OracleWrapperTrait, token_account::TokenAccountWrapper},
 };
+
+pub struct KaminoReserve {
+    pub address: Pubkey,
+    pub reserve: Reserve,
+    pub lending_market_authority: Pubkey,
+}
 
 pub struct Cache {
     pub signer_pk: Pubkey,
@@ -36,7 +43,7 @@ pub struct Cache {
     pub luts: Vec<AddressLookupTableAccount>,
     pub global_fee_state_key: Pubkey,
     pub global_fee_wallet: Pubkey,
-    pub kamino_reserves: HashMap<Pubkey, (Pubkey, KaminoOracleSetup)>,
+    pub kamino_reserves: HashMap<Pubkey, KaminoReserve>,
 }
 
 impl Cache {

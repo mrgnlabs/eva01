@@ -12,13 +12,12 @@ pub struct TokenAccountWrapper<T: OracleWrapperTrait> {
 }
 
 impl<T: OracleWrapperTrait> TokenAccountWrapper<T> {
-    pub fn get_amount(&self) -> I80F48 {
-        I80F48::from_num(self.balance)
+    pub fn get_value(&self) -> anyhow::Result<I80F48> {
+        self.get_value_for_amount(I80F48::from_num(self.balance))
     }
 
-    pub fn get_value(&self) -> anyhow::Result<I80F48> {
+    pub fn get_value_for_amount(&self, amount: I80F48) -> anyhow::Result<I80F48> {
         let ui_amount = {
-            let amount = I80F48::from_num(self.balance);
             let decimal_scale = EXP_10_I80F48[self.bank_wrapper.bank.mint_decimals as usize];
 
             amount
@@ -33,6 +32,22 @@ impl<T: OracleWrapperTrait> TokenAccountWrapper<T> {
         )?;
 
         Ok(ui_amount * price)
+    }
+
+    pub fn get_amount_from_value(&self, value: I80F48) -> anyhow::Result<I80F48> {
+        let price = self.oracle_wrapper.get_price_of_type(
+            marginfi::state::price::OraclePriceType::RealTime,
+            None,
+            self.bank_wrapper.bank.config.oracle_max_confidence,
+        )?;
+
+        let amount = value
+            .checked_div(price)
+            .ok_or(anyhow::anyhow!("Division failed"))?;
+
+        let decimal_scale = EXP_10_I80F48[self.bank_wrapper.bank.mint_decimals as usize];
+
+        Ok(amount * decimal_scale)
     }
 }
 
@@ -74,10 +89,9 @@ mod tests {
     #[test]
     fn test_token_account() {
         let sol_acc = TestTokenAccountWrapper::test_sol();
-        assert_eq!(sol_acc.get_amount(), I80F48::from_num(10000000.0));
         assert_eq!(sol_acc.get_value().unwrap(), I80F48::from_num(2000.0));
 
         let usdc_acc: TestTokenAccountWrapper = TestTokenAccountWrapper::test_usdc();
-        assert_eq!(usdc_acc.get_amount(), I80F48::from_num(100000.0));
+        assert_eq!(usdc_acc.get_value().unwrap(), I80F48::from_num(1000.0));
     }
 }

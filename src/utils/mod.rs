@@ -1,5 +1,4 @@
 pub mod healthcheck;
-pub mod lut_cache;
 #[cfg(feature = "publish_to_db")]
 pub mod supabase;
 pub mod swb_cranker;
@@ -50,14 +49,6 @@ use crate::{
     },
 };
 use std::cmp::max;
-
-#[derive(Clone, Copy)]
-pub enum KaminoOracleSetup {
-    Pyth(Pubkey),
-    Switchboard(Pubkey),
-    SwitchboardTWAP(Pubkey),
-    Scope(Pubkey),
-}
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,

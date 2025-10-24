@@ -20,50 +20,31 @@ use std::{
 pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> anyhow::Result<()> {
     info!(
         "Starting liquidator for group: {:?}",
-        config.general_config.marginfi_group_key
+        config.marginfi_group_key
     );
-    // TODO: re-enable. https://linear.app/marginfi/issue/LIQ-13/reenable-grafana-metrics-reporting
-    // register_metrics();
 
-    // let metrics_route = warp::path("metrics").map(move || {
-    //     warp::reply::with_header(
-    //         metrics_handler(),
-    //         "Content-Type",
-    //         "text/plain; version=0.0.4",
-    //     )
-    // });
-
-    // // Start the metrics server in a separate task
-    // tokio::spawn(async move {
-    //     warp::serve(metrics_route).run(([0, 0, 0, 0], 8080)).await;
-    // });
-
-    let wallet_pubkey = Keypair::from_bytes(&config.general_config.wallet_keypair)?.pubkey();
+    let wallet_pubkey = Keypair::from_bytes(&config.wallet_keypair)?.pubkey();
     info!("Liquidator public key: {}", wallet_pubkey);
 
     // Solana Clock
     let clock = {
-        let rpc_client = RpcClient::new(config.general_config.rpc_url.clone());
+        let rpc_client = RpcClient::new(config.rpc_url.clone());
         Arc::new(Mutex::new(clock_manager::fetch_clock(&rpc_client)?))
     };
-    let mut clock_manager = ClockManager::new(
-        clock.clone(),
-        config.general_config.rpc_url.clone(),
-        config.general_config.solana_clock_refresh_interval,
-    )?;
+    let mut clock_manager = ClockManager::new(clock.clone(), config.rpc_url.clone())?;
 
     info!("Loading Cache...");
     let mut cache = Cache::new(
         wallet_pubkey,
-        config.general_config.marginfi_program_id,
-        config.general_config.marginfi_group_key,
+        config.marginfi_program_id,
+        config.marginfi_group_key,
         clock.clone(),
     );
 
     let cache_loader = CacheLoader::new(
-        &config.general_config.wallet_keypair,
-        config.general_config.rpc_url.clone(),
-        config.general_config.clone().address_lookup_tables,
+        &config.wallet_keypair,
+        config.rpc_url.clone(),
+        config.clone().address_lookup_tables,
     )?;
 
     cache_loader.load_cache(&mut cache)?;
@@ -81,9 +62,9 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
     let cache = Arc::new(cache);
 
     let liquidator_account = Arc::new(LiquidatorAccount::new(
-        &config.general_config.clone(),
-        config.general_config.marginfi_group_key,
-        config.rebalancer_config.swap_mint,
+        &config.clone(),
+        config.marginfi_group_key,
+        config.swap_mint,
         cache.clone(),
     )?);
 
@@ -96,7 +77,7 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
     )?;
 
     let geyser_service = GeyserService::new(
-        config.general_config,
+        config,
         accounts_to_track,
         geyser_tx,
         stop_liquidator.clone(),
