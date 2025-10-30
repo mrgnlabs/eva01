@@ -44,7 +44,6 @@ use crate::{
     cache::Cache,
     wrappers::{
         bank::BankWrapper,
-        marginfi_account::MarginfiAccountWrapper,
         oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
@@ -316,19 +315,6 @@ pub fn build_emode_config<T: OracleWrapperTrait + Clone>(
         .filter(|baw| !baw.balance.is_empty(BalanceSide::Liabilities))
         .map(|baw| baw.bank.bank.emode.emode_config);
     Ok(reconcile_emode_configs(configs))
-}
-
-pub fn get_free_collateral(cache: &Arc<Cache>, account: &MarginfiAccountWrapper) -> Result<I80F48> {
-    let (assets, liabs) = calc_total_weighted_assets_liabs(
-        cache,
-        &account.lending_account,
-        RequirementType::Initial,
-    )?;
-    if assets > liabs {
-        Ok(assets - liabs)
-    } else {
-        Ok(I80F48::ZERO)
-    }
 }
 
 pub fn find_bank_liquidity_vault_authority(bank_pk: &Pubkey, program_id: &Pubkey) -> Pubkey {

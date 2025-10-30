@@ -3,7 +3,7 @@ use crate::{
     config::{Eva01Config, TokenThresholds},
     metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS},
     rebalancer::Rebalancer,
-    utils::{calc_total_weighted_assets_liabs, get_free_collateral, swb_cranker::SwbCranker},
+    utils::{calc_total_weighted_assets_liabs, swb_cranker::SwbCranker},
     wrappers::{
         bank::BankWrapper,
         liquidator_account::{LiquidationError, LiquidatorAccount},
@@ -18,10 +18,10 @@ use log::{debug, error, info, trace, warn};
 use marginfi::state::{
     bank::BankImpl,
     marginfi_account::RequirementType,
-    price::{OraclePriceType, PriceAdapter, PriceBias},
+    price::{OraclePriceType, PriceAdapter},
 };
 use marginfi_type_crate::{
-    constants::{BANKRUPT_THRESHOLD, EXP_10_I80F48},
+    constants::BANKRUPT_THRESHOLD,
     types::{BalanceSide, BankOperationalState, RiskTier},
 };
 use solana_program::pubkey::Pubkey;
@@ -87,11 +87,11 @@ impl Liquidator {
 
     pub fn start(&mut self) -> Result<()> {
         // Fund the liquidator account, if needed
-        if !self.liquidator_account.has_funds()? {
-            return Err(anyhow!("Liquidator has no funds."));
-        }
+        // if !self.liquidator_account.has_funds()? {
+        //     return Err(anyhow!("Liquidator has no funds."));
+        // }
 
-        self.rebalancer.run(HashMap::new())?;
+        //self.rebalancer.run(HashMap::new())?;
 
         #[cfg(feature = "publish_to_db")]
         let mut supabase = SupabasePublisher::from_env()?;
@@ -122,6 +122,7 @@ impl Liquidator {
                 accounts.reverse();
 
                 let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
+                let mut tokens_in_shortage: HashSet<Pubkey> = HashSet::new();
                 for acc in accounts {
                     if let Err(e) = self.liquidator_account.liquidate(
                         &acc.liquidatee_account,
@@ -130,6 +131,7 @@ impl Liquidator {
                         acc.asset_amount,
                         acc.liab_amount,
                         &stale_swb_oracles,
+                        &mut tokens_in_shortage,
                         self.token_dust_threshold,
                     ) {
                         match e {
@@ -141,7 +143,6 @@ impl Liquidator {
                                 FAILED_LIQUIDATIONS.inc();
                                 ERROR_COUNT.inc();
                             }
-
                             LiquidationError::StaleOracles(swb_oracles) => {
                                 stale_swb_oracles.extend(&swb_oracles)
                             }
@@ -278,31 +279,12 @@ impl Liquidator {
             return Ok(None);
         }
 
-        let (max_liab_coverage_amount, max_liab_coverage_value) =
-            self.get_max_borrow_for_bank(&liab_bank_pk)?;
-
-        // Asset
-        let asset_oracle_wrapper = OracleWrapper::build(&self.cache, &asset_bank_pk)?;
-
-        let liquidation_asset_amount_capacity = asset_bank_wrapper.calc_amount(
-            &asset_oracle_wrapper,
-            max_liab_coverage_value,
-            BalanceSide::Assets,
-            RequirementType::Initial,
-        )?;
-
-        let asset_amount_to_liquidate = min(
-            max_liquidatable_asset_amount,
-            liquidation_asset_amount_capacity,
-        );
-        let liab_amount_to_liquidate = min(max_liquidatable_liab_amount, max_liab_coverage_amount);
-
-        let slippage_adjusted_asset_amount = asset_amount_to_liquidate * I80F48!(0.90);
-        let slippage_adjusted_liab_amount = liab_amount_to_liquidate * I80F48!(0.90);
+        let slippage_adjusted_asset_amount = max_liquidatable_asset_amount * I80F48!(0.90);
+        let slippage_adjusted_liab_amount = max_liquidatable_liab_amount * I80F48!(0.90);
 
         debug!(
-                "Liquidation asset amount capacity: {:?}, asset_amount_to_liquidate: {:?}, slippage_adjusted_asset_amount: {:?}",
-                liquidation_asset_amount_capacity, asset_amount_to_liquidate, slippage_adjusted_asset_amount
+                "asset_amount_to_liquidate: {:?}, slippage_adjusted_asset_amount: {:?}, slippage_adjusted_liab_amount: {:?}",
+                max_liquidatable_asset_amount, slippage_adjusted_asset_amount, slippage_adjusted_liab_amount
             );
 
         Ok(Some(PreparedLiquidatableAccount {
@@ -313,84 +295,6 @@ impl Liquidator {
             liab_amount: slippage_adjusted_liab_amount,
             profit: profit.to_num(),
         }))
-    }
-
-    // TODO: simplify this
-    fn get_max_borrow_for_bank(&self, bank_pk: &Pubkey) -> Result<(I80F48, I80F48)> {
-        let lq_account = &self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_account.liquidator_address)?;
-
-        let free_collateral = get_free_collateral(&self.cache, lq_account)?;
-
-        let bank = self.cache.banks.try_get_bank(bank_pk)?;
-        let oracle_wrapper = OracleWrapper::build(&self.cache, bank_pk)?;
-
-        let (asset_amount, _) = self.get_balance_for_bank(lq_account, &bank)?;
-        debug!(
-            "Liquidator Asset amount: {:?}, free collateral: {:?}",
-            asset_amount, free_collateral
-        );
-
-        let untied_collateral_for_bank = min(
-            free_collateral,
-            bank.calc_value(
-                &oracle_wrapper,
-                asset_amount,
-                BalanceSide::Assets,
-                RequirementType::Initial,
-            )?,
-        );
-        debug!(
-            "Liquidator Untied collateral for bank: {:?}",
-            untied_collateral_for_bank
-        );
-
-        let asset_weight: I80F48 = bank.bank.config.asset_weight_init.into();
-        let liab_weight: I80F48 = bank.bank.config.asset_weight_init.into();
-        let oracle_max_confidence = bank.bank.config.oracle_max_confidence;
-
-        let lower_price = oracle_wrapper.get_price_of_type(
-            OraclePriceType::TimeWeighted,
-            Some(PriceBias::Low),
-            oracle_max_confidence,
-        )?;
-
-        let higher_price = oracle_wrapper.get_price_of_type(
-            OraclePriceType::TimeWeighted,
-            Some(PriceBias::High),
-            oracle_max_confidence,
-        )?;
-
-        let token_decimals = bank.bank.mint_decimals as usize;
-
-        let max_borrow_amount = if asset_weight == I80F48::ZERO {
-            let max_additional_borrow_ui =
-                (free_collateral - untied_collateral_for_bank) / (higher_price * liab_weight);
-
-            let max_additional = max_additional_borrow_ui * EXP_10_I80F48[token_decimals];
-
-            max_additional + asset_amount
-        } else {
-            let ui_amount = untied_collateral_for_bank / (lower_price * asset_weight)
-                + (free_collateral - untied_collateral_for_bank) / (higher_price * liab_weight);
-
-            ui_amount * EXP_10_I80F48[token_decimals]
-        };
-        let max_borrow_value = bank.calc_value(
-            &oracle_wrapper,
-            max_borrow_amount,
-            BalanceSide::Liabilities,
-            RequirementType::Initial,
-        )?;
-
-        debug!(
-            "Liquidator asset_weight: {:?}, max borrow amount: {:?}, max borrow value: {:?}",
-            asset_weight, max_borrow_amount, max_borrow_value
-        );
-
-        Ok((max_borrow_amount, max_borrow_value))
     }
 
     fn find_liquidation_bank_candidates(

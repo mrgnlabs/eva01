@@ -16,10 +16,13 @@ use crate::{
 };
 use anyhow::{anyhow, Context, Result};
 use fixed::types::I80F48;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use marginfi_type_crate::types::BalanceSide;
 use solana_client::{
-    client_error::ClientError, rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig,
+    client_error::{ClientError, ClientErrorKind},
+    rpc_client::RpcClient,
+    rpc_config::RpcSendTransactionConfig,
+    rpc_request::RpcError,
 };
 
 use solana_program::pubkey::Pubkey;
@@ -120,7 +123,8 @@ impl LiquidatorAccount {
             accounts[0]
         };
 
-        let preferred_mint_bank = cache.banks.try_get_account_for_mint(&preferred_mint)?;
+        let preferred_mint_bank =
+            Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA"); //cache.banks.try_get_account_for_mint(&preferred_mint)?;
 
         Ok(Self {
             liquidator_address,
@@ -214,9 +218,12 @@ impl LiquidatorAccount {
         mut asset_amount: I80F48,
         mut liab_amount: I80F48,
         stale_swb_oracles: &HashSet<Pubkey>,
+        tokens_in_shortage: &mut HashSet<Pubkey>,
         dust_liab_threshold: I80F48,
     ) -> Result<(), LiquidationError> {
+        let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
         let liquidatee_account_address = liquidatee_account.address;
+        participating_accounts.insert(liquidatee_account_address);
         let asset_bank_wrapper = self
             .cache
             .banks
@@ -232,12 +239,20 @@ impl LiquidatorAccount {
         let signer_pk = self.signer.pubkey();
         let asset_mint = asset_bank_wrapper.bank.mint;
         let liab_mint = liab_bank_wrapper.bank.mint;
+        if tokens_in_shortage.contains(&liab_mint) {
+            debug!(
+                "Skipping liquidation since the liab token is in shortage: {}",
+                liab_mint
+            );
+            return Ok(());
+        }
 
         let liquidator_account = &self
             .cache
             .marginfi_accounts
             .try_get_account(&self.liquidator_address)
             .map_err(LiquidationError::from_anyhow)?;
+        participating_accounts.insert(self.liquidator_address);
 
         let lending_account = &liquidator_account.lending_account;
         for bank_to_validate_against in [&asset_bank_wrapper, &liab_bank_wrapper] {
@@ -254,11 +269,13 @@ impl LiquidatorAccount {
 
         liab_amount = liab_amount.checked_mul(I80F48::from_num(0.91)).unwrap();
         if liab_token_balance < dust_liab_threshold {
-            info!("No enough {} tokens: {}", liab_mint, liab_token_balance);
+            tokens_in_shortage.insert(liab_mint);
+            info!("No tokens: {}", liab_mint);
             return Err(LiquidationError::NotEnoughFunds);
         }
 
         if liab_token_balance < liab_amount {
+            tokens_in_shortage.insert(liab_mint);
             info!(
                 "Not enough {} tokens: liquidating for: {} (of {})",
                 liab_mint, liab_token_balance, liab_amount
@@ -279,6 +296,8 @@ impl LiquidatorAccount {
             )
             .map_err(LiquidationError::from_anyhow)?;
 
+        participating_accounts.extend(liquidatee_observation_accounts.iter());
+
         debug!(
             "The Liquidatee {:?} observation accounts: {:?}",
             liquidatee_account_address, liquidatee_observation_accounts
@@ -291,11 +310,14 @@ impl LiquidatorAccount {
         LIQUIDATION_ATTEMPTS.inc();
 
         if liquidatee_account.liquidation_record == Pubkey::default() {
+            // warn!("IGNORING UNINITIALIZED LIQ RECORD");
+            // return Ok(());
             self.init_liq_record(liquidatee_account)
                 .map_err(LiquidationError::from_anyhow)?;
         }
+        participating_accounts.insert(liquidatee_account.liquidation_record);
 
-        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
         let mut ixs = Vec::new();
 
         ixs.push(self.cu_limit_ix.clone());
@@ -307,7 +329,8 @@ impl LiquidatorAccount {
             liquidatee_account.liquidation_record,
             liquidatee_observation_accounts.as_ref(),
         );
-        ixs.push(start_ix);
+
+        participating_accounts.insert(signer_pk);
 
         for kamino_reserve_address in kamino_reserves {
             let kamino_reserve = self
@@ -323,13 +346,6 @@ impl LiquidatorAccount {
             let refresh_reserve_ix =
                 make_refresh_reserve_ix(kamino_reserve_address, kamino_reserve);
             ixs.push(refresh_reserve_ix);
-
-            let refresh_obligation_ix = make_refresh_obligation_ix(
-                asset_bank_wrapper.bank.kamino_obligation,
-                kamino_reserve.reserve.lending_market,
-                &[kamino_reserve_address],
-            );
-            ixs.push(refresh_obligation_ix);
         }
 
         let asset_mint_wrapper = self
@@ -361,6 +377,16 @@ impl LiquidatorAccount {
                 ))
                 .map_err(LiquidationError::from_anyhow)?;
 
+            let refresh_obligation_ix = make_refresh_obligation_ix(
+                asset_bank_wrapper.bank.kamino_obligation,
+                kamino_reserve.reserve.lending_market,
+                &[asset_bank_wrapper.bank.kamino_reserve],
+            );
+            ixs.push(refresh_obligation_ix);
+
+            participating_accounts.insert(asset_bank_wrapper.bank.kamino_obligation);
+            participating_accounts.insert(kamino_reserve.reserve.lending_market);
+
             make_kamino_withdraw_ix(
                 self.program_id,
                 self.group,
@@ -375,7 +401,12 @@ impl LiquidatorAccount {
                 false,
             )
         };
+        ixs.push(start_ix);
         ixs.push(withdraw_ix);
+
+        participating_accounts.insert(self.group);
+        participating_accounts.insert(asset_mint_wrapper.token);
+        participating_accounts.insert(asset_mint_wrapper.account.owner);
 
         let liab_mint_wrapper = self
             .cache
@@ -388,12 +419,14 @@ impl LiquidatorAccount {
             liquidatee_account_address,
             signer_pk,
             &liab_bank_wrapper,
-            liab_mint_wrapper.token,
-            liab_mint_wrapper.account.owner,
+            &liab_mint_wrapper,
             liab_amount.to_num(),
-            None,
+            false,
         );
         ixs.push(repay_ix);
+
+        participating_accounts.insert(liab_mint_wrapper.token);
+        participating_accounts.insert(liab_mint_wrapper.account.owner);
 
         let end_ix = make_end_liquidate_ix(
             self.program_id,
@@ -405,6 +438,9 @@ impl LiquidatorAccount {
             liquidatee_observation_accounts.as_ref(),
         );
         ixs.push(end_ix);
+
+        participating_accounts.insert(self.cache.global_fee_state_key);
+        participating_accounts.insert(self.cache.global_fee_wallet);
 
         let recent_blockhash = self
             .rpc_client
@@ -425,6 +461,7 @@ impl LiquidatorAccount {
             liab_amount.to_num::<u64>()
         );
 
+        // TODO: refactor this!
         match self
             .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
@@ -444,7 +481,59 @@ impl LiquidatorAccount {
                 Ok(())
             }
             Err(err) => {
-                if is_stale_swb_price_error(&err) {
+                if is_tx_too_large_client(&err) {
+                    warn!("The attempted tx was too large: adding the observation accounts to a LUT and retrying");
+                    self.cache
+                        .add_addresses_to_lut(
+                            &self.rpc_client,
+                            &self.signer,
+                            participating_accounts,
+                        )
+                        .map_err(LiquidationError::from_anyhow)?;
+
+                    let luts: Vec<AddressLookupTableAccount> =
+                        self.cache.luts.lock().unwrap().clone();
+
+                    let recent_blockhash = self
+                        .rpc_client
+                        .get_latest_blockhash()
+                        .map_err(LiquidationError::from_client)?;
+
+                    let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)
+                        .map_err(LiquidationError::from_compile)?;
+
+                    let tx =
+                        VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+                            .map_err(LiquidationError::from_signer)?;
+
+                    match self
+                        .rpc_client
+                        .send_and_confirm_transaction_with_spinner_and_config(
+                            &tx,
+                            CommitmentConfig::confirmed(),
+                            RpcSendTransactionConfig {
+                                skip_preflight: false,
+                                preflight_commitment: Some(CommitmentLevel::Processed),
+                                ..Default::default()
+                            },
+                        ) {
+                        Ok(signature) => {
+                            info!(
+                                "Liquidation tx for the Account {} was confirmed. Signature: {}",
+                                liquidatee_account_address, signature,
+                            );
+                            Ok(())
+                        }
+                        Err(err) => {
+                            if is_stale_swb_price_error(&err) {
+                                // TODO: Should we just crank always?? Also refresh Kamino reserves?
+                                Err(LiquidationError::StaleOracles(liquidatee_swb_oracles))
+                            } else {
+                                Err(LiquidationError::from_client(err))
+                            }
+                        }
+                    }
+                } else if is_stale_swb_price_error(&err) {
                     // TODO: Should we just crank always?? Also refresh Kamino reserves?
                     Err(LiquidationError::StaleOracles(liquidatee_swb_oracles))
                 } else {
@@ -493,7 +582,7 @@ impl LiquidatorAccount {
         );
 
         let ixs: Vec<Instruction> = vec![self.cu_limit_ix.clone(), withdraw_ix];
-        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.clone();
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
         let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)
@@ -670,5 +759,21 @@ mod tests {
         let account_oracles = vec![stale2, Pubkey::new_unique()];
 
         assert!(contains_stale_oracles(&stale_oracles, &account_oracles));
+    }
+}
+
+pub fn is_tx_too_large_client(err: &ClientError) -> bool {
+    match err.kind() {
+        ClientErrorKind::RpcError(rpc) => match rpc {
+            RpcError::RpcResponseError { code, message, .. } => {
+                *code == -32602 && message.contains("too large")
+            }
+            RpcError::RpcRequestError(msg) | RpcError::ForUser(msg) => {
+                // Some nodes may proxy this as a plain string
+                msg.contains("too large")
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }

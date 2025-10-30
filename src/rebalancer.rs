@@ -15,7 +15,7 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
-use log::{error, info};
+use log::{error, info, warn};
 use marginfi_type_crate::types::OracleSetup;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_program::pubkey::Pubkey;
@@ -59,7 +59,7 @@ impl Rebalancer {
             RpcClient::new_with_commitment(&config.rpc_url, CommitmentConfig::confirmed());
 
         let swap_mint = config.swap_mint;
-        let swap_mint_bank = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
+        let swap_mint_bank = Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA"); //cache.banks.try_get_account_for_mint(&config.swap_mint)?;
 
         let jup_swap_api_url = config.jup_swap_api_url.clone();
         let slippage_bps = config.slippage_bps;
@@ -106,7 +106,7 @@ impl Rebalancer {
 
         // TODO: expand directly in this function?
         self.handle_token_accounts(missing_tokens)
-            .map_err(|e| error!("Failed to handle the Liquidator's tokens! {}", e))
+            .map_err(|e| error!("Failed to handle the Liquidator's tokens: {}", e))
             .unwrap_or_default();
 
         if let Err(error) = self.deposit_preferred_token() {
@@ -156,10 +156,10 @@ impl Rebalancer {
 
     fn handle_token_accounts(
         &mut self,
-        mut missing_tokens: HashMap<Pubkey, I80F48>,
+        missing_tokens: HashMap<Pubkey, I80F48>,
     ) -> anyhow::Result<()> {
-        let necessary_swap_value =
-            self.sell_excessive_tokens_and_calculate_necessary_swap_value(&mut missing_tokens)?;
+        let (necessary_swap_value, missing_mint_to_value) =
+            self.sell_excessive_tokens_and_calculate_necessary_swap_value(missing_tokens)?;
 
         let swap_token_address = self.cache.tokens.try_get_token_for_mint(&self.swap_mint)?;
         let swap_wrapper = self
@@ -179,13 +179,14 @@ impl Rebalancer {
                 .withdraw(&swap_bank_wrapper, amount.to_num(), false)?;
         }
 
-        self.buy_missing_tokens(swap_wrapper, missing_tokens)
+        self.buy_missing_tokens(swap_wrapper, missing_mint_to_value)
     }
 
     fn sell_excessive_tokens_and_calculate_necessary_swap_value(
         &mut self,
-        missing_tokens: &mut HashMap<Pubkey, I80F48>,
-    ) -> anyhow::Result<I80F48> {
+        bank_to_amount: HashMap<Pubkey, I80F48>,
+    ) -> anyhow::Result<(I80F48, HashMap<Pubkey, I80F48>)> {
+        let mut mint_to_value: HashMap<Pubkey, I80F48> = HashMap::new();
         let mut necessary_swap_value = I80F48::ZERO;
         for mint in self.cache.mints.get_mints() {
             if mint == self.swap_mint {
@@ -195,13 +196,20 @@ impl Rebalancer {
             let token = self.cache.tokens.try_get_token_for_mint(&mint)?;
             let wrapper = self
                 .cache
-                .try_get_token_wrapper::<OracleWrapper>(&mint, &token)?;
+                .try_get_token_wrapper::<OracleWrapper>(&mint, &token);
+            if let Err(e) = wrapper {
+                warn!("Skipping the token {} in rebalancing: {}", mint, e);
+                continue;
+            }
 
-            if let Some(&amount) = missing_tokens.get(&wrapper.bank_wrapper.address) {
+            let wrapper = wrapper.unwrap();
+
+            if let Some(&amount) = bank_to_amount.get(&wrapper.bank_wrapper.address) {
                 let value_to_swap = wrapper.get_value_for_amount(amount)?;
-                *(missing_tokens
-                    .get_mut(&wrapper.bank_wrapper.address)
-                    .unwrap()) = value_to_swap.checked_mul(SLIPPAGE_MULTIPLIER).unwrap();
+                mint_to_value.insert(
+                    mint,
+                    value_to_swap.checked_mul(SLIPPAGE_MULTIPLIER).unwrap(),
+                );
                 necessary_swap_value += value_to_swap;
                 continue;
             }
@@ -220,34 +228,30 @@ impl Rebalancer {
 
             if value > max_value {
                 info!("The value of {} tokens is higher than set threshold: {} > {}. Selling ${} worth of tokens.", mint, value.to_num::<f64>(), max_value.to_num::<f64>(), (value - max_value * 2).to_num::<f64>());
+                // TODO: some overflow here!!!
                 let amount_to_swap = wrapper.get_amount_from_value(value - max_value * 2)?;
                 let swapped_amount = self.swap(amount_to_swap.to_num(), mint, self.swap_mint)?;
                 info!("Got {} back from the swap.", swapped_amount);
             } else if value < min_value {
                 info!("The value of {} tokens is lower than set threshold: {} < {}. Will buy ${} worth of tokens.", mint, value.to_num::<f64>(), min_value.to_num::<f64>(), min_value.to_num::<f64>());
-                missing_tokens.insert(wrapper.bank_wrapper.address, min_value);
+                mint_to_value.insert(mint, min_value);
                 necessary_swap_value += min_value;
             }
         }
-        Ok(necessary_swap_value)
+        Ok((necessary_swap_value, mint_to_value))
     }
 
     fn buy_missing_tokens(
         &mut self,
         swap_token_wrapper: TokenAccountWrapper<OracleWrapper>,
-        missing_tokens: HashMap<Pubkey, I80F48>,
+        mint_to_value: HashMap<Pubkey, I80F48>,
     ) -> anyhow::Result<()> {
         for mint in self.cache.mints.get_mints() {
             if mint == self.swap_mint {
                 continue;
             }
 
-            let token = self.cache.tokens.try_get_token_for_mint(&mint)?;
-            let wrapper = self
-                .cache
-                .try_get_token_wrapper::<OracleWrapper>(&mint, &token)?;
-
-            if let Some(&value_to_swap) = missing_tokens.get(&wrapper.bank_wrapper.address) {
+            if let Some(&value_to_swap) = mint_to_value.get(&mint) {
                 let amount_to_swap = swap_token_wrapper.get_amount_from_value(value_to_swap)?;
                 self.swap(amount_to_swap.to_num(), self.swap_mint, mint)?;
             }
@@ -256,22 +260,22 @@ impl Rebalancer {
     }
 
     fn deposit_preferred_token(&self) -> anyhow::Result<()> {
+        // TODO: check why depositing so much (50 usd instead of 15)
         let amount = self
             .get_token_balance_for_mint(&self.swap_mint)
             .unwrap_or_default();
 
-        let thresholds = self.token_thresholds.get(&self.swap_mint).unwrap();
-        if amount < thresholds.max_value {
+        let max_value = self
+            .token_thresholds
+            .get(&self.swap_mint)
+            .map(|t| t.max_value)
+            .unwrap_or(self.default_token_max_threshold);
+        if amount < max_value {
             return Ok(());
         }
 
         // Leave the half of the max value on token acc
-        let amount = (amount
-            - thresholds
-                .max_value
-                .checked_mul(I80F48::from_num(0.5))
-                .unwrap())
-        .to_num();
+        let amount = (amount - max_value.checked_mul(I80F48::from_num(0.5)).unwrap()).to_num();
 
         info!(
             "Depositing {} of preferred token to the Swap mint bank {:?}.",

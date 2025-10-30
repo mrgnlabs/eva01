@@ -3,7 +3,6 @@ use crate::cache::Cache;
 use super::{bank::BankWrapper, oracle::OracleWrapperTrait};
 use anyhow::{Error, Result};
 use fixed::types::I80F48;
-use log::debug;
 use marginfi::state::bank::BankImpl;
 use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
@@ -104,10 +103,6 @@ impl MarginfiAccountWrapper {
         for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
             let oracle_wrapper = T::build(&cache, bank_pk)?;
-            debug!(
-                "Observation account Bank: {:?}, asset tag type: {:?}.",
-                bank_pk, bank_wrapper.bank.config.asset_tag
-            );
             let bank_and_oracles: Vec<Pubkey> = match bank_wrapper.bank.config.oracle_setup {
                 OracleSetup::PythPushOracle => {
                     vec![*bank_pk, oracle_wrapper.get_address()]

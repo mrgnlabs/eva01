@@ -97,7 +97,7 @@ impl CacheLoader {
 
         luts.into_iter().for_each(|lut| cache.add_lut(lut));
 
-        info!("Loaded {} LUTs.", &cache.luts.len());
+        info!("Loaded {} LUTs.", &cache.luts.lock().unwrap().len());
 
         Ok(())
     }
@@ -404,7 +404,6 @@ impl CacheLoader {
             BatchLoadingConfig::DEFAULT,
         )?;
 
-        let mut kamino_reserves = HashMap::new();
         for (&address, account) in reserve_addresses.iter().zip(reserve_accounts.iter()) {
             if let Some(account) = account {
                 debug!("Loaded the Kamino Reserve: {:?}", address);
@@ -413,7 +412,7 @@ impl CacheLoader {
                 let lending_market_account =
                     self.rpc_client.get_account(&reserve.lending_market)?;
 
-                kamino_reserves.insert(
+                cache.kamino_reserves.insert(
                     address,
                     KaminoReserve {
                         address,

@@ -5,6 +5,7 @@ use log::{debug, info, trace};
 use marginfi_type_crate::constants::LIQUIDATION_RECORD_SEED;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
+    address_lookup_table,
     commitment_config::CommitmentConfig,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -116,28 +117,31 @@ pub fn make_repay_ix(
     marginfi_account: Pubkey,
     signer: Pubkey,
     bank: &BankWrapper,
-    signer_token_account: Pubkey,
-    token_program: Pubkey,
+    mint_wrapper: &MintWrapper,
     amount: u64,
-    repay_all: Option<bool>,
+    repay_all: bool,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountRepay {
         marginfi_account,
         authority: signer,
-        signer_token_account,
+        signer_token_account: mint_wrapper.token,
         liquidity_vault: bank.bank.liquidity_vault,
-        token_program,
+        token_program: mint_wrapper.account.owner,
         bank: bank.address,
         group: marginfi_group,
     }
     .to_account_metas(None);
-    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
+    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &mint_wrapper.account.owner);
     mark_signer(&mut accounts, signer);
 
     Instruction {
         program_id: marginfi_program_id,
         accounts,
-        data: marginfi::instruction::LendingAccountRepay { amount, repay_all }.data(),
+        data: marginfi::instruction::LendingAccountRepay {
+            amount,
+            repay_all: Some(repay_all),
+        }
+        .data(),
     }
 }
 
@@ -252,6 +256,15 @@ pub fn make_create_ix(
     }
 }
 
+fn mark_signer(
+    accounts: &mut [solana_sdk::instruction::AccountMeta],
+    signer: solana_sdk::pubkey::Pubkey,
+) {
+    for m in accounts.iter_mut() {
+        m.is_signer = m.pubkey == signer;
+    }
+}
+
 pub fn initialize_marginfi_account(
     rpc_client: &RpcClient,
     marginfi_program_id: Pubkey,
@@ -290,13 +303,4 @@ pub fn initialize_marginfi_account(
     );
 
     Ok(marginfi_account_key.pubkey())
-}
-
-fn mark_signer(
-    accounts: &mut [solana_sdk::instruction::AccountMeta],
-    signer: solana_sdk::pubkey::Pubkey,
-) {
-    for m in accounts.iter_mut() {
-        m.is_signer = m.pubkey == signer;
-    }
 }
