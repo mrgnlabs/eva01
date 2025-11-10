@@ -34,7 +34,7 @@ use std::{
     mem::MaybeUninit,
     sync::{atomic::AtomicUsize, Arc},
 };
-use switchboard_on_demand::PullFeedAccountData;
+use switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 use crate::{

@@ -54,8 +54,7 @@ tonic = "0.10.2"
 tonic-health = "0.10.2"
 yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" }
 yellowstone-grpc-proto = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" }
-switchboard-on-demand = "0.3.8"
-switchboard-on-demand-client = "=0.4.1-alpha0.0.0"
+switchboard-on-demand = { version = "0.10.8", features = [ "solana-v2", "client" ] }
 chrono = "0.4.38"
 hex = "0.4.3"
 url = "2.5.2"
@@ -73,13 +72,13 @@ rustls-native-certs = { version = "0.8.1", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 
 [dependencies.marginfi_type_crate]
-git = "https://github.com/mrgnlabs/marginfi-v2"
-tag = "mrgn-0.1.5-rc2"
+git = "https://github.com/mgild/marginfi-v2"
+branch = "mgild/switchboard-quote"
 package = "marginfi-type-crate"
 
 [dependencies.marginfi]
-git = "https://github.com/mrgnlabs/marginfi-v2"
-tag = "mrgn-0.1.5-rc2"
+git = "https://github.com/mgild/marginfi-v2"
+branch = "mgild/switchboard-quote"
 features = ["mainnet-beta", "client", "no-entrypoint"]
 
 [dev-dependencies]

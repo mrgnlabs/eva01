@@ -7,7 +7,7 @@ use marginfi::state::price::{
 use marginfi_type_crate::types::OracleSetup;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account_info::IntoAccountInfo;
-use switchboard_on_demand_client::PullFeedAccountData;
+use switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData;
 
 use crate::{
     cache::Cache,
