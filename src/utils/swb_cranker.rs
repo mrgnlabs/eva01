@@ -19,9 +19,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use switchboard_on_demand_client::{
-    CrossbarClient, FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
-};
+use switchboard_on_demand::QueueAccountData;
+use switchboard_on_demand::client::{CrossbarClient, Gateway, PullFeed};
+use switchboard_on_demand::client::pull_feed::{FetchUpdateManyParams, SbContext};
 use tokio::runtime::{Builder, Runtime};
 
 use solana_client::client_error::ClientError;
