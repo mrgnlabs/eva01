@@ -66,6 +66,15 @@ impl LiquidationError {
     }
 }
 
+pub struct PreparedLiquidatableAccount {
+    pub liquidatee_account: MarginfiAccountWrapper,
+    pub asset_bank: Pubkey,
+    pub liab_bank: Pubkey,
+    pub asset_amount: I80F48,
+    pub liab_amount: I80F48,
+    pub profit: u64,
+}
+
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
     pub signer: Keypair,
@@ -123,8 +132,9 @@ impl LiquidatorAccount {
             accounts[0]
         };
 
-        let preferred_mint_bank =
-            Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA"); //cache.banks.try_get_account_for_mint(&preferred_mint)?;
+        let preferred_mint_bank = cache.banks.try_get_account_for_mint(&preferred_mint)?;
+        // Kamino test
+        //let preferred_mint_bank = Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA");
 
         Ok(Self {
             liquidator_address,
@@ -212,15 +222,20 @@ impl LiquidatorAccount {
 
     pub fn liquidate(
         &self,
-        liquidatee_account: &MarginfiAccountWrapper,
-        asset_bank: &Pubkey,
-        liab_bank: &Pubkey,
-        mut asset_amount: I80F48,
-        mut liab_amount: I80F48,
+        account: &PreparedLiquidatableAccount,
         stale_swb_oracles: &HashSet<Pubkey>,
         tokens_in_shortage: &mut HashSet<Pubkey>,
         dust_liab_threshold: I80F48,
     ) -> Result<(), LiquidationError> {
+        let PreparedLiquidatableAccount {
+            liquidatee_account,
+            asset_bank,
+            liab_bank,
+            asset_amount,
+            liab_amount,
+            ..
+        } = account;
+
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
         let liquidatee_account_address = liquidatee_account.address;
         participating_accounts.insert(liquidatee_account_address);
@@ -267,23 +282,29 @@ impl LiquidatorAccount {
         let liab_token_balance =
             I80F48::from_num(self.get_token_balance_for_mint(&liab_mint).unwrap());
 
-        liab_amount = liab_amount.checked_mul(I80F48::from_num(0.91)).unwrap();
         if liab_token_balance < dust_liab_threshold {
             tokens_in_shortage.insert(liab_mint);
             info!("No tokens: {}", liab_mint);
             return Err(LiquidationError::NotEnoughFunds);
         }
 
-        if liab_token_balance < liab_amount {
+        let (asset_amount, liab_amount) = if liab_token_balance < *liab_amount {
             tokens_in_shortage.insert(liab_mint);
             info!(
                 "Not enough {} tokens: liquidating for: {} (of {})",
                 liab_mint, liab_token_balance, liab_amount
             );
-            let proportion = liab_token_balance.checked_div(liab_amount).unwrap();
-            asset_amount = asset_amount.checked_mul(proportion).unwrap();
-            liab_amount = liab_token_balance;
-        }
+            let proportion = liab_token_balance.checked_div(*liab_amount).unwrap();
+            (
+                asset_amount.checked_mul(proportion).unwrap(),
+                liab_token_balance,
+            )
+        } else {
+            (
+                *asset_amount,
+                liab_amount.checked_mul(I80F48::from_num(0.91)).unwrap(),
+            )
+        };
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];

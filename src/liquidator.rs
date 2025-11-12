@@ -6,7 +6,7 @@ use crate::{
     utils::{calc_total_weighted_assets_liabs, swb_cranker::SwbCranker},
     wrappers::{
         bank::BankWrapper,
-        liquidator_account::{LiquidationError, LiquidatorAccount},
+        liquidator_account::{LiquidationError, LiquidatorAccount, PreparedLiquidatableAccount},
         marginfi_account::MarginfiAccountWrapper,
         oracle::{OracleWrapper, OracleWrapperTrait},
     },
@@ -50,15 +50,6 @@ pub struct Liquidator {
     token_dust_threshold: I80F48,
 }
 
-pub struct PreparedLiquidatableAccount {
-    liquidatee_account: MarginfiAccountWrapper,
-    asset_bank: Pubkey,
-    liab_bank: Pubkey,
-    asset_amount: I80F48,
-    liab_amount: I80F48,
-    profit: u64,
-}
-
 impl Liquidator {
     pub fn new(
         config: Eva01Config,
@@ -87,11 +78,11 @@ impl Liquidator {
 
     pub fn start(&mut self) -> Result<()> {
         // Fund the liquidator account, if needed
-        // if !self.liquidator_account.has_funds()? {
-        //     return Err(anyhow!("Liquidator has no funds."));
-        // }
+        if !self.liquidator_account.has_funds()? {
+            return Err(anyhow!("Liquidator has no funds."));
+        }
 
-        //self.rebalancer.run(HashMap::new())?;
+        self.rebalancer.run(HashMap::new())?;
 
         #[cfg(feature = "publish_to_db")]
         let mut supabase = SupabasePublisher::from_env()?;
@@ -125,11 +116,7 @@ impl Liquidator {
                 let mut tokens_in_shortage: HashSet<Pubkey> = HashSet::new();
                 for acc in accounts {
                     if let Err(e) = self.liquidator_account.liquidate(
-                        &acc.liquidatee_account,
-                        &acc.asset_bank,
-                        &acc.liab_bank,
-                        acc.asset_amount,
-                        acc.liab_amount,
+                        &acc,
                         &stale_swb_oracles,
                         &mut tokens_in_shortage,
                         self.token_dust_threshold,

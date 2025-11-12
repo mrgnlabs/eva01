@@ -5,7 +5,6 @@ use log::{debug, info, trace};
 use marginfi_type_crate::constants::LIQUIDATION_RECORD_SEED;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
-    address_lookup_table,
     commitment_config::CommitmentConfig,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,

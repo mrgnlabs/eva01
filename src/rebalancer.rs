@@ -59,7 +59,9 @@ impl Rebalancer {
             RpcClient::new_with_commitment(&config.rpc_url, CommitmentConfig::confirmed());
 
         let swap_mint = config.swap_mint;
-        let swap_mint_bank = Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA"); //cache.banks.try_get_account_for_mint(&config.swap_mint)?;
+        let swap_mint_bank = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
+        // Kamino test
+        //let swap_mint_bank = Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA");
 
         let jup_swap_api_url = config.jup_swap_api_url.clone();
         let slippage_bps = config.slippage_bps;

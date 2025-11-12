@@ -23,6 +23,22 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
         config.marginfi_group_key
     );
 
+    // TODO (Abdul?): re-enable. https://linear.app/marginfi/issue/LIQ-13/reenable-grafana-metrics-reporting
+    // register_metrics();
+
+    // let metrics_route = warp::path("metrics").map(move || {
+    //     warp::reply::with_header(
+    //         metrics_handler(),
+    //         "Content-Type",
+    //         "text/plain; version=0.0.4",
+    //     )
+    // });
+
+    // // Start the metrics server in a separate task
+    // tokio::spawn(async move {
+    //     warp::serve(metrics_route).run(([0, 0, 0, 0], 8080)).await;
+    // });
+
     let wallet_pubkey = Keypair::from_bytes(&config.wallet_keypair)?.pubkey();
     info!("Liquidator public key: {}", wallet_pubkey);
 
