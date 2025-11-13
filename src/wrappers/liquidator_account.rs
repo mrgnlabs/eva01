@@ -198,7 +198,7 @@ impl LiquidatorAccount {
             .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
                 &txn,
-                CommitmentConfig::confirmed(),
+                CommitmentConfig::finalized(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
                     preflight_commitment: Some(CommitmentLevel::Processed),
@@ -207,7 +207,7 @@ impl LiquidatorAccount {
             ) {
             Ok(signature) => {
                 info!(
-                    "Liquidation record init tx for the Account {} was confirmed. Signature: {}",
+                    "Liquidation record init tx for the Account {} was finalized. Signature: {}",
                     liquidatee_account.address, signature,
                 );
                 Ok(())

@@ -230,14 +230,14 @@ impl Rebalancer {
 
             if value > max_value {
                 info!("The value of {} tokens is higher than set threshold: {} > {}. Selling ${} worth of tokens.", mint, value.to_num::<f64>(), max_value.to_num::<f64>(), (value - max_value * 2).to_num::<f64>());
-                // TODO: some overflow here!!!
-                let amount_to_swap = wrapper.get_amount_from_value(value - max_value * 2)?;
-                let swapped_amount = self.swap(amount_to_swap.to_num(), mint, self.swap_mint)?;
-                info!("Got {} back from the swap.", swapped_amount);
+                // TODO: uncomment before deploying to prod
+                // let amount_to_swap = wrapper.get_amount_from_value(value - max_value / 2)?;
+                // let swapped_amount = self.swap(amount_to_swap.to_num(), mint, self.swap_mint)?;
+                // info!("Got {} back from the swap.", swapped_amount);
             } else if value < min_value {
                 info!("The value of {} tokens is lower than set threshold: {} < {}. Will buy ${} worth of tokens.", mint, value.to_num::<f64>(), min_value.to_num::<f64>(), min_value.to_num::<f64>());
                 mint_to_value.insert(mint, min_value);
-                necessary_swap_value += min_value;
+                necessary_swap_value += min_value.checked_mul(SLIPPAGE_MULTIPLIER).unwrap();
             }
         }
         Ok((necessary_swap_value, mint_to_value))
@@ -262,22 +262,29 @@ impl Rebalancer {
     }
 
     fn deposit_preferred_token(&self) -> anyhow::Result<()> {
-        // TODO: check why depositing so much (50 usd instead of 15)
         let amount = self
             .get_token_balance_for_mint(&self.swap_mint)
             .unwrap_or_default();
+
+        // TODO: move on the higher level
+        let swap_token_address = self.cache.tokens.try_get_token_for_mint(&self.swap_mint)?;
+        let swap_wrapper = self
+            .cache
+            .try_get_token_wrapper::<OracleWrapper>(&self.swap_mint, &swap_token_address)?;
 
         let max_value = self
             .token_thresholds
             .get(&self.swap_mint)
             .map(|t| t.max_value)
             .unwrap_or(self.default_token_max_threshold);
-        if amount < max_value {
+
+        let max_amount = swap_wrapper.get_amount_from_value(max_value)?;
+        if amount < max_amount {
             return Ok(());
         }
 
         // Leave the half of the max value on token acc
-        let amount = (amount - max_value.checked_mul(I80F48::from_num(0.5)).unwrap()).to_num();
+        let amount = (amount - max_amount.checked_mul(I80F48::from_num(0.5)).unwrap()).to_num();
 
         info!(
             "Depositing {} of preferred token to the Swap mint bank {:?}.",
