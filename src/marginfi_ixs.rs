@@ -22,7 +22,7 @@ pub fn make_init_liquidation_record_ix(
     marginfi_program_id: Pubkey,
     liquidatee_account: Pubkey,
     fee_payer: Pubkey,
-) -> Instruction {
+) -> (Instruction, Pubkey) {
     let (liquidation_record, _bump) = Pubkey::find_program_address(
         &[
             LIQUIDATION_RECORD_SEED.as_bytes(),
@@ -39,11 +39,14 @@ pub fn make_init_liquidation_record_ix(
     .to_account_metas(None);
     mark_signer(&mut accounts, fee_payer);
 
-    Instruction {
-        program_id: marginfi_program_id,
-        accounts,
-        data: marginfi::instruction::MarginfiAccountInitLiqRecord.data(),
-    }
+    (
+        Instruction {
+            program_id: marginfi_program_id,
+            accounts,
+            data: marginfi::instruction::MarginfiAccountInitLiqRecord.data(),
+        },
+        liquidation_record,
+    )
 }
 
 pub fn make_start_liquidate_ix(

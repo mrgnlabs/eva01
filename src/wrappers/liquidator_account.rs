@@ -169,14 +169,14 @@ impl LiquidatorAccount {
         Ok(validation_result.unwrap_or(false))
     }
 
-    pub fn init_liq_record(&self, liquidatee_account: &MarginfiAccountWrapper) -> Result<()> {
+    pub fn init_liq_record(&self, liquidatee_account: &MarginfiAccountWrapper) -> Result<Pubkey> {
         info!(
             "Initializing liquidation record for account {:?} with liquidator account {:?}.",
             liquidatee_account.address, self.liquidator_address
         );
 
         let signer_pk = self.signer.pubkey();
-        let init_ix =
+        let (init_ix, liquidation_record) =
             make_init_liquidation_record_ix(self.program_id, liquidatee_account.address, signer_pk);
 
         let recent_blockhash = self
@@ -210,7 +210,7 @@ impl LiquidatorAccount {
                     "Liquidation record init tx for the Account {} was finalized. Signature: {}",
                     liquidatee_account.address, signature,
                 );
-                Ok(())
+                Ok(liquidation_record)
             }
             Err(err) => Err(anyhow!(
                 "Liquidation record init tx for the Account {} failed: {} ",
@@ -302,7 +302,7 @@ impl LiquidatorAccount {
         } else {
             (
                 *asset_amount,
-                liab_amount.checked_mul(I80F48::from_num(0.91)).unwrap(),
+                liab_amount.checked_mul(I80F48::from_num(0.925)).unwrap(),
             )
         };
 
@@ -330,13 +330,15 @@ impl LiquidatorAccount {
 
         LIQUIDATION_ATTEMPTS.inc();
 
-        if liquidatee_account.liquidation_record == Pubkey::default() {
+        let liquidation_record = if liquidatee_account.liquidation_record == Pubkey::default() {
             // warn!("IGNORING UNINITIALIZED LIQ RECORD");
             // return Ok(());
             self.init_liq_record(liquidatee_account)
-                .map_err(LiquidationError::from_anyhow)?;
-        }
-        participating_accounts.insert(liquidatee_account.liquidation_record);
+                .map_err(LiquidationError::from_anyhow)?
+        } else {
+            liquidatee_account.liquidation_record
+        };
+        participating_accounts.insert(liquidation_record);
 
         let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
         let mut ixs = Vec::new();
@@ -347,7 +349,7 @@ impl LiquidatorAccount {
             self.program_id,
             liquidatee_account_address,
             signer_pk,
-            liquidatee_account.liquidation_record,
+            liquidation_record,
             liquidatee_observation_accounts.as_ref(),
         );
 
@@ -453,7 +455,7 @@ impl LiquidatorAccount {
             self.program_id,
             liquidatee_account_address,
             signer_pk,
-            liquidatee_account.liquidation_record,
+            liquidation_record,
             self.cache.global_fee_state_key,
             self.cache.global_fee_wallet,
             liquidatee_observation_accounts.as_ref(),
