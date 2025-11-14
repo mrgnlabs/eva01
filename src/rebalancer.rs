@@ -230,10 +230,9 @@ impl Rebalancer {
 
             if value > max_value {
                 info!("The value of {} tokens is higher than set threshold: {} > {}. Selling ${} worth of tokens.", mint, value.to_num::<f64>(), max_value.to_num::<f64>(), (value - max_value * 2).to_num::<f64>());
-                // TODO: uncomment before deploying to prod
-                // let amount_to_swap = wrapper.get_amount_from_value(value - max_value / 2)?;
-                // let swapped_amount = self.swap(amount_to_swap.to_num(), mint, self.swap_mint)?;
-                // info!("Got {} back from the swap.", swapped_amount);
+                let amount_to_swap = wrapper.get_amount_from_value(value - max_value / 2)?;
+                let swapped_amount = self.swap(amount_to_swap.to_num(), mint, self.swap_mint)?;
+                info!("Got {} back from the swap.", swapped_amount);
             } else if value < min_value {
                 info!("The value of {} tokens is lower than set threshold: {} < {}. Will buy ${} worth of tokens.", mint, value.to_num::<f64>(), min_value.to_num::<f64>(), min_value.to_num::<f64>());
                 mint_to_value.insert(mint, min_value);
