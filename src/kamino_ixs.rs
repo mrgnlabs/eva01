@@ -3,25 +3,19 @@ use anchor_lang::{prelude::AccountMeta, Id, InstructionData, ToAccountMetas};
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
 use crate::{
+    cache::KaminoReserve,
     kamino_lending::{client as kamino, program::KaminoLending},
-    utils::KaminoOracleSetup,
 };
 
 pub fn make_refresh_reserve_ix(
-    reserve: Pubkey,
-    lending_market: Pubkey,
-    oracle_setup: KaminoOracleSetup,
+    kamino_reserve_address: Pubkey,
+    kamino_reserve: &KaminoReserve,
 ) -> Instruction {
     let (pyth_oracle, switchboard_price_oracle, switchboard_twap_oracle, scope_prices) =
-        match oracle_setup {
-            KaminoOracleSetup::Pyth(oracle) => (Some(oracle), None, None, None),
-            KaminoOracleSetup::Switchboard(oracle) => (None, Some(oracle), None, None),
-            KaminoOracleSetup::SwitchboardTWAP(oracle) => (None, None, Some(oracle), None),
-            KaminoOracleSetup::Scope(oracle) => (None, None, None, Some(oracle)),
-        };
+        get_oracle_setup(kamino_reserve);
     let accounts = kamino::accounts::RefreshReserve {
-        reserve,
-        lending_market,
+        reserve: kamino_reserve_address,
+        lending_market: kamino_reserve.reserve.lending_market,
         pyth_oracle,
         switchboard_price_oracle,
         switchboard_twap_oracle,
@@ -58,4 +52,45 @@ pub fn make_refresh_obligation_ix(
         accounts,
         data: kamino::args::RefreshObligation.data(),
     }
+}
+
+fn get_oracle_setup(
+    reserve: &KaminoReserve,
+) -> (
+    Option<Pubkey>,
+    Option<Pubkey>,
+    Option<Pubkey>,
+    Option<Pubkey>,
+) {
+    (
+        none_if_default(reserve.reserve.config.token_info.pyth_configuration.price),
+        none_if_default(
+            reserve
+                .reserve
+                .config
+                .token_info
+                .switchboard_configuration
+                .price_aggregator,
+        ),
+        none_if_default(
+            reserve
+                .reserve
+                .config
+                .token_info
+                .switchboard_configuration
+                .twap_aggregator,
+        ),
+        none_if_default(
+            reserve
+                .reserve
+                .config
+                .token_info
+                .scope_configuration
+                .price_feed,
+        ),
+    )
+}
+
+fn none_if_default(pk: Pubkey) -> Option<Pubkey> {
+    (pk != Pubkey::default()).then_some(pk)
 }

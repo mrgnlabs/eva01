@@ -36,19 +36,6 @@ impl TokensCache {
             .ok_or(anyhow!("Failed to find Token {}!", &address))
     }
 
-    pub fn get_non_preferred_mints(&self, swap_mint: Pubkey) -> Vec<(Pubkey, Pubkey)> {
-        self.mint_to_token
-            .iter()
-            .filter_map(|(mint_address, token_address)| {
-                if *mint_address == swap_mint {
-                    None
-                } else {
-                    Some((*mint_address, *token_address))
-                }
-            })
-            .collect()
-    }
-
     pub fn try_update_account(&self, address: Pubkey, account: Account) -> Result<()> {
         self.tokens
             .write()
@@ -114,26 +101,6 @@ mod tests {
 
         let result = cache.try_get_account(&token_address);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_get_address_by_index() {
-        let mut cache = TokensCache::default();
-        let token_address = Pubkey::new_unique();
-        let mint_address = Pubkey::new_unique();
-        let account = Account::default();
-
-        cache
-            .try_insert(token_address, account, mint_address)
-            .unwrap();
-
-        let (retrieved_mint_address, retrieved_token_address) = cache
-            .get_non_preferred_mints(Pubkey::new_unique())
-            .get(0)
-            .unwrap()
-            .clone();
-        assert_eq!(retrieved_mint_address, mint_address);
-        assert_eq!(retrieved_token_address, token_address);
     }
 
     #[test]

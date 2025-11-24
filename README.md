@@ -3,11 +3,12 @@
 
 ## Structure
 * `bin` - shell scripts and environment configuration file templare
+* `idls` - IDLs for Project 0 integrations (Kamino, Drift etc.)
 * `src` - source code
-* eva.Dockerfile - the Docker configuration for building an image to run on Kubernetes.
+* eva.Dockerfile - the Docker configuration for building an image to run on Kubernetes
 
 ### Configuration
-The [env.template](bin/env.template) file is a template for required and optional environment variables that are used by Eva.
+The [env.template](bin/env.template) file is a template for the required and optional environment variables that are used by Eva.
 
 ## Deployment
 1. Install dependencies

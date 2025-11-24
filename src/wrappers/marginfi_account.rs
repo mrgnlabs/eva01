@@ -3,7 +3,6 @@ use crate::cache::Cache;
 use super::{bank::BankWrapper, oracle::OracleWrapperTrait};
 use anyhow::{Error, Result};
 use fixed::types::I80F48;
-use log::debug;
 use marginfi::state::bank::BankImpl;
 use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
@@ -25,39 +24,6 @@ impl MarginfiAccountWrapper {
             liquidation_record: account.liquidation_record,
             lending_account: account.lending_account,
         }
-    }
-
-    pub fn has_liabs(&self) -> bool {
-        self.lending_account
-            .balances
-            .iter()
-            .any(|b| b.is_active() && matches!(b.get_side(), Some(BalanceSide::Liabilities)))
-    }
-
-    pub fn get_liabilities_shares(&self) -> Vec<(I80F48, Pubkey)> {
-        self.lending_account
-            .balances
-            .iter()
-            .filter(|b| matches!(b.get_side(), Some(BalanceSide::Liabilities)) && b.is_active())
-            .map(|b| (b.liability_shares.into(), b.bank_pk))
-            .collect::<Vec<_>>()
-    }
-
-    pub fn get_assets(&self, banks_to_exclude: &[Pubkey]) -> Vec<Pubkey> {
-        self.lending_account
-            .balances
-            .iter()
-            .filter_map(|b| {
-                if b.is_active()
-                    && matches!(b.get_side(), Some(BalanceSide::Assets))
-                    && !banks_to_exclude.contains(&b.bank_pk)
-                {
-                    Some(b.bank_pk)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
     }
 
     pub fn get_balance_for_bank(&self, bank: &BankWrapper) -> Option<(I80F48, BalanceSide)> {
@@ -137,10 +103,6 @@ impl MarginfiAccountWrapper {
         for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
             let oracle_wrapper = T::build(&cache, bank_pk)?;
-            debug!(
-                "Observation account Bank: {:?}, asset tag type: {:?}.",
-                bank_pk, bank_wrapper.bank.config.asset_tag
-            );
             let bank_and_oracles: Vec<Pubkey> = match bank_wrapper.bank.config.oracle_setup {
                 OracleSetup::PythPushOracle => {
                     vec![*bank_pk, oracle_wrapper.get_address()]
@@ -172,6 +134,12 @@ impl MarginfiAccountWrapper {
                         *bank_pk,
                         oracle_wrapper.get_address(),
                         bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
+                OracleSetup::Fixed => {
+                    vec![
+                        *bank_pk,
+                        // no oracles here!
                     ]
                 }
                 _ => {
@@ -303,12 +271,6 @@ mod tests {
         cache.banks.insert(usdc_bank.address, usdc_bank.bank);
 
         let healthy = MarginfiAccountWrapper::test_healthy(&sol_bank, &usdc_bank);
-        assert!(healthy.has_liabs());
-        assert_eq!(
-            healthy.get_liabilities_shares(),
-            vec![(I80F48::from_num(100), usdc_bank.address)]
-        );
-        assert_eq!(healthy.get_assets(&[]), vec![sol_bank.address]);
         let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
@@ -334,12 +296,6 @@ mod tests {
         );
 
         let mut unhealthy = MarginfiAccountWrapper::test_unhealthy();
-        assert!(unhealthy.has_liabs());
-        assert_eq!(
-            unhealthy.get_liabilities_shares(),
-            vec![(I80F48::from_num(100), sol_bank.address)]
-        );
-        assert_eq!(unhealthy.get_assets(&[]), vec![usdc_bank.address]);
         let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
         assert_eq!(balance, I80F48::from_num(100));
         match side {
@@ -415,24 +371,6 @@ mod tests {
                 vec![],
                 HashSet::new()
             )
-        );
-    }
-
-    #[test]
-    fn test_get_unhealthy_observation_accounts() {
-        let unhealthy_wrapper = MarginfiAccountWrapper::test_unhealthy();
-        let cache = create_test_cache(&Vec::new());
-        let cache = Arc::new(cache);
-
-        assert_eq!(
-            MarginfiAccountWrapper::get_observation_accounts::<TestOracleWrapper>(
-                &unhealthy_wrapper.lending_account,
-                &[],
-                &[],
-                cache
-            )
-            .unwrap(),
-            (vec![], vec![], HashSet::new())
         );
     }
 

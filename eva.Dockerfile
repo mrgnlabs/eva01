@@ -11,7 +11,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 
-RUN cargo build --release --bin eva01
+RUN cargo build --release --bin eva01 --features publish_to_db
 
 FROM debian:bookworm-slim AS runner
 

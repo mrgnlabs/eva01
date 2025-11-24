@@ -1,13 +1,15 @@
-#![allow(dead_code)]
-
-use crate::config::GeneralConfig;
 use anyhow::Result;
+use log::warn;
 use solana_client::{
-    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
-    rpc_config::RpcSendTransactionConfig, rpc_request::RpcError,
+    client_error::{ClientError, ClientErrorKind},
+    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient,
+    rpc_client::RpcClient,
+    rpc_config::RpcSendTransactionConfig,
+    rpc_request::RpcError,
 };
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
+    genesis_config::ClusterType,
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
     signature::Keypair,
@@ -15,43 +17,32 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use std::str::FromStr;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use switchboard_on_demand_client::{
     CrossbarClient, FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
 };
 use tokio::runtime::{Builder, Runtime};
 
-use solana_client::client_error::ClientError;
-use solana_client::client_error::ClientErrorKind;
+use crate::config::Eva01Config;
 
 //TODO: parametrize the Swb Program ID.
 pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
 
 pub const SWB_STALE_PRICE_ERROR_CODE: &str = "17a1";
 
-struct ResetFlag {
-    flag: Arc<AtomicBool>,
-}
-
-impl Drop for ResetFlag {
-    fn drop(&mut self) {
-        self.flag.store(false, Ordering::SeqCst);
-    }
-}
+const CHUNK_SIZE: usize = 6;
 
 pub struct SwbCranker {
     tokio_rt: Runtime,
     rpc_client: RpcClient,
     non_blocking_rpc_client: NonBlockingRpcClient,
     swb_gateway: Gateway,
+    crossbar: Option<CrossbarClient>,
     payer: Keypair,
+    unstable_feeds: Vec<Pubkey>,
 }
 
 impl SwbCranker {
-    pub fn new(config: &GeneralConfig) -> Result<Self> {
+    pub fn new(config: &Eva01Config) -> Result<Self> {
         let payer = Keypair::from_bytes(&config.wallet_keypair)?;
 
         let tokio_rt = Builder::new_multi_thread()
@@ -72,11 +63,17 @@ impl SwbCranker {
         ))?;
 
         // Prefer private gateway from env; fall back to first on-chain gateway
-        let swb_gateway = if let Some(url) = config.crossbar_api_url.as_ref() {
-            let crossbar = CrossbarClient::new(url.as_str(), false);
-            tokio_rt.block_on(queue.fetch_gateway_from_crossbar(&crossbar))?
+        let (swb_gateway, crossbar) = if let Some(url) = config.crossbar_api_url.as_ref() {
+            let crossbar = CrossbarClient::new(url.as_str(), true);
+            (
+                tokio_rt.block_on(queue.fetch_gateway_from_crossbar(&crossbar))?,
+                Some(crossbar),
+            )
         } else {
-            tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone()
+            (
+                tokio_rt.block_on(queue.fetch_gateways(&non_blocking_rpc_client))?[0].clone(),
+                None,
+            )
         };
 
         Ok(Self {
@@ -84,11 +81,35 @@ impl SwbCranker {
             rpc_client,
             non_blocking_rpc_client,
             swb_gateway,
+            crossbar,
             payer,
+            unstable_feeds: config.unstable_swb_feeds.clone(),
         })
     }
 
     pub fn crank_oracles(&self, swb_oracles: Vec<Pubkey>) -> Result<()> {
+        // Run simulations to get more details on potential failures, if crossbar is available.
+        if let Some(crossbar) = self.crossbar.as_ref() {
+            let result = self
+                .tokio_rt
+                .block_on(crossbar.simulate_solana_feeds(ClusterType::MainnetBeta, &swb_oracles));
+            if let Err(result) = result {
+                warn!("SWB Simulation failed: {:?}", result);
+            }
+        }
+
+        let swb_oracles: Vec<_> = swb_oracles
+            .into_iter()
+            .filter(|f| !self.unstable_feeds.contains(f))
+            .collect();
+
+        for chunk in swb_oracles.chunks(CHUNK_SIZE) {
+            self.crank_oracles_internal(chunk.to_vec())?;
+        }
+        Ok(())
+    }
+
+    fn crank_oracles_internal(&self, swb_oracles: Vec<Pubkey>) -> Result<()> {
         let (crank_ix, crank_lut) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
             SbContext::new(),
             &self.non_blocking_rpc_client,
@@ -97,7 +118,6 @@ impl SwbCranker {
                 payer: self.payer.pubkey(),
                 gateway: self.swb_gateway.clone(),
                 num_signatures: Some(1),
-                //                    debug: Some(true),
                 ..Default::default()
             },
         ))?;
@@ -107,7 +127,7 @@ impl SwbCranker {
             .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?
             .0;
 
-        let txn = VersionedTransaction::try_new(
+        let tx = VersionedTransaction::try_new(
             VersionedMessage::V0(v0::Message::try_compile(
                 &self.payer.pubkey(),
                 &crank_ix,
@@ -119,7 +139,7 @@ impl SwbCranker {
 
         self.rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
-                &txn,
+                &tx,
                 CommitmentConfig::finalized(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,

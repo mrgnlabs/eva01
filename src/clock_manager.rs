@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+const REFRESH_INTERVAL_SEC: u64 = 10;
+
 // TODO: merge into Cache
 pub struct ClockManager {
     rpc_client: RpcClient,
@@ -15,16 +17,12 @@ pub struct ClockManager {
 }
 
 impl ClockManager {
-    pub fn new(
-        clock: Arc<Mutex<Clock>>,
-        rpc_url: String,
-        refresh_interval_sec: u64,
-    ) -> anyhow::Result<Self> {
+    pub fn new(clock: Arc<Mutex<Clock>>, rpc_url: String) -> anyhow::Result<Self> {
         info!("Initializing ClockManager with RPC URL: {}", rpc_url);
 
         let rpc_client = RpcClient::new(rpc_url);
         //        let clock = Arc::new(Mutex::new(fetch_clock(&rpc_client)?));
-        let refresh_interval = Duration::from_secs(refresh_interval_sec);
+        let refresh_interval = Duration::from_secs(REFRESH_INTERVAL_SEC);
 
         Ok(Self {
             rpc_client,

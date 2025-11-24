@@ -26,7 +26,7 @@ impl MintsCache {
     }
 
     pub fn get_mints(&self) -> Vec<Pubkey> {
-        // TODO: remove
+        // TODO: remove once UXD is sunset
         self.mints
             .keys()
             .cloned()

@@ -1,4 +1,4 @@
-use crate::{clock_manager, config::GeneralConfig, utils::account_update_to_account, ward};
+use crate::{clock_manager, config::Eva01Config, utils::account_update_to_account, ward};
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
 use crossbeam::channel::Sender;
@@ -42,11 +42,6 @@ pub enum AccountType {
     Token,
 }
 
-pub struct GeyserServiceConfig {
-    pub endpoint: String,
-    pub x_token: Option<String>,
-}
-
 /// Geyser service is responsible for receiving and distrubuting the
 /// messages to the other services.
 pub struct GeyserService {
@@ -63,7 +58,7 @@ pub struct GeyserService {
 
 impl GeyserService {
     pub fn new(
-        config: GeneralConfig,
+        config: Eva01Config,
         tracked_accounts: HashMap<Pubkey, AccountType>,
         geyser_tx: Sender<GeyserUpdate>,
         stop: Arc<AtomicBool>,
@@ -75,11 +70,9 @@ impl GeyserService {
             .enable_all()
             .build()?;
 
-        let geyser_config = config.get_geyser_service_config();
-
         Ok(Self {
-            endpoint: geyser_config.endpoint,
-            x_token: geyser_config.x_token,
+            endpoint: config.yellowstone_endpoint,
+            x_token: config.yellowstone_x_token,
             tracked_accounts,
             marginfi_program_id: config.marginfi_program_id,
             marginfi_group_pk: config.marginfi_group_key,

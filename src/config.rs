@@ -1,16 +1,34 @@
-use crate::geyser::GeyserServiceConfig;
 use fixed::types::I80F48;
 use solana_sdk::pubkey::Pubkey;
 use std::{collections::HashMap, str::FromStr};
 
-#[cfg(feature = "publish_to_db")]
-pub use {crate::utils::supabase::Threshold, publish_imp::*};
+#[derive(Clone, Debug)]
+pub struct TokenThresholds {
+    pub declared_value: f64,
+    pub min_value: I80F48,
+    pub max_value: I80F48,
+}
 
 #[derive(Clone, Debug)]
 pub struct Eva01Config {
-    pub general_config: GeneralConfig,
-    pub liquidator_config: LiquidatorCfg,
-    pub rebalancer_config: RebalancerCfg,
+    pub rpc_url: String,
+    pub yellowstone_endpoint: String,
+    pub yellowstone_x_token: Option<String>,
+    pub wallet_keypair: Vec<u8>,
+    pub compute_unit_price_micro_lamports: u64,
+    pub marginfi_program_id: Pubkey,
+    pub marginfi_group_key: Pubkey,
+    pub address_lookup_tables: Vec<Pubkey>,
+    pub min_profit: f64,
+    pub healthcheck_port: u16,
+    pub crossbar_api_url: Option<String>,
+    pub jup_swap_api_url: String,
+    pub swap_mint: Pubkey,
+    pub slippage_bps: u16,
+    pub token_thresholds: HashMap<Pubkey, TokenThresholds>,
+    pub default_token_max_threshold: I80F48,
+    pub token_dust_threshold: I80F48,
+    pub unstable_swb_feeds: Vec<Pubkey>,
 }
 
 impl Eva01Config {
@@ -32,10 +50,6 @@ impl Eva01Config {
                 .expect("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS environment variable is not set")
                 .parse()
                 .expect("Invalid COMPUTE_UNIT_PRICE_MICRO_LAMPORTS number");
-        let compute_unit_limit: u32 = std::env::var("COMPUTE_UNIT_LIMIT")
-            .expect("COMPUTE_UNIT_LIMIT environment variable is not set")
-            .parse()
-            .expect("Invalid COMPUTE_UNIT_LIMIT number");
 
         let marginfi_program_id = Pubkey::from_str(
             &std::env::var("MARGINFI_PROGRAM_ID")
@@ -52,24 +66,17 @@ impl Eva01Config {
         let address_lookup_tables: Vec<Pubkey> =
             parse_pubkey_list("ADDRESS_LOOKUP_TABLES").unwrap_or_else(|_| vec![]);
 
-        let solana_clock_refresh_interval: u64 = std::env::var("SOLANA_CLOCK_REFRESH_INTERVAL")
-            .expect("SOLANA_CLOCK_REFRESH_INTERVAL environment variable is not set")
-            .parse()
-            .expect("Invalid SOLANA_CLOCK_REFRESH_INTERVAL number");
-
         let min_profit: f64 = std::env::var("MIN_PROFIT")
             .expect("MIN_PROFIT environment variable is not set")
             .parse()
             .expect("Invalid MIN_PROFIT number");
 
         let healthcheck_port: u16 = std::env::var("HEALTHCHECK_PORT")
-            .expect("HEALTHCHECK_PORT environment variable is not set")
+            .unwrap_or("3000".to_string())
             .parse()
             .expect("Invalid HEALTHCHECK_PORT number");
 
         let crossbar_api_url = std::env::var("CROSSBAR_API_URL").ok();
-
-        let declared_values = load_declared_values_from_env()?;
 
         let jup_swap_api_url = std::env::var("JUP_SWAP_API_URL")
             .expect("JUP_SWAP_API_URL environment variable is not set");
@@ -79,206 +86,80 @@ impl Eva01Config {
             .parse()
             .expect("Invalid SLIPPAGE_BPS number: {:#?}");
 
-        let general_config = GeneralConfig {
-            rpc_url,
-            yellowstone_endpoint,
-            yellowstone_x_token,
-            wallet_keypair,
-            compute_unit_price_micro_lamports,
-            compute_unit_limit,
-            marginfi_program_id,
-            marginfi_group_key,
-            address_lookup_tables,
-            solana_clock_refresh_interval,
-            min_profit,
-            healthcheck_port,
-            crossbar_api_url,
-            declared_values,
-            #[cfg(feature = "publish_to_db")]
-            publish_thresholds: load_thresholds_from_env()?,
-            jup_swap_api_url,
-            slippage_bps,
-        };
-
-        // Liquidator process configuration
-        let isolated_banks: bool = std::env::var("ISOLATED_BANKS")
-            .expect("ISOLATED_BANKS environment variable is not set")
-            .parse()
-            .expect("Invalid ISOLATED_BANKS boolean");
-
-        let liquidator_config = LiquidatorCfg { isolated_banks };
-
-        // Rebalancer process configuration
-        let token_account_dust_threshold: f64 = std::env::var("TOKEN_ACCOUNT_DUST_THRESHOLD")
-            .expect("TOKEN_ACCOUNT_DUST_THRESHOLD environment variable is not set")
-            .parse()
-            .expect("Invalid TOKEN_ACCOUNT_DUST_THRESHOLD number");
-
         let swap_mint = Pubkey::from_str(
             &std::env::var("SWAP_MINT").expect("SWAP_MINT environment variable is not set"),
         )
         .expect("Invalid SWAP_MINT Pubkey");
 
-        let rebalancer_config = RebalancerCfg {
-            token_account_dust_threshold: I80F48::from_num(token_account_dust_threshold),
-            swap_mint,
-        };
+        let token_thresholds = load_token_thresholds_from_env()?;
+
+        let default_token_max_threshold = I80F48::from_num(
+            std::env::var("DEFAULT_TOKEN_MAX_THRESHOLD")
+                .expect("DEFAULT_TOKEN_MAX_THRESHOLD environment variable is not set")
+                .parse::<f64>()
+                .expect("Invalid DEFAULT_TOKEN_MAX_THRESHOLD number"),
+        );
+
+        let token_dust_threshold = I80F48::from_num(
+            std::env::var("TOKEN_DUST_THRESHOLD")
+                .unwrap_or("0.001".to_string())
+                .parse::<f64>()
+                .expect("Invalid TOKEN_DUST_THRESHOLD number"),
+        );
+
+        let unstable_swb_feeds: Vec<Pubkey> =
+            parse_pubkey_list("UNSTABLE_SWB_FEEDS").unwrap_or_else(|_| vec![]);
 
         Ok(Eva01Config {
-            general_config,
-            liquidator_config,
-            rebalancer_config,
+            rpc_url,
+            yellowstone_endpoint,
+            yellowstone_x_token,
+            wallet_keypair,
+            compute_unit_price_micro_lamports,
+            marginfi_program_id,
+            marginfi_group_key,
+            address_lookup_tables,
+            min_profit,
+            healthcheck_port,
+            crossbar_api_url,
+            jup_swap_api_url,
+            swap_mint,
+            slippage_bps,
+            token_thresholds,
+            default_token_max_threshold,
+            token_dust_threshold,
+            unstable_swb_feeds,
         })
     }
 }
 
-#[cfg(feature = "publish_to_db")]
-mod publish_imp {
-    use crate::utils::supabase::Threshold;
-
-    pub fn load_thresholds_from_env() -> anyhow::Result<Vec<Threshold>> {
-        match std::env::var("PUBLISH_THRESHOLDS") {
-            Ok(s) => {
-                let mut v: Vec<Threshold> = serde_json::from_str(&s)?;
-                v.sort_by(|a, b| a.min_liab_value_usd.total_cmp(&b.min_liab_value_usd));
-                if v.is_empty() || v.first().unwrap().min_liab_value_usd > 0.0 {
+pub fn load_token_thresholds_from_env() -> anyhow::Result<HashMap<Pubkey, TokenThresholds>> {
+    match std::env::var("TOKEN_THRESHOLDS") {
+        Ok(s) if !s.trim().is_empty() => {
+            let raw: HashMap<String, (f64, f64, f64)> = serde_json::from_str(&s)?;
+            let mut out = HashMap::with_capacity(raw.len());
+            for (k, (declared_value, min_threshold, max_threshold)) in raw {
+                let pk = Pubkey::from_str(&k).map_err(|e| {
+                    anyhow::anyhow!("Invalid mint pubkey in TOKEN_THRESHOLDS: {k}: {e}")
+                })?;
+                if min_threshold * 2.0 > max_threshold {
                     return Err(anyhow::anyhow!(
-                        "lowest rule must have min_liab_value_usd = 0.0"
+                        "Invalid thresholds for {}: max must be greater than min * 2",
+                        pk
                     ));
                 }
-
-                Ok(v)
-            }
-            _ => Ok(Vec::new()),
-        }
-    }
-}
-
-pub fn load_declared_values_from_env() -> anyhow::Result<HashMap<Pubkey, f64>> {
-    match std::env::var("DECLARED_VALUES") {
-        Ok(s) if !s.trim().is_empty() => {
-            let raw: HashMap<String, f64> = serde_json::from_str(&s)?;
-            let mut out = HashMap::with_capacity(raw.len());
-            for (k, v) in raw {
-                let pk = Pubkey::from_str(&k).map_err(|e| {
-                    anyhow::anyhow!("Invalid mint pubkey in DECLARED_VALUES: {k}: {e}")
-                })?;
-                out.insert(pk, v);
+                out.insert(
+                    pk,
+                    TokenThresholds {
+                        declared_value,
+                        min_value: I80F48::from_num(min_threshold),
+                        max_value: I80F48::from_num(max_threshold),
+                    },
+                );
             }
             Ok(out)
         }
         _ => Ok(HashMap::new()),
-    }
-}
-
-impl std::fmt::Display for Eva01Config {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Eva01Config:\n\
-             - General Config: {}\n\
-             - Liquidator Config: {}\n\
-             - Rebalancer Config: {}",
-            self.general_config, self.liquidator_config, self.rebalancer_config
-        )
-    }
-}
-
-/// General config that can be shared by liquidator, rebalancer and geyser
-#[derive(Debug, Clone)]
-pub struct GeneralConfig {
-    pub rpc_url: String,
-    pub yellowstone_endpoint: String,
-    pub yellowstone_x_token: Option<String>,
-    pub wallet_keypair: Vec<u8>,
-    pub compute_unit_price_micro_lamports: u64,
-    pub compute_unit_limit: u32,
-    pub marginfi_program_id: Pubkey,
-    pub marginfi_group_key: Pubkey,
-    pub address_lookup_tables: Vec<Pubkey>,
-    pub solana_clock_refresh_interval: u64,
-    pub min_profit: f64,
-    pub healthcheck_port: u16,
-    pub crossbar_api_url: Option<String>,
-    pub declared_values: HashMap<Pubkey, f64>,
-    #[cfg(feature = "publish_to_db")]
-    pub publish_thresholds: Vec<Threshold>,
-    pub jup_swap_api_url: String,
-    pub slippage_bps: u16,
-}
-
-impl GeneralConfig {
-    pub fn get_geyser_service_config(&self) -> GeyserServiceConfig {
-        GeyserServiceConfig {
-            endpoint: self.yellowstone_endpoint.clone(),
-            x_token: self.yellowstone_x_token.clone(),
-        }
-    }
-}
-
-impl std::fmt::Display for GeneralConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "GeneralConfig:\n\
-                 - Yellowstone Endpoint: {}\n\
-                 - Compute Unit Price Micro Lamports: {}\n\
-                 - Compute Unit Limit: {}\n\
-                 - Minimun profit: {}$\n\
-                 - Marginfi Program ID: {}\n\
-                 - Marginfi Group: {:?}\n\
-                 - Address Lookup Tables: {:?}\n\
-                 - Solana Clock Refresh Interval: {}\n\
-                 - Healthcheck Port: {}\n\
-                 - Jup Swap Api URL: {}\n\
-                 - Slippage bps: {}",
-            self.yellowstone_endpoint,
-            self.compute_unit_price_micro_lamports,
-            self.compute_unit_limit,
-            self.min_profit,
-            self.marginfi_program_id,
-            self.marginfi_group_key,
-            self.address_lookup_tables,
-            self.solana_clock_refresh_interval,
-            self.healthcheck_port,
-            self.jup_swap_api_url,
-            self.slippage_bps,
-        )
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct LiquidatorCfg {
-    /// Minimun profit on a liquidation to be considered, denominated in USD. Example: 0.01 means $0.01
-    pub isolated_banks: bool,
-}
-
-impl std::fmt::Display for LiquidatorCfg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Liquidator Config: \n\
-                - Isolated banks: {}$\n",
-            self.isolated_banks
-        )
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct RebalancerCfg {
-    pub token_account_dust_threshold: I80F48,
-    pub swap_mint: Pubkey,
-}
-
-impl std::fmt::Display for RebalancerCfg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Rebalancer Config: \n\
-                - Token account dust threshold: {}\n\
-                - Swap mint: {}",
-            self.token_account_dust_threshold, self.swap_mint,
-        )
     }
 }
 
@@ -331,9 +212,6 @@ mod tests {
         String,
         String,
         String,
-        String,
-        String,
-        String,
     ) {
         let keypair = serde_json::to_string(&Keypair::new().to_bytes().to_vec()).unwrap();
 
@@ -342,14 +220,13 @@ mod tests {
         let yellowstone_x_token = "token";
         let keypair = keypair;
         let compute_unit_price_micro_lamports = "1000";
-        let compute_unit_limit = "200000";
         let marginfi_program_id = Pubkey::new_unique().to_string();
         let marginfi_group_key = Pubkey::new_unique().to_string();
         let address_lookup_tables = Pubkey::new_unique().to_string();
-        let solana_clock_refresh_interval = "1000";
         let min_profit = "0.01";
-        let isolated_banks = "true";
-        let healthcheck_port = "1234";
+        let default_token_max_threshold = "10.0";
+        let token_dust_threshold = "0.01";
+        let unstable_swb_feeds = Pubkey::new_unique().to_string();
 
         set_env("RPC_URL", rpc_url);
         set_env("YELLOWSTONE_ENDPOINT", yellowstone_endpoint);
@@ -359,17 +236,13 @@ mod tests {
             "COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
             compute_unit_price_micro_lamports,
         );
-        set_env("COMPUTE_UNIT_LIMIT", compute_unit_limit);
         set_env("MARGINFI_PROGRAM_ID", &marginfi_program_id);
         set_env("MARGINFI_GROUP_KEY", &marginfi_group_key);
         set_env("ADDRESS_LOOKUP_TABLES", &address_lookup_tables);
-        set_env(
-            "SOLANA_CLOCK_REFRESH_INTERVAL",
-            solana_clock_refresh_interval,
-        );
         set_env("MIN_PROFIT", min_profit);
-        set_env("ISOLATED_BANKS", isolated_banks);
-        set_env("HEALTHCHECK_PORT", healthcheck_port);
+        set_env("DEFAULT_TOKEN_MAX_THRESHOLD", default_token_max_threshold);
+        set_env("TOKEN_DUST_THRESHOLD", token_dust_threshold);
+        set_env("UNSTABLE_SWB_FEEDS", &unstable_swb_feeds);
 
         (
             keypair,
@@ -377,14 +250,11 @@ mod tests {
             yellowstone_endpoint.to_string(),
             yellowstone_x_token.to_string(),
             compute_unit_price_micro_lamports.to_string(),
-            compute_unit_limit.to_string(),
             marginfi_program_id.to_string(),
             marginfi_group_key.to_string(),
             address_lookup_tables.to_string(),
-            solana_clock_refresh_interval.to_string(),
             min_profit.to_string(),
-            isolated_banks.to_string(),
-            healthcheck_port.to_string(),
+            unstable_swb_feeds.to_string(),
         )
     }
 
@@ -443,36 +313,6 @@ mod tests {
         unset_env("RPC_URL");
         let result = Eva01Config::new();
         assert!(result.is_err());
-    }
-
-    #[test]
-    #[serial]
-    fn test_display_impls() {
-        let _ = setup_general_env();
-        setup_rebalancer_env();
-        let config = Eva01Config::new().unwrap();
-        let s = format!("{}", config);
-        assert!(s.contains("Eva01Config:"));
-        assert!(s.contains("General Config:"));
-        assert!(s.contains("Liquidator Config:"));
-        assert!(s.contains("Rebalancer Config:"));
-    }
-
-    #[test]
-    #[serial]
-    fn test_get_geyser_service_config() {
-        let _ = setup_general_env();
-        setup_rebalancer_env();
-        let config = Eva01Config::new().unwrap();
-        let geyser_cfg = config.general_config.get_geyser_service_config();
-        assert_eq!(
-            geyser_cfg.endpoint,
-            config.general_config.yellowstone_endpoint
-        );
-        assert_eq!(
-            geyser_cfg.x_token,
-            config.general_config.yellowstone_x_token
-        );
     }
 
     #[test]

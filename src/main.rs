@@ -49,6 +49,7 @@ mod cache;
 mod cache_loader;
 
 declare_program!(kamino_lending);
+declare_program!(kamino_farms);
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
@@ -96,6 +97,8 @@ fn init_logging() {
     #[cfg(not(feature = "pretty_logs"))]
     b.target(Target::Stdout)
         .format(|buf, record| {
+            use serde_json::json;
+
             let sev = match record.level() {
                 Level::Error => "ERROR",
                 Level::Warn => "WARNING",
@@ -103,13 +106,14 @@ fn init_logging() {
                 Level::Debug => "DEBUG",
                 Level::Trace => "DEBUG",
             };
-            writeln!(
-                buf,
-                "{{\"severity\":\"{}\",\"message\":\"{}\",\"target\":\"{}\"}}",
-                sev,
-                record.args(),
-                record.target(),
-            )
+
+            let line = json!({
+                "logging.googleapis.com/severity": sev,
+                "message": record.args().to_string(),
+                "target": record.target(),
+            });
+
+            writeln!(buf, "{}", line)
         })
         .init();
 }

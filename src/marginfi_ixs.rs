@@ -1,4 +1,4 @@
-use anchor_lang::{InstructionData, Key, ToAccountMetas};
+use anchor_lang::{Id, InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
 use log::{debug, info, trace};
@@ -13,13 +13,19 @@ use solana_sdk::{
     system_program, sysvar,
 };
 
-use crate::{utils::find_bank_liquidity_vault_authority, wrappers::bank::BankWrapper};
+use crate::{
+    cache::KaminoReserve,
+    kamino_farms::program::Farms as KaminoFarms,
+    kamino_lending::program::KaminoLending,
+    utils::{find_bank_liquidity_vault_authority, kamino::derive_user_state},
+    wrappers::{bank::BankWrapper, mint::MintWrapper},
+};
 
 pub fn make_init_liquidation_record_ix(
     marginfi_program_id: Pubkey,
     liquidatee_account: Pubkey,
     fee_payer: Pubkey,
-) -> Instruction {
+) -> (Instruction, Pubkey) {
     let (liquidation_record, _bump) = Pubkey::find_program_address(
         &[
             LIQUIDATION_RECORD_SEED.as_bytes(),
@@ -36,11 +42,14 @@ pub fn make_init_liquidation_record_ix(
     .to_account_metas(None);
     mark_signer(&mut accounts, fee_payer);
 
-    Instruction {
-        program_id: marginfi_program_id,
-        accounts,
-        data: marginfi::instruction::MarginfiAccountInitLiqRecord.data(),
-    }
+    (
+        Instruction {
+            program_id: marginfi_program_id,
+            accounts,
+            data: marginfi::instruction::MarginfiAccountInitLiqRecord.data(),
+        },
+        liquidation_record,
+    )
 }
 
 pub fn make_start_liquidate_ix(
@@ -113,28 +122,31 @@ pub fn make_repay_ix(
     marginfi_account: Pubkey,
     signer: Pubkey,
     bank: &BankWrapper,
-    signer_token_account: Pubkey,
-    token_program: Pubkey,
+    mint_wrapper: &MintWrapper,
     amount: u64,
-    repay_all: Option<bool>,
+    repay_all: bool,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountRepay {
         marginfi_account,
         authority: signer,
-        signer_token_account,
+        signer_token_account: mint_wrapper.token,
         liquidity_vault: bank.bank.liquidity_vault,
-        token_program,
+        token_program: mint_wrapper.account.owner,
         bank: bank.address,
         group: marginfi_group,
     }
     .to_account_metas(None);
-    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
+    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &mint_wrapper.account.owner);
     mark_signer(&mut accounts, signer);
 
     Instruction {
         program_id: marginfi_program_id,
         accounts,
-        data: marginfi::instruction::LendingAccountRepay { amount, repay_all }.data(),
+        data: marginfi::instruction::LendingAccountRepay {
+            amount,
+            repay_all: Some(repay_all),
+        }
+        .data(),
     }
 }
 
@@ -145,17 +157,16 @@ pub fn make_withdraw_ix(
     marginfi_account: Pubkey,
     signer: Pubkey,
     bank: &BankWrapper,
-    destination_token_account: Pubkey,
-    token_program: Pubkey,
+    mint_wrapper: &MintWrapper,
     observation_accounts: &[Pubkey],
     amount: u64,
-    withdraw_all: Option<bool>,
+    withdraw_all: bool,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountWithdraw {
         marginfi_account,
-        destination_token_account,
+        destination_token_account: mint_wrapper.token,
         liquidity_vault: bank.bank.liquidity_vault,
-        token_program,
+        token_program: mint_wrapper.account.owner,
         authority: signer,
         bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
             &bank.address,
@@ -165,7 +176,7 @@ pub fn make_withdraw_ix(
         group: marginfi_group,
     }
     .to_account_metas(Some(true));
-    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &token_program);
+    maybe_add_bank_mint(&mut accounts, bank.bank.mint, &mint_wrapper.account.owner);
     mark_signer(&mut accounts, signer);
 
     trace!(
@@ -184,7 +195,7 @@ pub fn make_withdraw_ix(
         accounts,
         data: marginfi::instruction::LendingAccountWithdraw {
             amount,
-            withdraw_all,
+            withdraw_all: Some(withdraw_all),
         }
         .data(),
     }
@@ -223,82 +234,6 @@ pub fn make_end_liquidate_ix(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn make_liquidate_ix(
-    marginfi_program_id: Pubkey,
-    marginfi_group: Pubkey,
-    marginfi_account: Pubkey,
-    asset_bank: &BankWrapper,
-    liab_bank: &BankWrapper,
-    asset_oracles: &[Pubkey],
-    liab_oracles: &[Pubkey],
-    signer: Pubkey,
-    liquidatee_marginfi_account: Pubkey,
-    token_program: Pubkey,
-    observation_accounts: &[Pubkey],
-    asset_amount: u64,
-) -> Instruction {
-    let accounts_raw = marginfi::accounts::LendingAccountLiquidate {
-        group: marginfi_group,
-        asset_bank: asset_bank.address,
-        liab_bank: liab_bank.address,
-        liquidator_marginfi_account: marginfi_account,
-        authority: signer,
-        liquidatee_marginfi_account,
-        bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
-            &liab_bank.address,
-            &marginfi_program_id,
-        ),
-        bank_liquidity_vault: liab_bank.bank.liquidity_vault,
-        bank_insurance_vault: liab_bank.bank.insurance_vault,
-        token_program,
-    };
-    let mut accounts = accounts_raw.to_account_metas(Some(true));
-
-    info!(
-        r#"LendingAccountLiquidate: ( 
-        group: {:?}, 
-        liquidator_marginfi_account: {:?}, 
-        liquidatee_marginfi_account: {:?}, 
-        asset_bank: {:?}, 
-        liab_bank: {:?}, 
-        asset oracles: {:?},
-        liab oracles: {:?}
-        )"#,
-        accounts_raw.group,
-        accounts_raw.liquidator_marginfi_account,
-        accounts_raw.liquidatee_marginfi_account,
-        accounts_raw.asset_bank,
-        accounts_raw.liab_bank,
-        asset_oracles,
-        liab_oracles,
-    );
-    maybe_add_bank_mint(&mut accounts, liab_bank.bank.mint, &token_program);
-
-    accounts.extend(
-        asset_oracles
-            .iter()
-            .map(|oracle| AccountMeta::new_readonly(*oracle, false)),
-    );
-    accounts.extend(
-        liab_oracles
-            .iter()
-            .map(|oracle| AccountMeta::new_readonly(*oracle, false)),
-    );
-
-    accounts.extend(
-        observation_accounts
-            .iter()
-            .map(|a| AccountMeta::new_readonly(*a, false)),
-    );
-
-    Instruction {
-        program_id: marginfi_program_id,
-        accounts,
-        data: marginfi::instruction::LendingAccountLiquidate { asset_amount }.data(),
-    }
-}
-
 fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_program: &Pubkey) {
     if token_program == &token_2022::ID {
         debug!("!!!Adding mint account to accounts!!!");
@@ -323,6 +258,15 @@ pub fn make_create_ix(
         }
         .to_account_metas(Some(true)),
         data: marginfi::instruction::MarginfiAccountInitialize.data(),
+    }
+}
+
+fn mark_signer(
+    accounts: &mut [solana_sdk::instruction::AccountMeta],
+    signer: solana_sdk::pubkey::Pubkey,
+) {
+    for m in accounts.iter_mut() {
+        m.is_signer = m.pubkey == signer;
     }
 }
 
@@ -366,11 +310,76 @@ pub fn initialize_marginfi_account(
     Ok(marginfi_account_key.pubkey())
 }
 
-fn mark_signer(
-    accounts: &mut [solana_sdk::instruction::AccountMeta],
-    signer: solana_sdk::pubkey::Pubkey,
-) {
-    for m in accounts.iter_mut() {
-        m.is_signer = m.pubkey == signer;
+#[allow(clippy::too_many_arguments)]
+pub fn make_kamino_withdraw_ix(
+    marginfi_program_id: Pubkey,
+    group: Pubkey,
+    marginfi_account: Pubkey,
+    authority: Pubkey,
+    bank: &BankWrapper,
+    mint_wrapper: &MintWrapper,
+    kamino_obligation: Pubkey,
+    kamino_reserve: &KaminoReserve,
+    remaining: &[Pubkey],
+    amount: u64,
+    withdraw_all: bool,
+) -> Instruction {
+    let (reserve_farm_state, obligation_farm_user_state) =
+        if kamino_reserve.reserve.farm_collateral == Pubkey::default() {
+            (None, None)
+        } else {
+            (
+                Some(kamino_reserve.reserve.farm_collateral),
+                Some(derive_user_state(
+                    &kamino_reserve.reserve.farm_collateral,
+                    &kamino_obligation,
+                )),
+            )
+        };
+
+    let mut accounts = marginfi::accounts::KaminoWithdraw {
+        group,
+        lending_market: kamino_reserve.reserve.lending_market,
+        marginfi_account,
+        authority,
+        bank: bank.address,
+        destination_token_account: mint_wrapper.token,
+        liquidity_vault_authority: find_bank_liquidity_vault_authority(
+            &bank.address,
+            &marginfi_program_id,
+        ),
+        liquidity_vault: bank.bank.liquidity_vault,
+        kamino_obligation,
+        lending_market_authority: kamino_reserve.lending_market_authority,
+        kamino_reserve: kamino_reserve.address,
+        reserve_liquidity_mint: kamino_reserve.reserve.liquidity.mint_pubkey,
+        reserve_liquidity_supply: kamino_reserve.reserve.liquidity.supply_vault,
+        reserve_collateral_mint: kamino_reserve.reserve.collateral.mint_pubkey,
+        reserve_source_collateral: kamino_reserve.reserve.collateral.supply_vault,
+        obligation_farm_user_state,
+        reserve_farm_state,
+        kamino_program: KaminoLending::id(),
+        farms_program: KaminoFarms::id(),
+        collateral_token_program: mint_wrapper.account.owner, // assuming Kamino liquidity and collateral are the same as our bank's mint
+        liquidity_token_program: mint_wrapper.account.owner, // assuming Kamino liquidity and collateral are the same as our bank's mint
+        instruction_sysvar_account: sysvar::instructions::id(),
+    }
+    .to_account_metas(None);
+    mark_signer(&mut accounts, authority);
+
+    accounts.extend(
+        remaining
+            .iter()
+            .map(|a| AccountMeta::new_readonly(*a, false)),
+    );
+
+    Instruction {
+        program_id: marginfi_program_id,
+        accounts,
+        data: marginfi::instruction::KaminoWithdraw {
+            amount,
+            withdraw_all: Some(withdraw_all),
+        }
+        .data(),
     }
 }

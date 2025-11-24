@@ -23,10 +23,12 @@ use solana_sdk::{
 };
 
 use crate::{
-    cache::Cache,
+    cache::{Cache, KaminoReserve},
     geyser::AccountType,
     kamino_lending,
-    utils::{batch_get_multiple_accounts, BatchLoadingConfig, KaminoOracleSetup},
+    utils::{
+        batch_get_multiple_accounts, kamino::derive_lending_market_authority, BatchLoadingConfig,
+    },
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
 use anchor_client::Program;
@@ -97,7 +99,7 @@ impl CacheLoader {
 
         luts.into_iter().for_each(|lut| cache.add_lut(lut));
 
-        info!("Loaded {} LUTs.", &cache.luts.len());
+        info!("Loaded {} LUTs.", &cache.luts.lock().unwrap().len());
 
         Ok(())
     }
@@ -403,58 +405,23 @@ impl CacheLoader {
             &reserve_addresses,
             BatchLoadingConfig::DEFAULT,
         )?;
-        for (address, account) in reserve_addresses.iter().zip(reserve_accounts.iter()) {
+
+        for (&address, account) in reserve_addresses.iter().zip(reserve_accounts.iter()) {
             if let Some(account) = account {
                 debug!("Loaded the Kamino Reserve: {:?}", address);
                 let mut data: &[u8] = &account.data;
                 let reserve = kamino_lending::accounts::Reserve::try_deserialize(&mut data)?;
-                let kamino_oracle_setup =
-                    if reserve.config.token_info.pyth_configuration.price != Pubkey::default() {
-                        KaminoOracleSetup::Pyth(reserve.config.token_info.pyth_configuration.price)
-                    } else if reserve
-                        .config
-                        .token_info
-                        .switchboard_configuration
-                        .price_aggregator
-                        != Pubkey::default()
-                    {
-                        KaminoOracleSetup::Switchboard(
-                            reserve
-                                .config
-                                .token_info
-                                .switchboard_configuration
-                                .price_aggregator,
-                        )
-                    } else if reserve
-                        .config
-                        .token_info
-                        .switchboard_configuration
-                        .twap_aggregator
-                        != Pubkey::default()
-                    {
-                        KaminoOracleSetup::SwitchboardTWAP(
-                            reserve
-                                .config
-                                .token_info
-                                .switchboard_configuration
-                                .twap_aggregator,
-                        )
-                    } else if reserve.config.token_info.scope_configuration.price_feed
-                        != Pubkey::default()
-                    {
-                        KaminoOracleSetup::Scope(
-                            reserve.config.token_info.scope_configuration.price_feed,
-                        )
-                    } else {
-                        return Err(anyhow!(
-                            "Unknown OracleSetup found for Kamino Reserve: {:?}",
-                            address
-                        ));
-                    };
+                let lending_market_authority =
+                    derive_lending_market_authority(&reserve.lending_market);
 
-                cache
-                    .kamino_reserves
-                    .insert(*address, (reserve.lending_market, kamino_oracle_setup));
+                cache.kamino_reserves.insert(
+                    address,
+                    KaminoReserve {
+                        address,
+                        reserve,
+                        lending_market_authority,
+                    },
+                );
             } else {
                 error!("Reserve account {:?} not found.", address);
             }
