@@ -2777,7 +2777,7 @@ dependencies = [
 [[package]]
 name = "id-crate"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc1#60265545bfa208ae966561cf680453985b48b533"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc2#22bc9f76bb73d8c8f3adff2d4f476993c2c14466"
 dependencies = [
  "anchor-lang",
  "cfg-if",
@@ -3045,7 +3045,7 @@ dependencies = [
 [[package]]
 name = "kamino-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc1#60265545bfa208ae966561cf680453985b48b533"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc2#22bc9f76bb73d8c8f3adff2d4f476993c2c14466"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -3230,7 +3230,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "marginfi"
 version = "0.1.6"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc1#60265545bfa208ae966561cf680453985b48b533"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc2#22bc9f76bb73d8c8f3adff2d4f476993c2c14466"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -3254,7 +3254,7 @@ dependencies = [
 [[package]]
 name = "marginfi-type-crate"
 version = "0.1.6"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc1#60265545bfa208ae966561cf680453985b48b533"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc2#22bc9f76bb73d8c8f3adff2d4f476993c2c14466"
 dependencies = [
  "anchor-lang",
  "bs58 0.5.1",

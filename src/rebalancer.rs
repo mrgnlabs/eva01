@@ -1,10 +1,10 @@
 use crate::{
     cache::Cache,
     config::{Eva01Config, TokenThresholds},
-    utils::{self, find_oracle_keys, swb_cranker::SwbCranker},
+    utils::{self},
     wrappers::{
-        liquidator_account::LiquidatorAccount, marginfi_account::MarginfiAccountWrapper,
-        oracle::OracleWrapper, token_account::TokenAccountWrapper,
+        liquidator_account::LiquidatorAccount, oracle::OracleWrapper,
+        token_account::TokenAccountWrapper,
     },
 };
 use fixed::types::I80F48;
@@ -16,7 +16,6 @@ use jupiter_swap_api_client::{
     JupiterSwapApiClient,
 };
 use log::{error, info, warn};
-use marginfi_type_crate::types::OracleSetup;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
@@ -34,7 +33,6 @@ const SLIPPAGE_MULTIPLIER: I80F48 = I80F48!(1.05);
 pub struct Rebalancer {
     signer: Keypair,
     liquidator_account: Arc<LiquidatorAccount>,
-    swb_cranker: SwbCranker,
     rpc_client: RpcClient,
     swap_mint: Pubkey,
     swap_mint_bank: Pubkey,
@@ -60,8 +58,6 @@ impl Rebalancer {
 
         let swap_mint = config.swap_mint;
         let swap_mint_bank = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
-        // Kamino test
-        //let swap_mint_bank = Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA");
 
         let jup_swap_api_url = config.jup_swap_api_url.clone();
         let slippage_bps = config.slippage_bps;
@@ -74,14 +70,12 @@ impl Rebalancer {
             .enable_all()
             .build()?;
 
-        let swb_cranker = SwbCranker::new(&config)?;
         let default_token_max_threshold = config.default_token_max_threshold;
         let token_thresholds = config.token_thresholds;
 
         Ok(Self {
             signer,
             liquidator_account,
-            swb_cranker,
             rpc_client,
             swap_mint,
             swap_mint_bank,
@@ -98,14 +92,6 @@ impl Rebalancer {
     pub fn run(&mut self, missing_tokens: HashMap<Pubkey, I80F48>) -> anyhow::Result<()> {
         info!("Running the Rebalancing process...");
 
-        // TODO: think if this is still necessary?
-        if let Err(error) = self.crank_active_swb_oracles() {
-            error!(
-                "Failed to crank Swb Oracles for the Liquidator banks: {}",
-                error
-            )
-        }
-
         // TODO: expand directly in this function?
         self.handle_token_accounts(missing_tokens)
             .map_err(|e| error!("Failed to handle the Liquidator's tokens: {}", e))
@@ -116,42 +102,6 @@ impl Rebalancer {
         }
 
         info!("The Rebalancing process is complete.");
-
-        Ok(())
-    }
-
-    fn crank_active_swb_oracles(&self) -> anyhow::Result<()> {
-        let active_banks = MarginfiAccountWrapper::get_active_banks(
-            &self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&self.liquidator_account.liquidator_address)?
-                .lending_account,
-        );
-
-        let active_swb_oracles: Vec<Pubkey> = active_banks
-            .iter()
-            .filter_map(|&bank_pk| {
-                self.cache
-                    .banks
-                    .get_bank(&bank_pk)
-                    .and_then(|bank_wrapper| {
-                        if matches!(
-                            bank_wrapper.bank.config.oracle_setup,
-                            OracleSetup::SwitchboardPull
-                        ) {
-                            Some(bank_wrapper.bank.config)
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .flat_map(|swb_bank_config| find_oracle_keys(&swb_bank_config))
-            .collect();
-
-        if !active_swb_oracles.is_empty() {
-            self.swb_cranker.crank_oracles(active_swb_oracles)?
-        }
 
         Ok(())
     }

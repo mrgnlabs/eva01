@@ -95,15 +95,6 @@ impl Cache {
     ) -> Result<TokenAccountWrapper<T>> {
         let token_account = self.tokens.try_get_account(token_address)?;
         let bank_address = self.banks.try_get_account_for_mint(mint_address)?;
-        // Kamino test
-        // let bank_address = if mint_address
-        //     == &Pubkey::from_str_const("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
-        // {
-        //     Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA")
-        // } else {
-        //     self.banks.try_get_account_for_mint(mint_address)?
-        // };
-
         let bank_wrapper = self.banks.try_get_bank(&bank_address)?;
         let oracle_wrapper = T::build(self, &bank_address)?;
 

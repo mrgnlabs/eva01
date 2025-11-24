@@ -119,7 +119,6 @@ impl Liquidator {
                         &acc,
                         &stale_swb_oracles,
                         &mut tokens_in_shortage,
-                        self.token_dust_threshold,
                     ) {
                         match e {
                             LiquidationError::Anyhow(e) => {
@@ -255,12 +254,16 @@ impl Liquidator {
         let liab_bank_wrapper = self.cache.banks.try_get_bank(&liab_bank_pk)?;
 
         // Calculated max liquidatable amount is the defining factor for liquidation.
-        let (max_liquidatable_asset_amount, max_liquidatable_liab_amount, profit) = self
-            .compute_max_liquidatable_amounts_with_banks(
-                account,
-                &asset_bank_wrapper,
-                &liab_bank_wrapper,
-            )?;
+        let (
+            max_liquidatable_asset_amount,
+            max_liquidatable_liab_amount,
+            profit,
+            dust_liab_threshold,
+        ) = self.compute_max_liquidatable_amounts_with_banks(
+            account,
+            &asset_bank_wrapper,
+            &liab_bank_wrapper,
+        )?;
 
         if max_liquidatable_asset_amount.is_zero() {
             return Ok(None);
@@ -281,6 +284,7 @@ impl Liquidator {
             asset_amount: slippage_adjusted_asset_amount,
             liab_amount: slippage_adjusted_liab_amount,
             profit: profit.to_num(),
+            dust_liab_threshold,
         }))
     }
 
@@ -327,7 +331,7 @@ impl Liquidator {
         account: &MarginfiAccountWrapper,
         asset_bank_wrapper: &BankWrapper,
         liab_bank_wrapper: &BankWrapper,
-    ) -> Result<(I80F48, I80F48, I80F48)> {
+    ) -> Result<(I80F48, I80F48, I80F48, I80F48)> {
         let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
             &self.cache,
             &account.lending_account,
@@ -341,7 +345,7 @@ impl Liquidator {
         );
         if maintenance_health >= I80F48::ZERO {
             // TODO: revisit this crazy return type
-            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
         }
 
         let asset_oracle_wrapper = OracleWrapper::build(&self.cache, &asset_bank_wrapper.address)?;
@@ -356,7 +360,7 @@ impl Liquidator {
                     "Asset ({}) price is lower than the declared range: {} < {}",
                     asset_bank_wrapper.bank.mint, asset_price, min_asset_price
                 );
-                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
             }
             let max_asset_price = thresholds.declared_value * (1.0 + DECLARED_VALUE_RANGE);
             if asset_price > max_asset_price {
@@ -364,7 +368,7 @@ impl Liquidator {
                     "Asset ({}) price is higher than the declared range: {} > {}",
                     asset_bank_wrapper.bank.mint, asset_price, max_asset_price
                 );
-                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
             }
         }
 
@@ -380,7 +384,7 @@ impl Liquidator {
                     "Liability ({}) price is lower than the declared range: {} < {}",
                     liab_bank_wrapper.bank.mint, liab_price, min_liab_price
                 );
-                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
             }
             let max_liab_price = thresholds.declared_value * (1.0 + DECLARED_VALUE_RANGE);
             if liab_price > max_liab_price {
@@ -388,7 +392,7 @@ impl Liquidator {
                     "Liability ({}) price is higher than the declared range: {} > {}",
                     liab_bank_wrapper.bank.mint, liab_price, max_liab_price
                 );
-                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+                return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
             }
         }
 
@@ -401,7 +405,7 @@ impl Liquidator {
 
         if all >= I80F48::ZERO {
             debug!("Account {:?} has no liquidatable amount: {:?}, asset_weight_maint: {:?}, liab_weight_maint: {:?}", account.address, all, asset_weight_maint, liab_weight_maint);
-            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
         }
 
         let underwater_maint_value =
@@ -428,7 +432,7 @@ impl Liquidator {
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
         if liquidator_profit <= self.min_profit {
-            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
+            return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
         }
 
         let max_liquidatable_asset_amount = asset_bank_wrapper.calc_amount(
@@ -445,6 +449,13 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
+        let dust_liab_threshold = asset_bank_wrapper.calc_amount(
+            &liab_oracle_wrapper,
+            self.token_dust_threshold, // in USD
+            BalanceSide::Assets,
+            RequirementType::Equity,
+        )?;
+
         debug!("Account {:?} liquidability evaluation:\nTotal weighted Assets {:?}\nTotal weighted Liabilities {:?}\nMaintenance health {:?}\n\
             Asset Bank {:?}\nAsset maint weight: {:?}\nAsset Amount {:?}\nAsset Value (USD) {:?}\n\
             Liab Bank {:?}\nLiab maint weight: {:?}\nLiab Amount {:?}\nLiab Value (USD) {:?}\n\
@@ -458,6 +469,7 @@ impl Liquidator {
             max_liquidatable_asset_amount,
             max_liquidatable_liab_amount,
             liquidator_profit,
+            dust_liab_threshold,
         ))
     }
 

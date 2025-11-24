@@ -102,7 +102,7 @@ impl Eva01Config {
 
         let token_dust_threshold = I80F48::from_num(
             std::env::var("TOKEN_DUST_THRESHOLD")
-            .unwrap_or("0.001".to_string())
+                .unwrap_or("0.001".to_string())
                 .parse::<f64>()
                 .expect("Invalid TOKEN_DUST_THRESHOLD number"),
         );

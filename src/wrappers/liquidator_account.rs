@@ -2,10 +2,11 @@ use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
     cache::Cache,
     config::Eva01Config,
-    kamino_ixs::{make_kamino_withdraw_ix, make_refresh_obligation_ix, make_refresh_reserve_ix},
+    kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix},
     marginfi_ixs::{
         initialize_marginfi_account, make_deposit_ix, make_end_liquidate_ix,
-        make_init_liquidation_record_ix, make_repay_ix, make_start_liquidate_ix, make_withdraw_ix,
+        make_init_liquidation_record_ix, make_kamino_withdraw_ix, make_repay_ix,
+        make_start_liquidate_ix, make_withdraw_ix,
     },
     metrics::LIQUIDATION_ATTEMPTS,
     utils::{
@@ -73,6 +74,7 @@ pub struct PreparedLiquidatableAccount {
     pub asset_amount: I80F48,
     pub liab_amount: I80F48,
     pub profit: u64,
+    pub dust_liab_threshold: I80F48,
 }
 
 pub struct LiquidatorAccount {
@@ -133,8 +135,6 @@ impl LiquidatorAccount {
         };
 
         let preferred_mint_bank = cache.banks.try_get_account_for_mint(&preferred_mint)?;
-        // Kamino test
-        //let preferred_mint_bank = Pubkey::from_str_const("52AJuRJJcejMYS9nNDCk1vYmyG1uHSsXoSPkctS3EfhA");
 
         Ok(Self {
             liquidator_address,
@@ -143,9 +143,7 @@ impl LiquidatorAccount {
             group: marginfi_group_id,
             preferred_mint_bank,
             rpc_client,
-            cu_limit_ix: ComputeBudgetInstruction::set_compute_unit_limit(
-                config.compute_unit_limit,
-            ),
+            cu_limit_ix: ComputeBudgetInstruction::set_compute_unit_limit(1400000),
             cache,
         })
     }
@@ -225,7 +223,6 @@ impl LiquidatorAccount {
         account: &PreparedLiquidatableAccount,
         stale_swb_oracles: &HashSet<Pubkey>,
         tokens_in_shortage: &mut HashSet<Pubkey>,
-        dust_liab_threshold: I80F48,
     ) -> Result<(), LiquidationError> {
         let PreparedLiquidatableAccount {
             liquidatee_account,
@@ -233,6 +230,7 @@ impl LiquidatorAccount {
             liab_bank,
             asset_amount,
             liab_amount,
+            dust_liab_threshold,
             ..
         } = account;
 
@@ -282,7 +280,7 @@ impl LiquidatorAccount {
         let liab_token_balance =
             I80F48::from_num(self.get_token_balance_for_mint(&liab_mint).unwrap());
 
-        if liab_token_balance < dust_liab_threshold {
+        if liab_token_balance < *dust_liab_threshold {
             tokens_in_shortage.insert(liab_mint);
             info!("No tokens: {}", liab_mint);
             return Err(LiquidationError::NotEnoughFunds);
