@@ -26,7 +26,9 @@ use crate::{
     cache::{Cache, KaminoReserve},
     geyser::AccountType,
     kamino_lending,
-    utils::{batch_get_multiple_accounts, BatchLoadingConfig},
+    utils::{
+        batch_get_multiple_accounts, kamino::derive_lending_market_authority, BatchLoadingConfig,
+    },
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
 use anchor_client::Program;
@@ -409,15 +411,15 @@ impl CacheLoader {
                 debug!("Loaded the Kamino Reserve: {:?}", address);
                 let mut data: &[u8] = &account.data;
                 let reserve = kamino_lending::accounts::Reserve::try_deserialize(&mut data)?;
-                let lending_market_account =
-                    self.rpc_client.get_account(&reserve.lending_market)?;
+                let lending_market_authority =
+                    derive_lending_market_authority(&reserve.lending_market);
 
                 cache.kamino_reserves.insert(
                     address,
                     KaminoReserve {
                         address,
                         reserve,
-                        lending_market_authority: lending_market_account.owner,
+                        lending_market_authority,
                     },
                 );
             } else {

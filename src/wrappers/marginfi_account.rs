@@ -136,6 +136,12 @@ impl MarginfiAccountWrapper {
                         bank_wrapper.bank.config.oracle_keys[1],
                     ]
                 }
+                OracleSetup::Fixed => {
+                    vec![
+                        *bank_pk,
+                        // no oracles here!
+                    ]
+                }
                 _ => {
                     return Err(Error::msg("Unsupported Oracle setup"));
                 }

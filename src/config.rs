@@ -16,7 +16,6 @@ pub struct Eva01Config {
     pub yellowstone_x_token: Option<String>,
     pub wallet_keypair: Vec<u8>,
     pub compute_unit_price_micro_lamports: u64,
-    pub compute_unit_limit: u32,
     pub marginfi_program_id: Pubkey,
     pub marginfi_group_key: Pubkey,
     pub address_lookup_tables: Vec<Pubkey>,
@@ -29,6 +28,7 @@ pub struct Eva01Config {
     pub token_thresholds: HashMap<Pubkey, TokenThresholds>,
     pub default_token_max_threshold: I80F48,
     pub token_dust_threshold: I80F48,
+    pub unstable_swb_feeds: Vec<Pubkey>,
 }
 
 impl Eva01Config {
@@ -50,10 +50,6 @@ impl Eva01Config {
                 .expect("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS environment variable is not set")
                 .parse()
                 .expect("Invalid COMPUTE_UNIT_PRICE_MICRO_LAMPORTS number");
-        let compute_unit_limit: u32 = std::env::var("COMPUTE_UNIT_LIMIT")
-            .expect("COMPUTE_UNIT_LIMIT environment variable is not set")
-            .parse()
-            .expect("Invalid COMPUTE_UNIT_LIMIT number");
 
         let marginfi_program_id = Pubkey::from_str(
             &std::env::var("MARGINFI_PROGRAM_ID")
@@ -76,7 +72,7 @@ impl Eva01Config {
             .expect("Invalid MIN_PROFIT number");
 
         let healthcheck_port: u16 = std::env::var("HEALTHCHECK_PORT")
-            .expect("HEALTHCHECK_PORT environment variable is not set")
+            .unwrap_or("3000".to_string())
             .parse()
             .expect("Invalid HEALTHCHECK_PORT number");
 
@@ -106,10 +102,13 @@ impl Eva01Config {
 
         let token_dust_threshold = I80F48::from_num(
             std::env::var("TOKEN_DUST_THRESHOLD")
-                .expect("TOKEN_DUST_THRESHOLD environment variable is not set")
+            .unwrap_or("0.001".to_string())
                 .parse::<f64>()
                 .expect("Invalid TOKEN_DUST_THRESHOLD number"),
         );
+
+        let unstable_swb_feeds: Vec<Pubkey> =
+            parse_pubkey_list("UNSTABLE_SWB_FEEDS").unwrap_or_else(|_| vec![]);
 
         Ok(Eva01Config {
             rpc_url,
@@ -117,7 +116,6 @@ impl Eva01Config {
             yellowstone_x_token,
             wallet_keypair,
             compute_unit_price_micro_lamports,
-            compute_unit_limit,
             marginfi_program_id,
             marginfi_group_key,
             address_lookup_tables,
@@ -130,6 +128,7 @@ impl Eva01Config {
             token_thresholds,
             default_token_max_threshold,
             token_dust_threshold,
+            unstable_swb_feeds,
         })
     }
 }
@@ -213,7 +212,6 @@ mod tests {
         String,
         String,
         String,
-        String,
     ) {
         let keypair = serde_json::to_string(&Keypair::new().to_bytes().to_vec()).unwrap();
 
@@ -222,14 +220,13 @@ mod tests {
         let yellowstone_x_token = "token";
         let keypair = keypair;
         let compute_unit_price_micro_lamports = "1000";
-        let compute_unit_limit = "200000";
         let marginfi_program_id = Pubkey::new_unique().to_string();
         let marginfi_group_key = Pubkey::new_unique().to_string();
         let address_lookup_tables = Pubkey::new_unique().to_string();
         let min_profit = "0.01";
-        let healthcheck_port = "1234";
         let default_token_max_threshold = "10.0";
         let token_dust_threshold = "0.01";
+        let unstable_swb_feeds = Pubkey::new_unique().to_string();
 
         set_env("RPC_URL", rpc_url);
         set_env("YELLOWSTONE_ENDPOINT", yellowstone_endpoint);
@@ -239,14 +236,13 @@ mod tests {
             "COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
             compute_unit_price_micro_lamports,
         );
-        set_env("COMPUTE_UNIT_LIMIT", compute_unit_limit);
         set_env("MARGINFI_PROGRAM_ID", &marginfi_program_id);
         set_env("MARGINFI_GROUP_KEY", &marginfi_group_key);
         set_env("ADDRESS_LOOKUP_TABLES", &address_lookup_tables);
         set_env("MIN_PROFIT", min_profit);
-        set_env("HEALTHCHECK_PORT", healthcheck_port);
         set_env("DEFAULT_TOKEN_MAX_THRESHOLD", default_token_max_threshold);
         set_env("TOKEN_DUST_THRESHOLD", token_dust_threshold);
+        set_env("UNSTABLE_SWB_FEEDS", &unstable_swb_feeds);
 
         (
             keypair,
@@ -254,12 +250,11 @@ mod tests {
             yellowstone_endpoint.to_string(),
             yellowstone_x_token.to_string(),
             compute_unit_price_micro_lamports.to_string(),
-            compute_unit_limit.to_string(),
             marginfi_program_id.to_string(),
             marginfi_group_key.to_string(),
             address_lookup_tables.to_string(),
             min_profit.to_string(),
-            healthcheck_port.to_string(),
+            unstable_swb_feeds.to_string(),
         )
     }
 

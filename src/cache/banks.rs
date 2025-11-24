@@ -25,6 +25,7 @@ impl BanksCache {
             .cloned()
     }
 
+    #[cfg(test)]
     pub fn get_bank(&self, address: &Pubkey) -> Option<BankWrapper> {
         self.try_get_bank(address).ok()
     }
