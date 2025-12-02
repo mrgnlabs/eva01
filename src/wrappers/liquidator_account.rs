@@ -8,7 +8,7 @@ use crate::{
         make_init_liquidation_record_ix, make_kamino_withdraw_ix, make_repay_ix,
         make_start_liquidate_ix, make_withdraw_ix,
     },
-    metrics::LIQUIDATION_ATTEMPTS,
+    metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
         self, check_asset_tags_matching, marginfi_account_by_authority,
         swb_cranker::is_stale_swb_price_error,
@@ -277,6 +277,9 @@ impl LiquidatorAccount {
             }
         }
 
+        LIQUIDATION_ATTEMPTS.inc();
+        let _liquidation_timer = LIQUIDATION_LATENCY_SECONDS.start_timer();
+
         let liab_token_balance =
             I80F48::from_num(self.get_token_balance_for_mint(&liab_mint).unwrap());
 
@@ -325,8 +328,6 @@ impl LiquidatorAccount {
         if contains_stale_oracles(stale_swb_oracles, &liquidatee_swb_oracles) {
             return Ok(());
         }
-
-        LIQUIDATION_ATTEMPTS.inc();
 
         let liquidation_record = if liquidatee_account.liquidation_record == Pubkey::default() {
             // warn!("IGNORING UNINITIALIZED LIQ RECORD");
@@ -499,6 +500,7 @@ impl LiquidatorAccount {
                     "Liquidation tx for the Account {} was confirmed. Signature: {}",
                     liquidatee_account_address, signature,
                 );
+                LIQUIDATION_SUCCESSES.inc();
                 Ok(())
             }
             Err(err) => {
@@ -543,6 +545,7 @@ impl LiquidatorAccount {
                                 "Liquidation tx for the Account {} was confirmed. Signature: {}",
                                 liquidatee_account_address, signature,
                             );
+                            LIQUIDATION_SUCCESSES.inc();
                             Ok(())
                         }
                         Err(err) => {
