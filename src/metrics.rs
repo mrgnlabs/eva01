@@ -50,9 +50,9 @@ lazy_static! {
     pub static ref LIQUIDATION_FAILURES: CounterVec = register_counter_vec(
         Opts::new(
             "eva01_liquidation_failures_total",
-            "Total number of liquidation failures grouped by reason"
+            "Total number of liquidation failures grouped by reason, liability mint, and oracle"
         ),
-        &["reason"]
+        &["reason", "liab_mint", "oracle"]
     );
     pub static ref ACCOUNT_SCAN_DURATION_SECONDS: Histogram = register_histogram(
         HistogramOpts::new(
@@ -77,9 +77,21 @@ pub const FAILURE_REASON_RPC_ERROR: &str = "rpc_error";
 pub const FAILURE_REASON_STALE_ORACLES: &str = "stale_oracles";
 pub const FAILURE_REASON_NOT_ENOUGH_FUNDS: &str = "not_enough_funds";
 
-pub fn record_liquidation_failure(reason: &str) {
+pub fn record_liquidation_failure(
+    reason: &str,
+    liab_mint: Option<solana_program::pubkey::Pubkey>,
+    oracle: Option<solana_program::pubkey::Pubkey>,
+) {
     FAILED_LIQUIDATIONS.inc();
-    LIQUIDATION_FAILURES.with_label_values(&[reason]).inc();
+    let mint_str = liab_mint
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let oracle_str = oracle
+        .map(|o| o.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    LIQUIDATION_FAILURES
+        .with_label_values(&[reason, &mint_str, &oracle_str])
+        .inc();
 }
 
 fn register_counter(opts: Opts) -> Counter {

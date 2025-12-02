@@ -523,7 +523,7 @@
                         "uid": "${DS_PROMETHEUS}"
                     },
                     "expr": "rate(eva01_eva01_liquidation_failures_total{reason=\"not_enough_funds\"}[5m])",
-                    "legendFormat": "Not Enough Funds",
+                    "legendFormat": "Not Enough Funds - {{liab_mint}}",
                     "refId": "A"
                 },
                 {
@@ -532,7 +532,7 @@
                         "uid": "${DS_PROMETHEUS}"
                     },
                     "expr": "rate(eva01_eva01_liquidation_failures_total{reason=\"rpc_error\"}[5m])",
-                    "legendFormat": "RPC Error",
+                    "legendFormat": "RPC Error - {{liab_mint}}",
                     "refId": "B"
                 },
                 {
@@ -541,7 +541,7 @@
                         "uid": "${DS_PROMETHEUS}"
                     },
                     "expr": "rate(eva01_eva01_liquidation_failures_total{reason=\"stale_oracles\"}[5m])",
-                    "legendFormat": "Stale Oracles",
+                    "legendFormat": "Stale Oracle - {{oracle}}",
                     "refId": "C"
                 },
                 {
@@ -550,7 +550,7 @@
                         "uid": "${DS_PROMETHEUS}"
                     },
                     "expr": "rate(eva01_eva01_liquidation_failures_total{reason=\"internal\"}[5m])",
-                    "legendFormat": "Internal Error",
+                    "legendFormat": "Internal Error - {{liab_mint}}",
                     "refId": "D"
                 }
             ],
@@ -1314,11 +1314,11 @@
                         "uid": "${DS_PROMETHEUS}"
                     },
                     "expr": "eva01_eva01_liquidation_failures_total",
-                    "legendFormat": "{{reason}}",
+                    "legendFormat": "{{reason}} - liab:{{liab_mint}} oracle:{{oracle}}",
                     "refId": "A"
                 }
             ],
-            "title": "Liquidation Failure Reasons (Total)",
+            "title": "Liquidation Failure Reasons by Asset/Oracle (Total)",
             "type": "bargauge"
         }
     ],

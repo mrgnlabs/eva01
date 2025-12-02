@@ -121,6 +121,14 @@ impl Liquidator {
                 let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
                 let mut tokens_in_shortage: HashSet<Pubkey> = HashSet::new();
                 for acc in accounts {
+                    // Get the liability mint for metrics
+                    let liab_mint = self
+                        .cache
+                        .banks
+                        .try_get_bank(&acc.liab_bank)
+                        .ok()
+                        .map(|bank| bank.bank.mint);
+
                     if let Err(e) = self.liquidator_account.liquidate(
                         &acc,
                         &stale_swb_oracles,
@@ -137,19 +145,30 @@ impl Liquidator {
                                 } else {
                                     FAILURE_REASON_INTERNAL
                                 };
-                                record_liquidation_failure(reason);
+                                record_liquidation_failure(reason, liab_mint, None);
                                 ERROR_COUNT.inc();
                             }
                             LiquidationError::StaleOracles(swb_oracles) => {
                                 stale_swb_oracles.extend(&swb_oracles);
-                                record_liquidation_failure(FAILURE_REASON_STALE_ORACLES);
+                                // Record each stale oracle separately, or just the first one
+                                // Recording the first one is simpler and still useful for debugging
+                                let oracle = swb_oracles.first().copied();
+                                record_liquidation_failure(
+                                    FAILURE_REASON_STALE_ORACLES,
+                                    None,
+                                    oracle,
+                                );
                             }
                             LiquidationError::NotEnoughFunds => {
                                 missing_tokens
                                     .entry(acc.liab_bank)
                                     .and_modify(|m| *m += acc.liab_amount)
                                     .or_insert(acc.liab_amount);
-                                record_liquidation_failure(FAILURE_REASON_NOT_ENOUGH_FUNDS);
+                                record_liquidation_failure(
+                                    FAILURE_REASON_NOT_ENOUGH_FUNDS,
+                                    liab_mint,
+                                    None,
+                                );
                             }
                         }
                     }

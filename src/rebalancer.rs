@@ -1,9 +1,11 @@
 use crate::{
     cache::Cache,
     config::{Eva01Config, TokenThresholds},
-    utils::{self},
+    metrics::{record_liquidation_failure, FAILURE_REASON_STALE_ORACLES},
+    utils::{self, swb_cranker::is_stale_swb_price_error},
     wrappers::{
-        liquidator_account::LiquidatorAccount, oracle::OracleWrapper,
+        liquidator_account::LiquidatorAccount,
+        oracle::{OracleWrapper, OracleWrapperTrait},
         token_account::TokenAccountWrapper,
     },
 };
@@ -16,7 +18,9 @@ use jupiter_swap_api_client::{
     JupiterSwapApiClient,
 };
 use log::{error, info, warn};
-use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
+use solana_client::{
+    client_error::ClientError, rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig,
+};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     account::ReadableAccount, commitment_config::CommitmentLevel, signature::Keypair,
@@ -93,12 +97,20 @@ impl Rebalancer {
         info!("Running the Rebalancing process...");
 
         // TODO: expand directly in this function?
-        self.handle_token_accounts(missing_tokens)
-            .map_err(|e| error!("Failed to handle the Liquidator's tokens: {}", e))
-            .unwrap_or_default();
+        if let Err(e) = self.handle_token_accounts(missing_tokens) {
+            error!("Failed to handle the Liquidator's tokens: {}", e);
+            // Note: Stale oracle errors from withdraw operations are now handled
+            // inside handle_token_accounts where we have access to the bank context
+        }
 
         if let Err(error) = self.deposit_preferred_token() {
-            error!("Failed to deposit preferred token: {}", error)
+            error!("Failed to deposit preferred token: {}", error);
+            // Check if this is a stale oracle error and record it in metrics
+            if let Some(client_err) = error.downcast_ref::<ClientError>() {
+                if is_stale_swb_price_error(client_err) {
+                    record_liquidation_failure(FAILURE_REASON_STALE_ORACLES, None, None);
+                }
+            }
         }
 
         info!("The Rebalancing process is complete.");
@@ -122,13 +134,28 @@ impl Rebalancer {
         if necessary_swap_value > existing_swap_value {
             let swap_bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank)?;
 
+            // Get the oracle address for this bank in case we need it for error tracking
+            let oracle = OracleWrapper::build(&self.cache, &self.swap_mint_bank)
+                .ok()
+                .map(|ow| ow.get_address());
+
             // Withdraw 5% more to account for slippage and price changes
             let amount = swap_wrapper
                 .get_amount_from_value(necessary_swap_value - existing_swap_value)?
                 .checked_mul(SLIPPAGE_MULTIPLIER)
                 .unwrap();
-            self.liquidator_account
-                .withdraw(&swap_bank_wrapper, amount.to_num(), false)?;
+            if let Err(e) =
+                self.liquidator_account
+                    .withdraw(&swap_bank_wrapper, amount.to_num(), false)
+            {
+                // Check if this is a stale oracle error and record it in metrics
+                if let Some(client_err) = e.downcast_ref::<ClientError>() {
+                    if is_stale_swb_price_error(client_err) {
+                        record_liquidation_failure(FAILURE_REASON_STALE_ORACLES, None, oracle);
+                    }
+                }
+                return Err(e);
+            }
         }
 
         self.buy_missing_tokens(swap_wrapper, missing_mint_to_value)
@@ -241,11 +268,23 @@ impl Rebalancer {
         );
 
         let bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank)?;
+
+        // Get the oracle address for this bank in case we need it for error tracking
+        let oracle = OracleWrapper::build(&self.cache, &self.swap_mint_bank)
+            .ok()
+            .map(|ow| ow.get_address());
+
         if let Err(error) = self.liquidator_account.deposit(&bank_wrapper, amount) {
             error!(
                 "Failed to deposit to the Bank ({:?}): {:?}",
                 &self.swap_mint_bank, error
             );
+            // Check if this is a stale oracle error and record it in metrics
+            if let Some(client_err) = error.downcast_ref::<ClientError>() {
+                if is_stale_swb_price_error(client_err) {
+                    record_liquidation_failure(FAILURE_REASON_STALE_ORACLES, None, oracle);
+                }
+            }
         }
 
         Ok(())
