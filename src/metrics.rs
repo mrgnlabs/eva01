@@ -1,7 +1,8 @@
 use anyhow::Context;
 use lazy_static::lazy_static;
 use prometheus::{
-    Counter, CounterVec, Encoder, Histogram, HistogramOpts, IntGauge, Opts, Registry, TextEncoder,
+    CounterVec, Encoder, Histogram, HistogramOpts, IntCounter as Counter, IntGauge, Opts, Registry,
+    TextEncoder,
 };
 
 lazy_static! {

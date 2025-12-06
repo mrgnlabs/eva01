@@ -4,8 +4,7 @@ use crate::{
     metrics::{record_liquidation_failure, FAILURE_REASON_STALE_ORACLES},
     utils::{self, swb_cranker::is_stale_swb_price_error},
     wrappers::{
-        liquidator_account::LiquidatorAccount,
-        oracle::{OracleWrapper, OracleWrapperTrait},
+        liquidator_account::LiquidatorAccount, oracle::OracleWrapper,
         token_account::TokenAccountWrapper,
     },
 };
@@ -135,9 +134,7 @@ impl Rebalancer {
             let swap_bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank)?;
 
             // Get the oracle address for this bank in case we need it for error tracking
-            let oracle = OracleWrapper::build(&self.cache, &self.swap_mint_bank)
-                .ok()
-                .map(|ow| ow.get_address());
+            let oracle = swap_bank_wrapper.bank.config.oracle_keys[0];
 
             // Withdraw 5% more to account for slippage and price changes
             let amount = swap_wrapper
@@ -151,7 +148,11 @@ impl Rebalancer {
                 // Check if this is a stale oracle error and record it in metrics
                 if let Some(client_err) = e.downcast_ref::<ClientError>() {
                     if is_stale_swb_price_error(client_err) {
-                        record_liquidation_failure(FAILURE_REASON_STALE_ORACLES, None, oracle);
+                        record_liquidation_failure(
+                            FAILURE_REASON_STALE_ORACLES,
+                            None,
+                            Some(oracle),
+                        );
                     }
                 }
                 return Err(e);
@@ -270,9 +271,7 @@ impl Rebalancer {
         let bank_wrapper = self.cache.banks.try_get_bank(&self.swap_mint_bank)?;
 
         // Get the oracle address for this bank in case we need it for error tracking
-        let oracle = OracleWrapper::build(&self.cache, &self.swap_mint_bank)
-            .ok()
-            .map(|ow| ow.get_address());
+        let oracle = bank_wrapper.bank.config.oracle_keys[0];
 
         if let Err(error) = self.liquidator_account.deposit(&bank_wrapper, amount) {
             error!(
@@ -282,7 +281,7 @@ impl Rebalancer {
             // Check if this is a stale oracle error and record it in metrics
             if let Some(client_err) = error.downcast_ref::<ClientError>() {
                 if is_stale_swb_price_error(client_err) {
-                    record_liquidation_failure(FAILURE_REASON_STALE_ORACLES, None, oracle);
+                    record_liquidation_failure(FAILURE_REASON_STALE_ORACLES, None, Some(oracle));
                 }
             }
         }

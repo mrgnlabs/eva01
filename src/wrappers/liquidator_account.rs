@@ -234,6 +234,8 @@ impl LiquidatorAccount {
             ..
         } = account;
 
+        LIQUIDATION_ATTEMPTS.inc();
+
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
         let liquidatee_account_address = liquidatee_account.address;
         participating_accounts.insert(liquidatee_account_address);
@@ -276,9 +278,6 @@ impl LiquidatorAccount {
                 return Ok(());
             }
         }
-
-        LIQUIDATION_ATTEMPTS.inc();
-        let _liquidation_timer = LIQUIDATION_LATENCY_SECONDS.start_timer();
 
         let liab_token_balance =
             I80F48::from_num(self.get_token_balance_for_mint(&liab_mint).unwrap());
@@ -482,6 +481,8 @@ impl LiquidatorAccount {
             asset_amount.to_num::<u64>(),
             liab_amount.to_num::<u64>()
         );
+
+        let _liquidation_timer = LIQUIDATION_LATENCY_SECONDS.start_timer();
 
         // TODO: refactor this!
         match self

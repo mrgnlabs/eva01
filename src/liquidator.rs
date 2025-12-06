@@ -150,7 +150,6 @@ impl Liquidator {
                             }
                             LiquidationError::StaleOracles(swb_oracles) => {
                                 stale_swb_oracles.extend(&swb_oracles);
-                                // Record each stale oracle separately, or just the first one
                                 // Recording the first one is simpler and still useful for debugging
                                 let oracle = swb_oracles.first().copied();
                                 record_liquidation_failure(
@@ -210,7 +209,7 @@ impl Liquidator {
         let scan_started = Instant::now();
         let mut total_scanned: u64 = 0;
 
-        let evaluation_result: Result<Vec<PreparedLiquidatableAccount>> = (|| {
+        let evaluation_result = {
             let mut index: usize = 0;
             let mut result: Vec<PreparedLiquidatableAccount> = vec![];
             while index < self.cache.marginfi_accounts.len()? {
@@ -245,16 +244,16 @@ impl Liquidator {
             }
 
             Ok(result)
-        })();
+        };
 
         LIQUIDATION_SCAN_IN_PROGRESS.set(0);
         ACCOUNT_SCAN_DURATION_SECONDS.observe(scan_started.elapsed().as_secs_f64());
-        ACCOUNTS_SCANNED_TOTAL.inc_by(total_scanned as f64);
+        ACCOUNTS_SCANNED_TOTAL.inc_by(total_scanned);
 
         match &evaluation_result {
             Ok(accounts) => {
                 LIQUIDATABLE_ACCOUNTS_FOUND.set(accounts.len() as i64);
-                LIQUIDATABLE_ACCOUNTS_FOUND_TOTAL.inc_by(accounts.len() as f64);
+                LIQUIDATABLE_ACCOUNTS_FOUND_TOTAL.inc_by(accounts.len() as u64);
             }
             Err(_) => {
                 LIQUIDATABLE_ACCOUNTS_FOUND.set(0);
