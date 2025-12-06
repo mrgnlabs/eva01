@@ -21,6 +21,8 @@ pub struct Eva01Config {
     pub address_lookup_tables: Vec<Pubkey>,
     pub min_profit: f64,
     pub healthcheck_port: u16,
+    pub metrics_bind_addr: String,
+    pub metrics_port: u16,
     pub crossbar_api_url: Option<String>,
     pub jup_swap_api_url: String,
     pub swap_mint: Pubkey,
@@ -76,6 +78,13 @@ impl Eva01Config {
             .parse()
             .expect("Invalid HEALTHCHECK_PORT number");
 
+        let metrics_bind_addr =
+            std::env::var("METRICS_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let metrics_port: u16 = std::env::var("METRICS_PORT")
+            .expect("METRICS_PORT environment variable is not set")
+            .parse()
+            .expect("Invalid METRICS_PORT number");
+
         let crossbar_api_url = std::env::var("CROSSBAR_API_URL").ok();
 
         let jup_swap_api_url = std::env::var("JUP_SWAP_API_URL")
@@ -121,6 +130,8 @@ impl Eva01Config {
             address_lookup_tables,
             min_profit,
             healthcheck_port,
+            metrics_bind_addr,
+            metrics_port,
             crossbar_api_url,
             jup_swap_api_url,
             swap_mint,
@@ -186,39 +197,18 @@ fn parse_pubkey_list(env_var: &str) -> anyhow::Result<Vec<Pubkey>> {
 
 #[cfg(test)]
 mod tests {
+    use figment::Jail;
     use serial_test::serial;
     use solana_sdk::signature::Keypair;
 
     use super::*;
 
-    use std::env;
-
-    fn set_env(key: &str, value: &str) {
-        env::set_var(key, value);
-    }
-
-    fn unset_env(key: &str) {
-        env::remove_var(key);
-    }
-
-    fn setup_general_env() -> (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    ) {
+    fn setup_general_env(jail: &mut Jail) {
         let keypair = serde_json::to_string(&Keypair::new().to_bytes().to_vec()).unwrap();
 
         let rpc_url = "http://dummy:1234";
         let yellowstone_endpoint = "http://dummy:1234";
         let yellowstone_x_token = "token";
-        let keypair = keypair;
         let compute_unit_price_micro_lamports = "1000";
         let marginfi_program_id = Pubkey::new_unique().to_string();
         let marginfi_group_key = Pubkey::new_unique().to_string();
@@ -227,111 +217,123 @@ mod tests {
         let default_token_max_threshold = "10.0";
         let token_dust_threshold = "0.01";
         let unstable_swb_feeds = Pubkey::new_unique().to_string();
+        let metrics_port = "9898";
+        let healthcheck_port = "3000";
 
-        set_env("RPC_URL", rpc_url);
-        set_env("YELLOWSTONE_ENDPOINT", yellowstone_endpoint);
-        set_env("YELLOWSTONE_X_TOKEN", yellowstone_x_token);
-        set_env("WALLET_KEYPAIR", &keypair);
-        set_env(
+        jail.set_env("RPC_URL", rpc_url);
+        jail.set_env("YELLOWSTONE_ENDPOINT", yellowstone_endpoint);
+        jail.set_env("YELLOWSTONE_X_TOKEN", yellowstone_x_token);
+        jail.set_env("WALLET_KEYPAIR", &keypair);
+        jail.set_env(
             "COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
             compute_unit_price_micro_lamports,
         );
-        set_env("MARGINFI_PROGRAM_ID", &marginfi_program_id);
-        set_env("MARGINFI_GROUP_KEY", &marginfi_group_key);
-        set_env("ADDRESS_LOOKUP_TABLES", &address_lookup_tables);
-        set_env("MIN_PROFIT", min_profit);
-        set_env("DEFAULT_TOKEN_MAX_THRESHOLD", default_token_max_threshold);
-        set_env("TOKEN_DUST_THRESHOLD", token_dust_threshold);
-        set_env("UNSTABLE_SWB_FEEDS", &unstable_swb_feeds);
-
-        (
-            keypair,
-            rpc_url.to_string(),
-            yellowstone_endpoint.to_string(),
-            yellowstone_x_token.to_string(),
-            compute_unit_price_micro_lamports.to_string(),
-            marginfi_program_id.to_string(),
-            marginfi_group_key.to_string(),
-            address_lookup_tables.to_string(),
-            min_profit.to_string(),
-            unstable_swb_feeds.to_string(),
-        )
+        jail.set_env("MARGINFI_PROGRAM_ID", &marginfi_program_id);
+        jail.set_env("MARGINFI_GROUP_KEY", &marginfi_group_key);
+        jail.set_env("ADDRESS_LOOKUP_TABLES", &address_lookup_tables);
+        jail.set_env("MIN_PROFIT", min_profit);
+        jail.set_env("HEALTHCHECK_PORT", healthcheck_port);
+        jail.set_env("METRICS_BIND_ADDR", "127.0.0.1");
+        jail.set_env("METRICS_PORT", metrics_port);
+        jail.set_env("DEFAULT_TOKEN_MAX_THRESHOLD", default_token_max_threshold);
+        jail.set_env("TOKEN_DUST_THRESHOLD", token_dust_threshold);
+        jail.set_env("UNSTABLE_SWB_FEEDS", &unstable_swb_feeds);
     }
 
-    fn setup_rebalancer_env() {
-        set_env("TOKEN_ACCOUNT_DUST_THRESHOLD", "0.0001");
-        set_env("SWAP_MINT", &Pubkey::new_unique().to_string());
-        set_env("JUP_SWAP_API_URL", "https://dummy/swap");
-        set_env("SLIPPAGE_BPS", "50");
+    fn setup_rebalancer_env(jail: &mut Jail) {
+        jail.set_env("TOKEN_ACCOUNT_DUST_THRESHOLD", "0.0001");
+        jail.set_env("SWAP_MINT", &Pubkey::new_unique().to_string());
+        jail.set_env("JUP_SWAP_API_URL", "https://dummy/swap");
+        jail.set_env("SLIPPAGE_BPS", "50");
     }
 
     #[test]
     #[serial]
     fn test_parse_pubkey_list_empty() {
-        unset_env("TEST_PUBKEY_LIST");
-        let result = parse_pubkey_list("TEST_PUBKEY_LIST").unwrap();
-        assert_eq!(result.len(), 0);
+        Jail::expect_with(|_jail| {
+            // TEST_PUBKEY_LIST is not set in the jail, so it should return empty
+            let result = parse_pubkey_list("TEST_PUBKEY_LIST").unwrap();
+            assert_eq!(result.len(), 0);
+            Ok(())
+        });
     }
 
     #[test]
     #[serial]
     fn test_parse_pubkey_list_valid() {
-        set_env(
-            "TEST_PUBKEY_LIST",
-            format!(
-                "{},{}",
-                &Pubkey::new_unique().to_string(),
-                &Pubkey::new_unique().to_string()
-            )
-            .as_str(),
-        );
-        let result = parse_pubkey_list("TEST_PUBKEY_LIST").unwrap();
-        assert_eq!(result.len(), 2);
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "TEST_PUBKEY_LIST",
+                format!(
+                    "{},{}",
+                    &Pubkey::new_unique().to_string(),
+                    &Pubkey::new_unique().to_string()
+                )
+                .as_str(),
+            );
+            let result = parse_pubkey_list("TEST_PUBKEY_LIST").unwrap();
+            assert_eq!(result.len(), 2);
+            Ok(())
+        });
     }
 
     #[test]
     #[serial]
     fn test_parse_pubkey_list_invalid() {
-        set_env("TEST_PUBKEY_LIST", "invalid_pubkey");
-        let result = parse_pubkey_list("TEST_PUBKEY_LIST");
-        assert!(result.is_err());
+        Jail::expect_with(|jail| {
+            jail.set_env("TEST_PUBKEY_LIST", "invalid_pubkey");
+            let result = parse_pubkey_list("TEST_PUBKEY_LIST");
+            assert!(result.is_err());
+            Ok(())
+        });
     }
 
     #[test]
     #[serial]
     fn test_eva01_config_new_success() {
-        let _ = setup_general_env();
-        setup_rebalancer_env();
-        let config = Eva01Config::new();
-        assert!(config.is_ok());
+        Jail::expect_with(|mut jail| {
+            setup_general_env(&mut jail);
+            setup_rebalancer_env(&mut jail);
+            let config = Eva01Config::new();
+            assert!(config.is_ok());
+            Ok(())
+        });
     }
 
     #[test]
     #[serial]
     #[should_panic(expected = "RPC_URL environment variable is not set")]
     fn test_eva01_config_new_missing_env() {
-        unset_env("RPC_URL");
-        let result = Eva01Config::new();
-        assert!(result.is_err());
+        Jail::expect_with(|_jail| {
+            // RPC_URL is not set in the jail, so it should panic
+            let _result = Eva01Config::new();
+            Ok(())
+        });
     }
 
     #[test]
     #[serial]
     #[should_panic(expected = "Invalid MARGINFI_PROGRAM_ID Pubkey")]
     fn test_eva01_config_new_invalid_pubkey_env() {
-        let _ = setup_general_env();
-        setup_rebalancer_env();
-        set_env("MARGINFI_PROGRAM_ID", "not_a_pubkey");
-        Eva01Config::new().unwrap();
+        Jail::expect_with(|mut jail| {
+            setup_general_env(&mut jail);
+            setup_rebalancer_env(&mut jail);
+            jail.set_env("MARGINFI_PROGRAM_ID", "not_a_pubkey");
+            Eva01Config::new().unwrap();
+            Ok(())
+        });
     }
 
     #[test]
     #[serial]
     #[should_panic(expected = "Invalid COMPUTE_UNIT_PRICE_MICRO_LAMPORTS number")]
     fn test_eva01_config_new_invalid_compute_unit_price() {
-        let _ = setup_general_env();
-        setup_rebalancer_env();
-        set_env("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS", "not_a_number");
-        Eva01Config::new().unwrap();
+        Jail::expect_with(|mut jail| {
+            setup_general_env(&mut jail);
+            setup_rebalancer_env(&mut jail);
+            jail.set_env("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS", "not_a_number");
+            Eva01Config::new().unwrap();
+            Ok(())
+        });
     }
 }

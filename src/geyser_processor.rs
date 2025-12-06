@@ -1,6 +1,7 @@
 use crate::{
     cache::Cache,
     geyser::{AccountType, GeyserUpdate},
+    metrics::{GEYSER_TRIGGERED_SCANS_TOTAL, GEYSER_UPDATES_TOTAL},
     utils::log_genuine_error,
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
@@ -65,6 +66,7 @@ impl GeyserProcessor {
                 self.cache.oracles.try_update(&msg.address, msg_account)?;
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
+                GEYSER_TRIGGERED_SCANS_TOTAL.inc();
             }
             AccountType::Marginfi => {
                 let marginfi_account =
@@ -74,6 +76,7 @@ impl GeyserProcessor {
                     .try_insert(MarginfiAccountWrapper::new(msg.address, marginfi_account))?;
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
+                GEYSER_TRIGGERED_SCANS_TOTAL.inc();
             }
             AccountType::Token => {
                 self.cache
@@ -81,6 +84,7 @@ impl GeyserProcessor {
                     .try_update_account(msg.address, msg.account)?;
             }
         }
+        GEYSER_UPDATES_TOTAL.inc();
         Ok(())
     }
 }

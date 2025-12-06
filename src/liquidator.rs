@@ -1,7 +1,12 @@
 use crate::{
     cache::Cache,
     config::{Eva01Config, TokenThresholds},
-    metrics::{ERROR_COUNT, FAILED_LIQUIDATIONS},
+    metrics::{
+        record_liquidation_failure, ACCOUNTS_SCANNED_TOTAL, ACCOUNT_SCAN_DURATION_SECONDS,
+        ERROR_COUNT, FAILURE_REASON_INTERNAL, FAILURE_REASON_NOT_ENOUGH_FUNDS,
+        FAILURE_REASON_RPC_ERROR, FAILURE_REASON_STALE_ORACLES, LIQUIDATABLE_ACCOUNTS_FOUND,
+        LIQUIDATABLE_ACCOUNTS_FOUND_TOTAL, LIQUIDATION_SCAN_IN_PROGRESS,
+    },
     rebalancer::Rebalancer,
     utils::{calc_total_weighted_assets_liabs, swb_cranker::SwbCranker},
     wrappers::{
@@ -24,12 +29,13 @@ use marginfi_type_crate::{
     constants::BANKRUPT_THRESHOLD,
     types::{BalanceSide, BankOperationalState, RiskTier},
 };
+use solana_client::client_error::ClientError;
 use solana_program::pubkey::Pubkey;
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicBool, Arc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use std::{sync::atomic::Ordering, thread};
 
@@ -115,6 +121,14 @@ impl Liquidator {
                 let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
                 let mut tokens_in_shortage: HashSet<Pubkey> = HashSet::new();
                 for acc in accounts {
+                    // Get the liability mint for metrics
+                    let liab_mint = self
+                        .cache
+                        .banks
+                        .try_get_bank(&acc.liab_bank)
+                        .ok()
+                        .map(|bank| bank.bank.mint);
+
                     if let Err(e) = self.liquidator_account.liquidate(
                         &acc,
                         &stale_swb_oracles,
@@ -126,17 +140,34 @@ impl Liquidator {
                                     "Failed to liquidate account {:?}: {:?}",
                                     acc.liquidatee_account.address, e
                                 );
-                                FAILED_LIQUIDATIONS.inc();
+                                let reason = if e.downcast_ref::<ClientError>().is_some() {
+                                    FAILURE_REASON_RPC_ERROR
+                                } else {
+                                    FAILURE_REASON_INTERNAL
+                                };
+                                record_liquidation_failure(reason, liab_mint, None);
                                 ERROR_COUNT.inc();
                             }
                             LiquidationError::StaleOracles(swb_oracles) => {
-                                stale_swb_oracles.extend(&swb_oracles)
+                                stale_swb_oracles.extend(&swb_oracles);
+                                // Recording the first one is simpler and still useful for debugging
+                                let oracle = swb_oracles.first().copied();
+                                record_liquidation_failure(
+                                    FAILURE_REASON_STALE_ORACLES,
+                                    None,
+                                    oracle,
+                                );
                             }
                             LiquidationError::NotEnoughFunds => {
                                 missing_tokens
                                     .entry(acc.liab_bank)
                                     .and_modify(|m| *m += acc.liab_amount)
                                     .or_insert(acc.liab_amount);
+                                record_liquidation_failure(
+                                    FAILURE_REASON_NOT_ENOUGH_FUNDS,
+                                    liab_mint,
+                                    None,
+                                );
                             }
                         }
                     }
@@ -174,39 +205,62 @@ impl Liquidator {
 
     /// Checks if liquidation is needed, for each account one by one
     fn evaluate_all_accounts(&mut self) -> Result<Vec<PreparedLiquidatableAccount>> {
-        let mut index: usize = 0;
-        let mut result: Vec<PreparedLiquidatableAccount> = vec![];
-        while index < self.cache.marginfi_accounts.len()? {
-            match self.cache.marginfi_accounts.try_get_account_by_index(index) {
-                Ok(account) => {
-                    if account.address == self.liquidator_account.liquidator_address {
-                        index += 1;
-                        continue;
-                    }
-                    match self.process_account(&account) {
-                        Ok(acc_opt) => {
-                            if let Some(acc) = acc_opt {
-                                result.push(acc);
+        LIQUIDATION_SCAN_IN_PROGRESS.set(1);
+        let scan_started = Instant::now();
+        let mut total_scanned: u64 = 0;
+
+        let evaluation_result = {
+            let mut index: usize = 0;
+            let mut result: Vec<PreparedLiquidatableAccount> = vec![];
+            while index < self.cache.marginfi_accounts.len()? {
+                total_scanned += 1;
+                match self.cache.marginfi_accounts.try_get_account_by_index(index) {
+                    Ok(account) => {
+                        if account.address == self.liquidator_account.liquidator_address {
+                            index += 1;
+                            continue;
+                        }
+                        match self.process_account(&account) {
+                            Ok(acc_opt) => {
+                                if let Some(acc) = acc_opt {
+                                    result.push(acc);
+                                }
+                            }
+                            Err(e) => {
+                                trace!("Failed to process account {:?}: {:?}", account.address, e);
+                                ERROR_COUNT.inc();
                             }
                         }
-                        Err(e) => {
-                            trace!("Failed to process account {:?}: {:?}", account.address, e);
-                            ERROR_COUNT.inc();
-                        }
+                    }
+                    Err(err) => {
+                        error!(
+                            "Failed to get Marginfi account by index {}: {:?}",
+                            index, err
+                        );
+                        ERROR_COUNT.inc();
                     }
                 }
-                Err(err) => {
-                    error!(
-                        "Failed to get Marginfi account by index {}: {:?}",
-                        index, err
-                    );
-                    ERROR_COUNT.inc();
-                }
+                index += 1;
             }
-            index += 1;
+
+            Ok(result)
+        };
+
+        LIQUIDATION_SCAN_IN_PROGRESS.set(0);
+        ACCOUNT_SCAN_DURATION_SECONDS.observe(scan_started.elapsed().as_secs_f64());
+        ACCOUNTS_SCANNED_TOTAL.inc_by(total_scanned);
+
+        match &evaluation_result {
+            Ok(accounts) => {
+                LIQUIDATABLE_ACCOUNTS_FOUND.set(accounts.len() as i64);
+                LIQUIDATABLE_ACCOUNTS_FOUND_TOTAL.inc_by(accounts.len() as u64);
+            }
+            Err(_) => {
+                LIQUIDATABLE_ACCOUNTS_FOUND.set(0);
+            }
         }
 
-        Ok(result)
+        evaluation_result
     }
 
     #[cfg(feature = "publish_to_db")]
