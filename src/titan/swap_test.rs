@@ -22,7 +22,7 @@ async fn test_swap_tokens() -> Result<()> {
 
     // Read output token (default: USDC)
     let output_token = std::env::var("TITAN_OUTPUT_TOKEN")
-        .unwrap_or_else(|_| "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string());
+        .unwrap_or_else(|_| "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA".to_string());
 
     // Read amount in lamports (default: 0.01 SOL = 10_000_000 lamports)
     let amount_lamports: u64 = std::env::var("TITAN_AMOUNT")
@@ -36,10 +36,21 @@ async fn test_swap_tokens() -> Result<()> {
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid TITAN_SLIPPAGE_BPS: {}", e))?;
 
+    // Log input parameters
+    println!("Swap Input:");
+    println!("  Input Token: {}", input_token);
+    println!("  Output Token: {}", output_token);
+    println!("  Amount: {} lamports", amount_lamports);
+    println!("  Slippage: {} bps", slippage_bps);
+
     let tx_id = swap_tokens(&input_token, &output_token, amount_lamports, slippage_bps).await?;
 
     // Validate that we got a transaction ID
     assert!(!tx_id.is_empty(), "Transaction ID should not be empty");
+
+    // Log output
+    println!("Swap Output:");
+    println!("  Transaction ID: {}", tx_id);
 
     Ok(())
 }
