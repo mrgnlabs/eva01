@@ -48,6 +48,9 @@ mod clock_manager;
 mod cache;
 mod cache_loader;
 
+/// Titan swap functionality
+mod titan;
+
 declare_program!(kamino_lending);
 declare_program!(kamino_farms);
 
