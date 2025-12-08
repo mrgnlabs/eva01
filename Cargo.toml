@@ -29,6 +29,7 @@ anchor-client = { version = "0.31.1" }
 anyhow = "1.0.79"
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bincode = "1.3.3"
+dotenv = "0.15"
 bytemuck = "1.22.0"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 env_logger = "0.11.3"
@@ -55,9 +56,13 @@ tiny_http = "0.12"
 signal-hook = "0.3.18"
 ctrlc = "3.4.7"
 
-postgres = { version = "0.19.10", optional = true, features = ["with-chrono-0_4"] }
+postgres = { version = "0.19.10", optional = true, features = [
+  "with-chrono-0_4",
+] }
 tokio-postgres-rustls = { version = "=0.12", optional = true }
-rustls = { version = "0.23.31", optional = true, default-features = false, features = ["std"] }
+rustls = { version = "0.23.31", optional = true, default-features = false, features = [
+  "std",
+] }
 rustls-native-certs = { version = "0.8.1", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 
@@ -73,6 +78,7 @@ features = ["mainnet-beta", "client", "no-entrypoint"]
 
 [dev-dependencies]
 serial_test = "3.2.0"
+figment = { version = "0.10", features = ["test"] }
 
 [profile.release]
 opt-level = 3

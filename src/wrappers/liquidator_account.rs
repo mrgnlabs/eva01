@@ -8,7 +8,7 @@ use crate::{
         make_init_liquidation_record_ix, make_kamino_withdraw_ix, make_repay_ix,
         make_start_liquidate_ix, make_withdraw_ix,
     },
-    metrics::LIQUIDATION_ATTEMPTS,
+    metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
         self, check_asset_tags_matching, marginfi_account_by_authority,
         swb_cranker::is_stale_swb_price_error,
@@ -234,6 +234,8 @@ impl LiquidatorAccount {
             ..
         } = account;
 
+        LIQUIDATION_ATTEMPTS.inc();
+
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
         let liquidatee_account_address = liquidatee_account.address;
         participating_accounts.insert(liquidatee_account_address);
@@ -325,8 +327,6 @@ impl LiquidatorAccount {
         if contains_stale_oracles(stale_swb_oracles, &liquidatee_swb_oracles) {
             return Ok(());
         }
-
-        LIQUIDATION_ATTEMPTS.inc();
 
         let liquidation_record = if liquidatee_account.liquidation_record == Pubkey::default() {
             // warn!("IGNORING UNINITIALIZED LIQ RECORD");
@@ -482,6 +482,8 @@ impl LiquidatorAccount {
             liab_amount.to_num::<u64>()
         );
 
+        let _liquidation_timer = LIQUIDATION_LATENCY_SECONDS.start_timer();
+
         // TODO: refactor this!
         match self
             .rpc_client
@@ -499,6 +501,7 @@ impl LiquidatorAccount {
                     "Liquidation tx for the Account {} was confirmed. Signature: {}",
                     liquidatee_account_address, signature,
                 );
+                LIQUIDATION_SUCCESSES.inc();
                 Ok(())
             }
             Err(err) => {
@@ -543,6 +546,7 @@ impl LiquidatorAccount {
                                 "Liquidation tx for the Account {} was confirmed. Signature: {}",
                                 liquidatee_account_address, signature,
                             );
+                            LIQUIDATION_SUCCESSES.inc();
                             Ok(())
                         }
                         Err(err) => {
