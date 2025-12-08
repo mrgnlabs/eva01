@@ -65,8 +65,17 @@ jobs:
             --platform linux/amd64 \
             --cache-from type=registry,ref=us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:build-cache \
             --cache-to type=registry,ref=us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:build-cache,mode=max \
-            --push \
+            --load \
             .
+
+      - name: Push Image
+        run: |
+          # Tag for registry
+          docker tag ${{ matrix.app }}:stage us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:${{ github.event.inputs.environment }}
+          docker tag ${{ matrix.app }}:${{ steps.vars.outputs.sha_short }} us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:${{ steps.vars.outputs.sha_short }}
+          # Push to registry
+          docker push us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:${{ github.event.inputs.environment }}
+          docker push us-central1-docker.pkg.dev/mrgn-shared/shared-artifact-registry/${{ matrix.app }}:${{ steps.vars.outputs.sha_short }}
 
   tag-to-prod:
     name: Tag Images to Prod
