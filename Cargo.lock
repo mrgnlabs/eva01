@@ -674,6 +674,7 @@ dependencies = [
 [[package]]
 name = "atlas"
 version = "0.1.0"
+source = "git+https://github.com/0dotxyz/atlas-titan?tag=v1.0.0#dcb9d2f4822726918089b6c2d3629320648266d8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

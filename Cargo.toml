@@ -57,7 +57,7 @@ signal-hook = "0.3.18"
 ctrlc = "3.4.7"
 
 # Titan swap dependencies
-atlas = { path = "/Users/fenrir/Documents/Github/abdulrabbani/atlas-titan" }
+atlas = { git = "https://github.com/0dotxyz/atlas-titan", tag = "v1.0.0" }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 serde_yaml = "0.9"
