@@ -15,6 +15,7 @@ use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
 
 /// Configuration for Titan swap client
+#[derive(Clone, Debug)]
 pub struct TitanSwapConfig {
     /// Solana RPC endpoint URL
     pub rpc_url: String,
