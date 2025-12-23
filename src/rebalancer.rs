@@ -2,6 +2,7 @@ use crate::{
     cache::Cache,
     config::{Eva01Config, TokenThresholds},
     metrics::{record_liquidation_failure, FAILURE_REASON_STALE_ORACLES},
+    titan::{TitanSwapClient, TitanSwapConfig},
     utils::{self, swb_cranker::is_stale_swb_price_error},
     wrappers::{
         liquidator_account::LiquidatorAccount, oracle::OracleWrapper,
@@ -46,6 +47,7 @@ pub struct Rebalancer {
     cache: Arc<Cache>,
     default_token_max_threshold: I80F48,
     token_thresholds: HashMap<Pubkey, TokenThresholds>,
+    titan_swap_config: TitanSwapConfig,
 }
 
 impl Rebalancer {
@@ -76,6 +78,14 @@ impl Rebalancer {
         let default_token_max_threshold = config.default_token_max_threshold;
         let token_thresholds = config.token_thresholds;
 
+        let titan_swap_config = TitanSwapConfig {
+            rpc_url: config.rpc_url.clone(),
+            titan_ws_endpoint: config.titan_ws_endpoint.clone(),
+            titan_api_key: Some(config.titan_api_key.clone()),
+            wallet_keypair: signer.to_bytes().to_vec(),
+            hermes_endpoint: None,
+        };
+
         Ok(Self {
             signer,
             liquidator_account,
@@ -89,6 +99,7 @@ impl Rebalancer {
             cache,
             default_token_max_threshold,
             token_thresholds,
+            titan_swap_config,
         })
     }
 
@@ -289,7 +300,52 @@ impl Rebalancer {
         Ok(())
     }
 
+    /// For now, we will try to always use Titan. If it fails, we will try Jupiter.
+    /// Titan has redemption built it.
+    /// Still in testing so I will validate if this is the logic we want or if we should simulate both and see which performs better.
     fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {
+        let titan_amount = self
+            .tokio_rt
+            .block_on(self.swap_titan(amount, input_mint, output_mint))
+            .map_err(|e| anyhow::anyhow!("Failed to swap: {}", e));
+
+        match titan_amount {
+            Ok(amount) => return Ok(amount),
+            Err(e) => {
+                error!("Titan swap failed: {}", e);
+            }
+        }
+        let jupiter_amount = self.swap_jupiter(amount, input_mint, output_mint)?;
+        Ok(jupiter_amount)
+    }
+
+    async fn swap_titan(
+        &self,
+        amount: u64,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+    ) -> anyhow::Result<u64> {
+        let client = TitanSwapClient::new(self.titan_swap_config.clone()).await?;
+        let (_, route) = client
+            .swap(
+                &input_mint.to_string(),
+                &output_mint.to_string(),
+                amount,
+                self.slippage_bps,
+            )
+            .await?;
+        client.close().await?;
+        Ok(route.out_amount)
+    }
+
+    // Add more functionality here
+    // Simulate swap for both venues. See which gives you a better price, prefer titan if its the same...
+    fn swap_jupiter(
+        &self,
+        amount: u64,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+    ) -> anyhow::Result<u64> {
         if input_mint == output_mint {
             return Err(anyhow::anyhow!(
                 "Jupiter swap failed: input and output mints cannot be the same: {:?}",
@@ -336,6 +392,7 @@ impl Rebalancer {
             amount, input_mint, out_amount, output_mint
         );
 
+        // Consider removing the spinner...
         let sig = self
             .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
