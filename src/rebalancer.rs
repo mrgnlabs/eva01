@@ -16,7 +16,7 @@ use jupiter_swap_api_client::{
     transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
     JupiterSwapApiClient,
 };
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use solana_client::{
     client_error::ClientError, rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig,
 };
@@ -149,7 +149,6 @@ impl Rebalancer {
                 self.liquidator_account
                     .withdraw(&swap_bank_wrapper, amount.to_num(), false)
             {
-
                 // Check if this is a stale oracle error and record it in metrics
                 if let Some(client_err) = e.downcast_ref::<ClientError>() {
                     if is_stale_swb_price_error(client_err) {
@@ -163,7 +162,6 @@ impl Rebalancer {
                 return Err(e);
             }
         }
-
 
         self.buy_missing_tokens(swap_wrapper, missing_mint_to_value)
     }
