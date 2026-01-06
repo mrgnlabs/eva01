@@ -37,7 +37,6 @@ fixed = "1.28.0"
 fixed-macro = "1.2.0"
 futures = "0.3.30"
 futures-sink = "0.3.30"
-jupiter-swap-api-client = { git = "https://github.com/jup-ag/jupiter-swap-api-client", branch = "2.1" }
 lazy_static = "1.5.0"
 log = "0.4.21"
 rayon = "1.10.0"
@@ -75,6 +74,10 @@ package = "marginfi-type-crate"
 git = "https://github.com/mrgnlabs/marginfi-v2"
 tag = "mrgn-0.1.6-rc2"
 features = ["mainnet-beta", "client", "no-entrypoint"]
+
+[dependencies.jupiter-swap-api-client]
+git = "https://github.com/IliaZyrin/jupiter-swap-api-client"
+rev = "6e209786084a4344538a1aa695f126169fa95022"
 
 [dev-dependencies]
 serial_test = "3.2.0"
