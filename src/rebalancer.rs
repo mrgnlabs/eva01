@@ -10,22 +10,14 @@ use crate::{
 };
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use jupiter_swap_api_client::{
-    quote::QuoteRequest,
-    swap::SwapRequest,
-    transaction_config::{ComputeUnitPriceMicroLamports, TransactionConfig},
-    JupiterSwapApiClient,
-};
 use log::{error, info, warn};
-use solana_client::{
-    client_error::ClientError, rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig,
+use solana_client::client_error::ClientError;
+use solana_dex_superagg::{
+    client::DexSuperAggClient,
+    config::{ClientConfig, JupiterConfig, RoutingStrategy, SharedConfig, TitanConfig},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::{
-    account::ReadableAccount, commitment_config::CommitmentLevel, signature::Keypair,
-    transaction::VersionedTransaction,
-};
-use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
+use solana_sdk::account::ReadableAccount;
 use std::{collections::HashMap, sync::Arc};
 use tokio::runtime::{Builder, Runtime};
 
@@ -34,19 +26,14 @@ const SLIPPAGE_MULTIPLIER: I80F48 = I80F48!(1.05);
 /// The rebalancer is responsible to maintain the appropriate amounts of tokens on token accounts.
 /// Guided primarily by token_thresholds and specific requests from the liquidator.
 pub struct Rebalancer {
-    signer: Keypair,
     liquidator_account: Arc<LiquidatorAccount>,
-    rpc_client: RpcClient,
     swap_mint: Pubkey,
     swap_mint_bank: Pubkey,
-    jup_swap_api_url: String,
-    jup_swap_api_key: String,
-    slippage_bps: u16,
-    compute_unit_price_micro_lamports: ComputeUnitPriceMicroLamports,
     tokio_rt: Runtime,
     cache: Arc<Cache>,
     default_token_max_threshold: I80F48,
     token_thresholds: HashMap<Pubkey, TokenThresholds>,
+    dex_client: Arc<DexSuperAggClient>,
 }
 
 impl Rebalancer {
@@ -55,19 +42,8 @@ impl Rebalancer {
         liquidator_account: Arc<LiquidatorAccount>,
         cache: Arc<Cache>,
     ) -> anyhow::Result<Self> {
-        let signer = Keypair::from_bytes(&config.wallet_keypair)?;
-
-        let rpc_client =
-            RpcClient::new_with_commitment(&config.rpc_url, CommitmentConfig::confirmed());
-
         let swap_mint = config.swap_mint;
         let swap_mint_bank = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
-
-        let jup_swap_api_url = config.jup_swap_api_url.clone();
-        let jup_swap_api_key = config.jup_swap_api_key.clone();
-        let slippage_bps = config.slippage_bps;
-        let compute_unit_price_micro_lamports =
-            ComputeUnitPriceMicroLamports::MicroLamports(config.compute_unit_price_micro_lamports);
 
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("rebalancer")
@@ -78,20 +54,46 @@ impl Rebalancer {
         let default_token_max_threshold = config.default_token_max_threshold;
         let token_thresholds = config.token_thresholds;
 
+        // Convert wallet keypair to JSON string format expected by solana-dex-superagg
+        let wallet_keypair_str = serde_json::to_string(&config.wallet_keypair)?;
+
+        // Create ClientConfig for DexSuperAggClient
+        let shared_config = SharedConfig {
+            rpc_url: config.rpc_url.clone(),
+            slippage_bps: config.slippage_bps,
+            wallet_keypair: Some(wallet_keypair_str),
+            compute_unit_price_micro_lamports: config.compute_unit_price_micro_lamports,
+            routing_strategy: Some(RoutingStrategy::BestPrice),
+            retry_tx_landing: 3,
+        };
+
+        let jupiter_config = JupiterConfig {
+            jup_swap_api_url: config.jup_swap_api_url.clone(),
+            api_key: Some(config.jupiter_api_key.clone()),
+        };
+
+        let titan_config = Some(TitanConfig {
+            titan_ws_endpoint: config.titan_ws_endpoint.clone(),
+            titan_api_key: Some(config.titan_api_key.clone()),
+        });
+
+        let client_config = ClientConfig {
+            shared: shared_config,
+            jupiter: jupiter_config,
+            titan: titan_config,
+        };
+
+        let dex_client = Arc::new(DexSuperAggClient::new(client_config)?);
+
         Ok(Self {
-            signer,
             liquidator_account,
-            rpc_client,
             swap_mint,
             swap_mint_bank,
-            jup_swap_api_url,
-            jup_swap_api_key,
-            slippage_bps,
-            compute_unit_price_micro_lamports,
             tokio_rt,
             cache,
             default_token_max_threshold,
             token_thresholds,
+            dex_client,
         })
     }
 
@@ -293,70 +295,36 @@ impl Rebalancer {
         Ok(())
     }
 
+    /// Execute a swap using the unified DEX aggregator client with best price strategy
     fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {
         if input_mint == output_mint {
             return Err(anyhow::anyhow!(
-                "Jupiter swap failed: input and output mints cannot be the same: {:?}",
+                "Swap failed: input and output mints cannot be the same: {:?}",
                 input_mint
             ));
         }
-        info!("Jupiter swap: {} -> {}", input_mint, output_mint);
-        let jup_swap_client = JupiterSwapApiClient::new(
-            self.jup_swap_api_url.clone(),
-            self.jup_swap_api_key.clone(),
-        )?;
-
-        let quote_response = self
-            .tokio_rt
-            .block_on(jup_swap_client.quote(&QuoteRequest {
-                input_mint,
-                output_mint,
-                amount,
-                slippage_bps: self.slippage_bps,
-                ..Default::default()
-            }))?;
-
-        let out_amount = quote_response.out_amount;
-
-        let swap = self.tokio_rt.block_on(jup_swap_client.swap(
-            &SwapRequest {
-                user_public_key: self.signer.pubkey(),
-                quote_response,
-                config: TransactionConfig {
-                    wrap_and_unwrap_sol: false,
-                    compute_unit_price_micro_lamports: Some(
-                        self.compute_unit_price_micro_lamports.clone(),
-                    ),
-                    ..Default::default()
-                },
-            },
-            None,
-        ))?;
-
-        let mut tx = bincode::deserialize::<VersionedTransaction>(&swap.swap_transaction)
-            .map_err(|_| anyhow::anyhow!("Failed to deserialize"))?;
-
-        tx = VersionedTransaction::try_new(tx.message, &[&self.signer])?;
 
         info!(
-            "Swapping unscaled {} tokens of mint {} to {} tokens of mint {} ...",
-            amount, input_mint, out_amount, output_mint
+            "Swapping {} tokens of mint {} to mint {} ...",
+            amount, input_mint, output_mint
         );
 
-        let sig = self
-            .rpc_client
-            .send_and_confirm_transaction_with_spinner_and_config(
-                &tx,
-                CommitmentConfig::finalized(),
-                RpcSendTransactionConfig {
-                    skip_preflight: false,
-                    preflight_commitment: Some(CommitmentLevel::Processed),
-                    ..Default::default()
-                },
-            )?;
-        info!("The swap txn is finalized. Sig: {:?}", sig);
+        let result = self.tokio_rt.block_on(self.dex_client.swap(
+            &input_mint.to_string(),
+            &output_mint.to_string(),
+            amount,
+        ))?;
 
-        Ok(out_amount)
+        info!(
+            "Swap successful! Transaction: {}, Output: {} tokens of mint {}",
+            result.signature, result.out_amount, output_mint
+        );
+
+        if let Some(agg) = result.aggregator_used {
+            info!("Aggregator used: {:?}", agg);
+        }
+
+        Ok(result.out_amount)
     }
 
     fn get_token_balance_for_mint(&self, mint_address: &Pubkey) -> Option<I80F48> {

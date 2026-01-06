@@ -32,6 +32,9 @@ pub struct Eva01Config {
     pub default_token_max_threshold: I80F48,
     pub token_dust_threshold: I80F48,
     pub unstable_swb_feeds: Vec<Pubkey>,
+    pub titan_ws_endpoint: String,
+    pub titan_api_key: String,
+    pub jupiter_api_key: String,
 }
 
 impl Eva01Config {
@@ -122,6 +125,14 @@ impl Eva01Config {
         let unstable_swb_feeds: Vec<Pubkey> =
             parse_pubkey_list("UNSTABLE_SWB_FEEDS").unwrap_or_else(|_| vec![]);
 
+        let titan_ws_endpoint = std::env::var("TITAN_WS_ENDPOINT")
+            .expect("TITAN_WS_ENDPOINT environment variable is not set");
+        let titan_api_key =
+            std::env::var("TITAN_API_KEY").expect("TITAN_API_KEY environment variable is not set");
+
+        let jupiter_api_key = std::env::var("JUPITER_API_KEY")
+            .expect("JUPITER_API_KEY environment variable is not set");
+
         Ok(Eva01Config {
             rpc_url,
             yellowstone_endpoint,
@@ -144,6 +155,9 @@ impl Eva01Config {
             default_token_max_threshold,
             token_dust_threshold,
             unstable_swb_feeds,
+            titan_ws_endpoint,
+            titan_api_key,
+            jupiter_api_key,
         })
     }
 }
@@ -248,7 +262,9 @@ mod tests {
         jail.set_env("TOKEN_ACCOUNT_DUST_THRESHOLD", "0.0001");
         jail.set_env("SWAP_MINT", &Pubkey::new_unique().to_string());
         jail.set_env("JUP_SWAP_API_URL", "https://dummy/swap");
-        jail.set_env("JUP_SWAP_API_KEY", "API_KEY");
+        jail.set_env("JUPITER_API_KEY", "dummy_jupiter_api_key");
+        jail.set_env("TITAN_WS_ENDPOINT", "dummy.titan.exchange");
+        jail.set_env("TITAN_API_KEY", "dummy_titan_api_key");
         jail.set_env("SLIPPAGE_BPS", "50");
     }
 
