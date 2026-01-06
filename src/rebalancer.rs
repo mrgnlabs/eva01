@@ -40,6 +40,7 @@ pub struct Rebalancer {
     swap_mint: Pubkey,
     swap_mint_bank: Pubkey,
     jup_swap_api_url: String,
+    jup_swap_api_key: String,
     slippage_bps: u16,
     compute_unit_price_micro_lamports: ComputeUnitPriceMicroLamports,
     tokio_rt: Runtime,
@@ -63,6 +64,7 @@ impl Rebalancer {
         let swap_mint_bank = cache.banks.try_get_account_for_mint(&config.swap_mint)?;
 
         let jup_swap_api_url = config.jup_swap_api_url.clone();
+        let jup_swap_api_key = config.jup_swap_api_key.clone();
         let slippage_bps = config.slippage_bps;
         let compute_unit_price_micro_lamports =
             ComputeUnitPriceMicroLamports::MicroLamports(config.compute_unit_price_micro_lamports);
@@ -83,6 +85,7 @@ impl Rebalancer {
             swap_mint,
             swap_mint_bank,
             jup_swap_api_url,
+            jup_swap_api_key,
             slippage_bps,
             compute_unit_price_micro_lamports,
             tokio_rt,
@@ -141,6 +144,7 @@ impl Rebalancer {
                 .get_amount_from_value(necessary_swap_value - existing_swap_value)?
                 .checked_mul(SLIPPAGE_MULTIPLIER)
                 .unwrap();
+
             if let Err(e) =
                 self.liquidator_account
                     .withdraw(&swap_bank_wrapper, amount.to_num(), false)
@@ -297,7 +301,10 @@ impl Rebalancer {
             ));
         }
         info!("Jupiter swap: {} -> {}", input_mint, output_mint);
-        let jup_swap_client = JupiterSwapApiClient::new(self.jup_swap_api_url.clone());
+        let jup_swap_client = JupiterSwapApiClient::new(
+            self.jup_swap_api_url.clone(),
+            self.jup_swap_api_key.clone(),
+        )?;
 
         let quote_response = self
             .tokio_rt

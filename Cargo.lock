@@ -3058,8 +3058,8 @@ dependencies = [
 
 [[package]]
 name = "jupiter-swap-api-client"
-version = "0.1.0"
-source = "git+https://github.com/jup-ag/jupiter-swap-api-client?branch=2.1#bc60bd010f72b93dce6b2b6f82c2b727b6b97e43"
+version = "0.2.0"
+source = "git+https://github.com/IliaZyrin/jupiter-swap-api-client?rev=6e209786084a4344538a1aa695f126169fa95022#6e209786084a4344538a1aa695f126169fa95022"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3070,7 +3070,7 @@ dependencies = [
  "serde_qs",
  "solana-account-decoder",
  "solana-sdk",
- "thiserror 2.0.12",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
