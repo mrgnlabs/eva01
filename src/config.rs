@@ -25,7 +25,6 @@ pub struct Eva01Config {
     pub metrics_port: u16,
     pub crossbar_api_url: Option<String>,
     pub jup_swap_api_url: String,
-    pub jup_swap_api_key: String,
     pub swap_mint: Pubkey,
     pub slippage_bps: u16,
     pub token_thresholds: HashMap<Pubkey, TokenThresholds>,
@@ -93,8 +92,6 @@ impl Eva01Config {
 
         let jup_swap_api_url = std::env::var("JUP_SWAP_API_URL")
             .expect("JUP_SWAP_API_URL environment variable is not set");
-        let jup_swap_api_key = std::env::var("JUP_SWAP_API_KEY")
-            .expect("JUP_SWAP_API_KEY environment variable is not set");
 
         let slippage_bps: u16 = std::env::var("SLIPPAGE_BPS")
             .expect("SLIPPAGE_BPS environment variable is not set")
@@ -148,7 +145,6 @@ impl Eva01Config {
             metrics_port,
             crossbar_api_url,
             jup_swap_api_url,
-            jup_swap_api_key,
             swap_mint,
             slippage_bps,
             token_thresholds,
