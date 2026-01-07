@@ -5776,7 +5776,7 @@ dependencies = [
 [[package]]
 name = "solana-dex-superagg"
 version = "1.0.0"
-source = "git+https://github.com/abdulrabbani00/solana-dex-superagg?tag=v1.0.1#7d9c39534d0fff8d96c434619d8c82c31f29aacc"
+source = "git+https://github.com/abdulrabbani00/solana-dex-superagg?tag=v1.1.0#9d24fae893e6c81f7015c67022c8f63dd3b9761c"
 dependencies = [
  "anyhow",
  "async-trait",

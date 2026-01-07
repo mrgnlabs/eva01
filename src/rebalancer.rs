@@ -17,7 +17,7 @@ use solana_dex_superagg::{
     config::{ClientConfig, JupiterConfig, RoutingStrategy, SharedConfig, TitanConfig},
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account::ReadableAccount;
+use solana_sdk::{account::ReadableAccount, commitment_config::CommitmentLevel};
 use std::{collections::HashMap, sync::Arc};
 use tokio::runtime::{Builder, Runtime};
 
@@ -65,6 +65,7 @@ impl Rebalancer {
             compute_unit_price_micro_lamports: config.compute_unit_price_micro_lamports,
             routing_strategy: Some(RoutingStrategy::BestPrice),
             retry_tx_landing: 3,
+            commitment_level: CommitmentLevel::Confirmed,
         };
 
         let jupiter_config = JupiterConfig {
@@ -317,14 +318,14 @@ impl Rebalancer {
 
         info!(
             "Swap successful! Transaction: {}, Output: {} tokens of mint {}",
-            result.signature, result.out_amount, output_mint
+            result.swap_result.signature, result.swap_result.out_amount, output_mint
         );
 
-        if let Some(agg) = result.aggregator_used {
+        if let Some(agg) = result.swap_result.aggregator_used {
             info!("Aggregator used: {:?}", agg);
         }
 
-        Ok(result.out_amount)
+        Ok(result.swap_result.out_amount)
     }
 
     fn get_token_balance_for_mint(&self, mint_address: &Pubkey) -> Option<I80F48> {
