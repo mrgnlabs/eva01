@@ -17,7 +17,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::{Builder, Runtime};
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
@@ -71,9 +71,6 @@ impl RateLimitedLogger {
     fn log_error_and_check_break(&self, message: &str) -> bool {
         // Increment error counter for metrics
         ERROR_COUNT.inc();
-
-        let now = Instant::now();
-        let window_duration = Duration::from_secs(RATE_LIMIT_LOG_INTERVAL_SECS);
 
         // Calculate current minute bucket (seconds since epoch / 60)
         let current_minute_bucket = SystemTime::now()
@@ -130,7 +127,7 @@ impl RateLimitedLogger {
     }
 }
 
-/// Geyser service is responsible for receiving and distrubuting the
+/// Geyser service is responsible for receiving and distributing the
 /// messages to the other services.
 pub struct GeyserService {
     endpoint: String,
