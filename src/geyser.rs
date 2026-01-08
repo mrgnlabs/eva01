@@ -11,13 +11,13 @@ use marginfi_type_crate::types::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::Account, clock::Clock};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     mem::size_of,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::{Builder, Runtime};
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
@@ -49,24 +49,25 @@ pub enum AccountType {
 }
 
 /// Rate-limited logger that logs messages at most once per minute.
-/// Tracks error count within a rolling 60-second window and returns true if the error rate exceeds the threshold.
+/// Tracks error count per minute and returns true if the error rate exceeds the threshold.
 struct RateLimitedLogger {
-    last_log_time: Arc<Mutex<Option<Instant>>>,
-    // Sliding window of error timestamps within the last 60 seconds
-    error_timestamps: Arc<Mutex<VecDeque<Instant>>>,
+    // Tracks the last minute bucket we logged for (None = never logged)
+    last_logged_minute: Arc<Mutex<Option<u64>>>,
+    // Tracks errors per minute bucket: (minute_bucket, error_count)
+    error_tracker: Arc<Mutex<(u64, u64)>>,
 }
 
 impl RateLimitedLogger {
     fn new() -> Self {
         Self {
-            last_log_time: Arc::new(Mutex::new(None)),
-            error_timestamps: Arc::new(Mutex::new(VecDeque::new())),
+            last_logged_minute: Arc::new(Mutex::new(None)),
+            error_tracker: Arc::new(Mutex::new((0, 0))),
         }
     }
 
     /// Logs the error message if enough time has passed since the last log.
-    /// Tracks errors within a rolling 60-second window and returns true if we should break the connection
-    /// (too many errors within any 60-second window).
+    /// Tracks errors per minute and returns true if we should break the connection
+    /// (more than MAX_ERRORS_PER_MINUTE errors in a minute).
     fn log_error_and_check_break(&self, message: &str) -> bool {
         // Increment error counter for metrics
         ERROR_COUNT.inc();
@@ -74,39 +75,43 @@ impl RateLimitedLogger {
         let now = Instant::now();
         let window_duration = Duration::from_secs(RATE_LIMIT_LOG_INTERVAL_SECS);
 
-        // Update error timestamps and check threshold atomically
-        let (should_break, error_count_in_window) = {
-            let mut timestamps = self.error_timestamps.lock().unwrap();
+        // Calculate current minute bucket (seconds since epoch / 60)
+        let current_minute_bucket = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / RATE_LIMIT_LOG_INTERVAL_SECS;
 
-            // Remove timestamps older than the window
-            while let Some(&oldest) = timestamps.front() {
-                if now.duration_since(oldest) > window_duration {
-                    timestamps.pop_front();
-                } else {
-                    break;
-                }
-            }
+        // Update error count for current minute and check threshold
+        let (should_break, error_count) = {
+            let mut tracker = self.error_tracker.lock().unwrap();
+            let (minute_bucket, error_count) = *tracker;
 
-            // Add current error timestamp
-            timestamps.push_back(now);
+            // If we're in a new minute, reset the counter
+            let error_count = if minute_bucket != current_minute_bucket {
+                *tracker = (current_minute_bucket, 1);
+                1
+            } else {
+                *tracker = (minute_bucket, error_count + 1);
+                error_count + 1
+            };
 
-            let count = timestamps.len() as u64;
-            let should_break = count > MAX_ERRORS_PER_MINUTE;
-
-            (should_break, count)
+            let should_break = error_count > MAX_ERRORS_PER_MINUTE;
+            (should_break, error_count)
         };
 
-        // Check if we should log (rate-limited to once per minute)
+        // Check if we should log (rate-limited to once per minute bucket)
+        // Log when we enter a new minute bucket, or immediately on first error
         let should_log = {
-            let mut last_log_time = self.last_log_time.lock().unwrap();
+            let mut last_logged_minute = self.last_logged_minute.lock().unwrap();
 
-            let should_log = match *last_log_time {
-                Some(last_time) => now.duration_since(last_time) >= window_duration,
-                None => true,
+            let should_log = match *last_logged_minute {
+                Some(last_minute) => current_minute_bucket != last_minute,
+                None => true, // First log: log immediately
             };
 
             if should_log {
-                *last_log_time = Some(now);
+                *last_logged_minute = Some(current_minute_bucket);
                 true
             } else {
                 false
@@ -114,11 +119,8 @@ impl RateLimitedLogger {
         };
 
         if should_log {
-            if error_count_in_window > 1 {
-                warn!(
-                    "{} ({} errors in the last {} seconds)",
-                    message, error_count_in_window, RATE_LIMIT_LOG_INTERVAL_SECS
-                );
+            if error_count > 1 {
+                warn!("{} ({} errors in the current minute)", message, error_count);
             } else {
                 warn!("{}", message);
             }
