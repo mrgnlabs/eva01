@@ -1,9 +1,12 @@
-use crate::{clock_manager, config::Eva01Config, utils::account_update_to_account, ward};
+use crate::{
+    clock_manager, config::Eva01Config, metrics::ERROR_COUNT, utils::account_update_to_account,
+    ward,
+};
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
 use crossbeam::channel::Sender;
 use futures::StreamExt;
-use log::{error, info, trace};
+use log::{error, info, trace, warn};
 use marginfi_type_crate::types::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::Account, clock::Clock};
@@ -11,15 +14,18 @@ use std::{
     collections::HashMap,
     mem::size_of,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::{Duration, Instant},
 };
 use tokio::runtime::{Builder, Runtime};
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::prelude::*;
 
 const MARGIN_ACCOUNT_SIZE: usize = size_of::<MarginfiAccount>() + 8;
+const RATE_LIMIT_LOG_INTERVAL_SECS: u64 = 60;
+const MAX_ERRORS_PER_MINUTE: u64 = 5;
 
 /// Struct that is used to communicate between geyser and other services
 /// in the Eva
@@ -42,6 +48,67 @@ pub enum AccountType {
     Token,
 }
 
+/// Rate-limited logger that logs messages at most once per minute.
+/// Tracks error count and returns true if the error rate exceeds the threshold.
+struct RateLimitedLogger {
+    last_log_time: Arc<Mutex<Option<Instant>>>,
+    error_count: Arc<AtomicU64>,
+}
+
+impl RateLimitedLogger {
+    fn new() -> Self {
+        Self {
+            last_log_time: Arc::new(Mutex::new(None)),
+            error_count: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Logs the error message if enough time has passed since the last log.
+    /// Increments the error counter and returns true if we should break the connection
+    /// (too many errors within a minute).
+    fn log_error_and_check_break(&self, message: &str) -> bool {
+        // Increment error counter for metrics
+        ERROR_COUNT.inc();
+
+        let error_count = self.error_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+        // Check if we've exceeded the error threshold before checking log timing
+        let should_break = error_count > MAX_ERRORS_PER_MINUTE;
+
+        let should_log = {
+            let mut last_log_time = self.last_log_time.lock().unwrap();
+            let now = Instant::now();
+
+            let should_log = match *last_log_time {
+                Some(last_time) => {
+                    now.duration_since(last_time)
+                        >= Duration::from_secs(RATE_LIMIT_LOG_INTERVAL_SECS)
+                }
+                None => true,
+            };
+
+            if should_log {
+                *last_log_time = Some(now);
+                true
+            } else {
+                false
+            }
+        };
+
+        if should_log {
+            if error_count > 1 {
+                warn!("{} ({} errors since last log)", message, error_count);
+            } else {
+                warn!("{}", message);
+            }
+            // Reset counter after logging
+            self.error_count.store(0, Ordering::Relaxed);
+        }
+
+        should_break
+    }
+}
+
 /// Geyser service is responsible for receiving and distrubuting the
 /// messages to the other services.
 pub struct GeyserService {
@@ -54,6 +121,7 @@ pub struct GeyserService {
     tokio_rt: Runtime,
     stop: Arc<AtomicBool>,
     clock: Arc<Mutex<Clock>>,
+    error_logger: RateLimitedLogger,
 }
 
 impl GeyserService {
@@ -80,6 +148,7 @@ impl GeyserService {
             tokio_rt,
             stop,
             clock,
+            error_logger: RateLimitedLogger::new(),
         })
     }
 
@@ -149,7 +218,21 @@ impl GeyserService {
                         }
                     }
                     Err(error) => {
-                        error!("Received error message from Geyser! {:?}", error);
+                        // Log with rate limiting and check if we should break
+                        let should_break = self.error_logger.log_error_and_check_break(&format!(
+                            "Received error message from Geyser, reconnecting: {:?}",
+                            error
+                        ));
+
+                        // Break the inner loop to force reconnection
+                        // The outer loop will reconnect automatically
+                        if should_break {
+                            warn!(
+                                "Too many errors (>{}) in one minute, forcing reconnection",
+                                MAX_ERRORS_PER_MINUTE
+                            );
+                        }
+                        break;
                     }
                 }
 
