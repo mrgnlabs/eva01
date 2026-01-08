@@ -11,10 +11,10 @@ use marginfi_type_crate::types::MarginfiAccount;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::Account, clock::Clock};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     mem::size_of,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -49,41 +49,59 @@ pub enum AccountType {
 }
 
 /// Rate-limited logger that logs messages at most once per minute.
-/// Tracks error count and returns true if the error rate exceeds the threshold.
+/// Tracks error count within a rolling 60-second window and returns true if the error rate exceeds the threshold.
 struct RateLimitedLogger {
     last_log_time: Arc<Mutex<Option<Instant>>>,
-    error_count: Arc<AtomicU64>,
+    // Sliding window of error timestamps within the last 60 seconds
+    error_timestamps: Arc<Mutex<VecDeque<Instant>>>,
 }
 
 impl RateLimitedLogger {
     fn new() -> Self {
         Self {
             last_log_time: Arc::new(Mutex::new(None)),
-            error_count: Arc::new(AtomicU64::new(0)),
+            error_timestamps: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
     /// Logs the error message if enough time has passed since the last log.
-    /// Increments the error counter and returns true if we should break the connection
-    /// (too many errors within a minute).
+    /// Tracks errors within a rolling 60-second window and returns true if we should break the connection
+    /// (too many errors within any 60-second window).
     fn log_error_and_check_break(&self, message: &str) -> bool {
         // Increment error counter for metrics
         ERROR_COUNT.inc();
 
-        let error_count = self.error_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let now = Instant::now();
+        let window_duration = Duration::from_secs(RATE_LIMIT_LOG_INTERVAL_SECS);
 
-        // Check if we've exceeded the error threshold before checking log timing
-        let should_break = error_count > MAX_ERRORS_PER_MINUTE;
+        // Update error timestamps and check threshold atomically
+        let (should_break, error_count_in_window) = {
+            let mut timestamps = self.error_timestamps.lock().unwrap();
 
+            // Remove timestamps older than the window
+            while let Some(&oldest) = timestamps.front() {
+                if now.duration_since(oldest) > window_duration {
+                    timestamps.pop_front();
+                } else {
+                    break;
+                }
+            }
+
+            // Add current error timestamp
+            timestamps.push_back(now);
+
+            let count = timestamps.len() as u64;
+            let should_break = count > MAX_ERRORS_PER_MINUTE;
+
+            (should_break, count)
+        };
+
+        // Check if we should log (rate-limited to once per minute)
         let should_log = {
             let mut last_log_time = self.last_log_time.lock().unwrap();
-            let now = Instant::now();
 
             let should_log = match *last_log_time {
-                Some(last_time) => {
-                    now.duration_since(last_time)
-                        >= Duration::from_secs(RATE_LIMIT_LOG_INTERVAL_SECS)
-                }
+                Some(last_time) => now.duration_since(last_time) >= window_duration,
                 None => true,
             };
 
@@ -96,13 +114,14 @@ impl RateLimitedLogger {
         };
 
         if should_log {
-            if error_count > 1 {
-                warn!("{} ({} errors since last log)", message, error_count);
+            if error_count_in_window > 1 {
+                warn!(
+                    "{} ({} errors in the last {} seconds)",
+                    message, error_count_in_window, RATE_LIMIT_LOG_INTERVAL_SECS
+                );
             } else {
                 warn!("{}", message);
             }
-            // Reset counter after logging
-            self.error_count.store(0, Ordering::Relaxed);
         }
 
         should_break
