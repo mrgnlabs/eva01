@@ -37,6 +37,7 @@ fixed = "1.28.0"
 fixed-macro = "1.2.0"
 futures = "0.3.30"
 futures-sink = "0.3.30"
+solana-dex-superagg = { git = "https://github.com/abdulrabbani00/solana-dex-superagg", tag = "v1.1.1" }
 lazy_static = "1.5.0"
 log = "0.4.21"
 rayon = "1.10.0"
