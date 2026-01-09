@@ -127,8 +127,8 @@ impl Eva01Config {
         let titan_api_key =
             std::env::var("TITAN_API_KEY").expect("TITAN_API_KEY environment variable is not set");
 
-        let jupiter_api_key = std::env::var("JUPITER_API_KEY")
-            .expect("JUPITER_API_KEY environment variable is not set");
+        let jupiter_api_key = std::env::var("JUP_SWAP_API_KEY")
+            .expect("JUP_SWAP_API_KEY environment variable is not set");
 
         Ok(Eva01Config {
             rpc_url,
