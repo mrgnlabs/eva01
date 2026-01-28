@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anchor_lang::{Id, InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::token_2022;
@@ -14,10 +16,15 @@ use solana_sdk::{
 };
 
 use crate::{
-    cache::KaminoReserve,
+    cache::{DriftSpotMarket, KaminoReserve},
+    drift::program::Drift,
     kamino_farms::program::Farms as KaminoFarms,
     kamino_lending::program::KaminoLending,
-    utils::{find_bank_liquidity_vault_authority, kamino::derive_user_state},
+    utils::{
+        drift::{derive_drift_signer, derive_drift_state, derive_spot_market_vault},
+        find_bank_liquidity_vault_authority,
+        kamino::derive_user_state,
+    },
     wrappers::{bank::BankWrapper, mint::MintWrapper},
 };
 
@@ -58,6 +65,7 @@ pub fn make_start_liquidate_ix(
     liquidator_account: Pubkey,
     liquidation_record: Pubkey,
     observation_accounts: &[Pubkey],
+    participating_accounts: &mut HashSet<Pubkey>,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::StartLiquidation {
         marginfi_account: liquidatee_account,
@@ -73,6 +81,8 @@ pub fn make_start_liquidate_ix(
             .iter()
             .map(|a| AccountMeta::new_readonly(a.key(), false)),
     );
+
+    participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
         program_id: marginfi_program_id,
@@ -125,6 +135,7 @@ pub fn make_repay_ix(
     mint_wrapper: &MintWrapper,
     amount: u64,
     repay_all: bool,
+    participating_accounts: &mut HashSet<Pubkey>,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountRepay {
         marginfi_account,
@@ -138,6 +149,8 @@ pub fn make_repay_ix(
     .to_account_metas(None);
     maybe_add_bank_mint(&mut accounts, bank.bank.mint, &mint_wrapper.account.owner);
     mark_signer(&mut accounts, signer);
+
+    participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
         program_id: marginfi_program_id,
@@ -161,6 +174,7 @@ pub fn make_withdraw_ix(
     observation_accounts: &[Pubkey],
     amount: u64,
     withdraw_all: bool,
+    participating_accounts: Option<&mut HashSet<Pubkey>>,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::LendingAccountWithdraw {
         marginfi_account,
@@ -190,6 +204,10 @@ pub fn make_withdraw_ix(
             .map(|a| AccountMeta::new_readonly(a.key(), false)),
     );
 
+    if let Some(participating_accounts) = participating_accounts {
+        participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
+    }
+
     Instruction {
         program_id: marginfi_program_id,
         accounts,
@@ -209,6 +227,7 @@ pub fn make_end_liquidate_ix(
     fee_state: Pubkey,
     global_fee_wallet: Pubkey,
     observation_accounts: &[Pubkey],
+    participating_accounts: &mut HashSet<Pubkey>,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::EndLiquidation {
         marginfi_account: liquidatee_account,
@@ -226,6 +245,8 @@ pub fn make_end_liquidate_ix(
             .iter()
             .map(|a| AccountMeta::new_readonly(a.key(), false)),
     );
+
+    participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
         program_id: marginfi_program_id,
@@ -323,10 +344,11 @@ pub fn make_kamino_withdraw_ix(
     remaining: &[Pubkey],
     amount: u64,
     withdraw_all: bool,
+    participating_accounts: &mut HashSet<Pubkey>,
 ) -> Instruction {
     let (reserve_farm_state, obligation_farm_user_state) =
         if kamino_reserve.reserve.farm_collateral == Pubkey::default() {
-            (None, None)
+            (Some(marginfi_program_id), Some(marginfi_program_id))
         } else {
             (
                 Some(kamino_reserve.reserve.farm_collateral),
@@ -349,9 +371,9 @@ pub fn make_kamino_withdraw_ix(
             &marginfi_program_id,
         ),
         liquidity_vault: bank.bank.liquidity_vault,
-        kamino_obligation,
+        integration_acc_2: kamino_obligation,
         lending_market_authority: kamino_reserve.lending_market_authority,
-        kamino_reserve: kamino_reserve.address,
+        integration_acc_1: kamino_reserve.address,
         reserve_liquidity_mint: kamino_reserve.reserve.liquidity.mint_pubkey,
         reserve_liquidity_supply: kamino_reserve.reserve.liquidity.supply_vault,
         reserve_collateral_mint: kamino_reserve.reserve.collateral.mint_pubkey,
@@ -373,10 +395,105 @@ pub fn make_kamino_withdraw_ix(
             .map(|a| AccountMeta::new_readonly(*a, false)),
     );
 
+    participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
+
     Instruction {
         program_id: marginfi_program_id,
         accounts,
         data: marginfi::instruction::KaminoWithdraw {
+            amount,
+            withdraw_all: Some(withdraw_all),
+        }
+        .data(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn make_drift_withdraw_ix(
+    marginfi_program_id: Pubkey,
+    group: Pubkey,
+    marginfi_account: Pubkey,
+    authority: Pubkey,
+    bank: &BankWrapper,
+    mint_wrapper: &MintWrapper,
+    drift_spot_market: &DriftSpotMarket,
+    reward_spot_market: Option<&DriftSpotMarket>,
+    reward_spot_market_2: Option<&DriftSpotMarket>,
+    remaining: &[Pubkey],
+    amount: u64,
+    withdraw_all: bool,
+    participating_accounts: &mut HashSet<Pubkey>,
+) -> Instruction {
+    let drift_oracle = if bank.bank.mint
+        == Pubkey::from_str_const("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+    {
+        Some(marginfi_program_id)
+    } else {
+        Some(drift_spot_market.market.oracle)
+    };
+
+    assert_eq!(
+        derive_spot_market_vault(drift_spot_market.market.market_index),
+        drift_spot_market.market.vault
+    );
+
+    let mut accounts = marginfi::accounts::DriftWithdraw {
+        group,
+        marginfi_account,
+        authority,
+        bank: bank.address,
+        drift_oracle,
+        liquidity_vault_authority: find_bank_liquidity_vault_authority(
+            &bank.address,
+            &marginfi_program_id,
+        ),
+        liquidity_vault: bank.bank.liquidity_vault,
+        destination_token_account: mint_wrapper.token,
+        drift_state: derive_drift_state(),
+        integration_acc_1: bank.bank.integration_acc_1, // spot market
+        integration_acc_2: bank.bank.integration_acc_2, // user
+        integration_acc_3: bank.bank.integration_acc_3, // user stats
+        drift_spot_market_vault: drift_spot_market.market.vault,
+        drift_reward_oracle: reward_spot_market
+            .map(|m| m.market.oracle)
+            .or(Some(marginfi_program_id)),
+        drift_reward_spot_market: reward_spot_market
+            .map(|m| m.address)
+            .or(Some(marginfi_program_id)),
+        drift_reward_mint: reward_spot_market
+            .map(|m| m.market.mint)
+            .or(Some(marginfi_program_id)),
+        drift_reward_oracle_2: reward_spot_market_2
+            .map(|m| m.market.oracle)
+            .or(Some(marginfi_program_id)),
+        drift_reward_spot_market_2: reward_spot_market_2
+            .map(|m| m.address)
+            .or(Some(marginfi_program_id)),
+        drift_reward_mint_2: reward_spot_market_2
+            .map(|m| m.market.mint)
+            .or(Some(marginfi_program_id)),
+        drift_signer: derive_drift_signer(),
+        mint: bank.bank.mint,
+        drift_program: Drift::id(),
+        token_program: mint_wrapper.account.owner,
+        system_program: system_program::id(),
+    }
+    .to_account_metas(None);
+
+    mark_signer(&mut accounts, authority);
+
+    accounts.extend(
+        remaining
+            .iter()
+            .map(|a| AccountMeta::new_readonly(*a, false)),
+    );
+
+    participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
+
+    Instruction {
+        program_id: marginfi_program_id,
+        accounts,
+        data: marginfi::instruction::DriftWithdraw {
             amount,
             withdraw_all: Some(withdraw_all),
         }

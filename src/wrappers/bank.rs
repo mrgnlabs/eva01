@@ -1,10 +1,16 @@
 use crate::wrappers::oracle::OracleWrapperTrait;
 use fixed::types::I80F48;
-use marginfi::state::{
-    marginfi_account::{calc_amount, calc_value, RequirementType},
-    price::{OraclePriceType, PriceBias},
+use marginfi::{
+    constants::DRIFT_SCALED_BALANCE_DECIMALS,
+    state::{
+        marginfi_account::{calc_amount, calc_value, RequirementType},
+        price::{OraclePriceType, PriceBias},
+    },
 };
-use marginfi_type_crate::types::{BalanceSide, Bank};
+use marginfi_type_crate::{
+    constants::ASSET_TAG_DRIFT,
+    types::{BalanceSide, Bank},
+};
 use solana_program::pubkey::Pubkey;
 
 #[derive(Clone)]
@@ -76,7 +82,21 @@ impl BankWrapper {
             )
             .unwrap();
 
-        Ok(calc_value(amount, price, self.bank.mint_decimals, None)?)
+        Ok(calc_value(
+            amount,
+            price,
+            self.get_balance_decimals(),
+            None,
+        )?)
+    }
+
+    // TODO: export from type crate
+    pub fn get_balance_decimals(&self) -> u8 {
+        if self.bank.config.asset_tag == ASSET_TAG_DRIFT {
+            DRIFT_SCALED_BALANCE_DECIMALS
+        } else {
+            self.bank.mint_decimals
+        }
     }
 }
 

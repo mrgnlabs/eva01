@@ -19,7 +19,7 @@ use crate::{
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use marginfi::state::{
     bank::BankImpl,
     marginfi_account::RequirementType,
@@ -85,7 +85,7 @@ impl Liquidator {
     pub fn start(&mut self) -> Result<()> {
         // Fund the liquidator account, if needed
         if !self.liquidator_account.has_funds()? {
-            return Err(anyhow!("Liquidator has no funds."));
+            warn!("Liquidator has no funds.");
         }
 
         self.rebalancer.run(HashMap::new())?;
@@ -93,24 +93,27 @@ impl Liquidator {
         #[cfg(feature = "publish_to_db")]
         let mut supabase = SupabasePublisher::from_env()?;
 
-        #[cfg(feature = "publish_to_db")]
         let mut liquidation_rounds = 0;
 
         info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
-            info!("Waiting for any data change...");
+            debug!("Waiting for any data change...");
             if !self.run_liquidation.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_secs(1));
                 continue;
             }
 
-            #[cfg(feature = "publish_to_db")]
-            {
-                liquidation_rounds += 1;
-            }
+            liquidation_rounds += 1;
 
             info!("Running the Liquidation process...");
             self.run_liquidation.store(false, Ordering::Relaxed);
+
+            // TODO: come up with a better heuristics here
+            if liquidation_rounds % 5 == 0 {
+                if let Err(e) = self.liquidator_account.refresh_integrations() {
+                    error!("Integrations failed to refresh: {}", e);
+                }
+            }
 
             let mut missing_tokens: HashMap<Pubkey, I80F48> = HashMap::new();
             if let Ok(mut accounts) = self.evaluate_all_accounts() {
@@ -227,7 +230,7 @@ impl Liquidator {
                                 }
                             }
                             Err(e) => {
-                                trace!("Failed to process account {:?}: {:?}", account.address, e);
+                                debug!("Failed to process account {:?}: {:?}", account.address, e);
                                 ERROR_COUNT.inc();
                             }
                         }
@@ -281,8 +284,8 @@ impl Liquidator {
         &self,
         account: &MarginfiAccountWrapper,
     ) -> Result<Option<PreparedLiquidatableAccount>> {
-        let (deposit_shares, liabs_shares) = account.get_deposits_and_liabilities_shares();
-        if liabs_shares.is_empty() {
+        let (deposit_shares, liab_shares) = account.get_deposits_and_liabilities_shares();
+        if liab_shares.is_empty() {
             return Ok(None);
         }
 
@@ -293,7 +296,7 @@ impl Liquidator {
         )?;
 
         let liab_values = self.get_value_of_shares(
-            liabs_shares,
+            liab_shares,
             &BalanceSide::Liabilities,
             RequirementType::Maintenance,
         )?;
@@ -392,10 +395,9 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
-        trace!(
+        debug!(
             "Account {} maintenance_health = {:?}",
-            account.address,
-            maintenance_health
+            account.address, maintenance_health
         );
         if maintenance_health >= I80F48::ZERO {
             // TODO: revisit this crazy return type
@@ -503,10 +505,10 @@ impl Liquidator {
             RequirementType::Maintenance,
         )?;
 
-        let dust_liab_threshold = asset_bank_wrapper.calc_amount(
+        let dust_liab_threshold = liab_bank_wrapper.calc_amount(
             &liab_oracle_wrapper,
             self.token_dust_threshold, // in USD
-            BalanceSide::Assets,
+            BalanceSide::Liabilities,
             RequirementType::Equity,
         )?;
 

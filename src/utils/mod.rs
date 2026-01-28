@@ -1,3 +1,4 @@
+pub mod drift;
 pub mod healthcheck;
 pub mod kamino;
 #[cfg(feature = "publish_to_db")]
@@ -10,6 +11,7 @@ use fixed::types::I80F48;
 use log::{debug, error};
 use marginfi::{
     bank_authority_seed,
+    constants::DRIFT_SCALED_BALANCE_DECIMALS,
     errors::MarginfiError,
     state::{
         bank::{BankImpl, BankVaultType},
@@ -19,7 +21,9 @@ use marginfi::{
     },
 };
 use marginfi_type_crate::{
-    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED},
+    constants::{
+        ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED,
+    },
     types::{
         reconcile_emode_configs, Balance, BalanceSide, Bank, BankConfig, EmodeConfig,
         LendingAccount, RiskTier,
@@ -355,10 +359,16 @@ pub fn calc_weighted_bank_assets(
         }
     }
 
+    let decimals = if bank.config.asset_tag == ASSET_TAG_DRIFT {
+        DRIFT_SCALED_BALANCE_DECIMALS
+    } else {
+        bank.mint_decimals
+    };
+
     Ok(calc_value(
         amount,
         lower_price,
-        bank.mint_decimals,
+        decimals,
         Some(asset_weight),
     )?)
 }
@@ -412,10 +422,15 @@ pub fn calc_weighted_bank_liabs(
         bank.config.oracle_max_confidence,
     )?;
 
+    let decimals = if bank.config.asset_tag == ASSET_TAG_DRIFT {
+        DRIFT_SCALED_BALANCE_DECIMALS
+    } else {
+        bank.mint_decimals
+    };
     Ok(calc_value(
         amount,
         higher_price,
-        bank.mint_decimals,
+        decimals,
         Some(liability_weight),
     )?)
 }

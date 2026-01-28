@@ -12,44 +12,32 @@ use std::{
 #[cfg(not(feature = "pretty_logs"))]
 use {env_logger::Target, log::Level, std::io::Write as _};
 
-/// Prometheus metrics
-mod metrics;
-
-/// Geyser service
+mod cache;
+mod cache_loader;
+mod cli;
+mod clock_manager;
+mod config;
+mod drift_ixs;
 mod geyser;
 mod geyser_processor;
-
 mod kamino_ixs;
-/// IXs for marginfi and Kamino
-mod marginfi_ixs;
-
-/// Liquidator is responsible to liquidate MarginfiAccounts
 mod liquidator;
-
-/// Rebalancer is responsible to rebalance the liquidator account
+mod marginfi_ixs;
+mod metrics;
 mod rebalancer;
-
-/// Wrappers around marginfi structs
+mod utils;
 #[warn(clippy::type_complexity)]
 mod wrappers;
 
-/// Utilities used by Eva01
-mod utils;
-
-/// CLI configuration for the Eva01
-mod cli;
-
-/// Configuration strectures for Eva01
-mod config;
-
-/// Solana Clock manager
-mod clock_manager;
-
-mod cache;
-mod cache_loader;
-
 declare_program!(kamino_lending);
 declare_program!(kamino_farms);
+
+#[allow(clippy::too_many_arguments)]
+mod drift_idl {
+    anchor_lang::declare_program!(drift);
+}
+
+use drift_idl::*;
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
