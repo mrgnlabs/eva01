@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use marginfi_type_crate::types::Bank;
+use marginfi_type_crate::{
+    constants::{ASSET_TAG_DRIFT, ASSET_TAG_KAMINO},
+    types::Bank,
+};
 use solana_sdk::pubkey::Pubkey;
 
 use crate::{utils::find_oracle_keys, wrappers::bank::BankWrapper};
@@ -41,10 +44,36 @@ impl BanksCache {
         self.banks
             .iter()
             .filter_map(|(_, bank)| {
-                if bank.bank.kamino_reserve == Pubkey::default() {
-                    None
+                if bank.bank.config.asset_tag == ASSET_TAG_KAMINO {
+                    Some(bank.bank.integration_acc_1)
                 } else {
-                    Some(bank.bank.kamino_reserve)
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_drift_spot_markets(&self) -> HashSet<Pubkey> {
+        self.banks
+            .iter()
+            .filter_map(|(_, bank)| {
+                if bank.bank.config.asset_tag == ASSET_TAG_DRIFT {
+                    Some(bank.bank.integration_acc_1)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_drift_users(&self) -> HashSet<Pubkey> {
+        self.banks
+            .iter()
+            .filter_map(|(_, bank)| {
+                if bank.bank.config.asset_tag == ASSET_TAG_DRIFT {
+                    Some(bank.bank.integration_acc_2)
+                } else {
+                    None
                 }
             })
             .collect()

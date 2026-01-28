@@ -23,7 +23,8 @@ use solana_sdk::{
 };
 
 use crate::{
-    cache::{Cache, KaminoReserve},
+    cache::{Cache, DriftSpotMarket, KaminoReserve},
+    drift,
     geyser::AccountType,
     kamino_lending,
     utils::{
@@ -71,6 +72,8 @@ impl CacheLoader {
         self.load_oracles(cache)?;
         self.load_tokens(cache)?;
         self.load_kamino_reserves(cache)?;
+        self.load_drift_spot_markets(cache)?;
+        self.load_drift_users(cache)?;
 
         Ok(())
     }
@@ -428,6 +431,73 @@ impl CacheLoader {
         }
 
         info!("Loaded {} Kamino Reserves.", cache.kamino_reserves.len());
+
+        Ok(())
+    }
+
+    fn load_drift_spot_markets(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        info!("Loading Drift Spot Markets...");
+
+        let spot_market_addresses = cache
+            .banks
+            .get_drift_spot_markets()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let spot_market_accounts = batch_get_multiple_accounts(
+            &self.rpc_client,
+            &spot_market_addresses,
+            BatchLoadingConfig::DEFAULT,
+        )?;
+
+        for (&address, account) in spot_market_addresses
+            .iter()
+            .zip(spot_market_accounts.iter())
+        {
+            if let Some(account) = account {
+                debug!("Loaded the Drift Spot Market: {:?}", address);
+                let mut data: &[u8] = &account.data;
+                let market = drift::accounts::SpotMarket::try_deserialize(&mut data)?;
+
+                cache
+                    .drift_markets
+                    .insert(address, DriftSpotMarket { address, market });
+            } else {
+                error!("Spot Market account {:?} not found.", address);
+            }
+        }
+
+        info!("Loaded {} Drift Spot Markets.", cache.drift_markets.len());
+
+        Ok(())
+    }
+
+    fn load_drift_users(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        info!("Loading Drift Users...");
+
+        let user_addresses = cache
+            .banks
+            .get_drift_users()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let user_accounts = batch_get_multiple_accounts(
+            &self.rpc_client,
+            &user_addresses,
+            BatchLoadingConfig::DEFAULT,
+        )?;
+
+        for (&address, account) in user_addresses.iter().zip(user_accounts.iter()) {
+            if let Some(account) = account {
+                debug!("Loaded the Drift User: {:?}", address);
+                let mut data: &[u8] = &account.data;
+                let user = drift::accounts::User::try_deserialize(&mut data)?;
+
+                cache.drift_users.insert(address, user);
+            } else {
+                error!("User account {:?} not found.", address);
+            }
+        }
+
+        info!("Loaded {} Drift Users.", cache.drift_users.len());
 
         Ok(())
     }

@@ -1706,6 +1706,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
+name = "drift-mocks"
+version = "0.1.0"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.7-rc2#4a2768beba4f4b6a6c3e1ba3e314c6da6fc2fcba"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "fixed",
+ "fixed-macro",
+ "static_assertions",
+]
+
+[[package]]
 name = "eager"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2810,7 +2822,7 @@ dependencies = [
 [[package]]
 name = "id-crate"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc2#22bc9f76bb73d8c8f3adff2d4f476993c2c14466"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.7-rc2#4a2768beba4f4b6a6c3e1ba3e314c6da6fc2fcba"
 dependencies = [
  "anchor-lang",
  "cfg-if",
@@ -3084,7 +3096,7 @@ dependencies = [
 [[package]]
 name = "kamino-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc2#22bc9f76bb73d8c8f3adff2d4f476993c2c14466"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.7-rc2#4a2768beba4f4b6a6c3e1ba3e314c6da6fc2fcba"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -3268,14 +3280,15 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "marginfi"
-version = "0.1.6"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc2#22bc9f76bb73d8c8f3adff2d4f476993c2c14466"
+version = "0.1.7"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.7-rc2#4a2768beba4f4b6a6c3e1ba3e314c6da6fc2fcba"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
  "borsh 1.5.7",
  "bytemuck",
  "cfg-if",
+ "drift-mocks",
  "enum_dispatch",
  "fixed",
  "fixed-macro",
@@ -3285,6 +3298,7 @@ dependencies = [
  "marginfi-type-crate",
  "pyth-solana-receiver-sdk",
  "solana-security-txt",
+ "solend-mocks",
  "spl-transfer-hook-interface 0.9.0",
  "static_assertions",
  "switchboard-on-demand",
@@ -3292,8 +3306,8 @@ dependencies = [
 
 [[package]]
 name = "marginfi-type-crate"
-version = "0.1.6"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.6-rc2#22bc9f76bb73d8c8f3adff2d4f476993c2c14466"
+version = "0.1.7"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.7-rc2#4a2768beba4f4b6a6c3e1ba3e314c6da6fc2fcba"
 dependencies = [
  "anchor-lang",
  "bs58 0.5.1",
@@ -6914,6 +6928,19 @@ dependencies = [
  "scroll",
  "thiserror 1.0.69",
  "winapi",
+]
+
+[[package]]
+name = "solend-mocks"
+version = "0.1.0"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.7-rc2#4a2768beba4f4b6a6c3e1ba3e314c6da6fc2fcba"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "fixed",
+ "fixed-macro",
+ "marginfi-type-crate",
+ "static_assertions",
 ]
 
 [[package]]

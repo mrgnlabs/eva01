@@ -1,16 +1,17 @@
 use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
 use crate::{
-    cache::Cache,
+    cache::{Cache, DriftSpotMarket},
     config::Eva01Config,
+    drift_ixs::make_refresh_spot_market_ix,
     kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix},
     marginfi_ixs::{
-        initialize_marginfi_account, make_deposit_ix, make_end_liquidate_ix,
-        make_init_liquidation_record_ix, make_kamino_withdraw_ix, make_repay_ix,
-        make_start_liquidate_ix, make_withdraw_ix,
+        initialize_marginfi_account, make_deposit_ix, make_drift_withdraw_ix,
+        make_end_liquidate_ix, make_init_liquidation_record_ix, make_kamino_withdraw_ix,
+        make_repay_ix, make_start_liquidate_ix, make_withdraw_ix,
     },
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
-        self, check_asset_tags_matching, marginfi_account_by_authority,
+        self, check_asset_tags_matching, drift::derive_spot_market, marginfi_account_by_authority,
         swb_cranker::is_stale_swb_price_error,
     },
     wrappers::oracle::OracleWrapper,
@@ -18,7 +19,10 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use fixed::types::I80F48;
 use log::{debug, error, info, warn};
-use marginfi_type_crate::types::BalanceSide;
+use marginfi_type_crate::{
+    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_KAMINO, ASSET_TAG_SOL},
+    types::{BalanceSide, Bank},
+};
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
@@ -38,6 +42,7 @@ use solana_sdk::{
     signature::Keypair,
     signer::{Signer, SignerError},
     system_instruction::transfer,
+    system_program,
     transaction::VersionedTransaction,
 };
 use std::{collections::HashSet, sync::Arc, thread, time::Duration};
@@ -234,11 +239,8 @@ impl LiquidatorAccount {
             ..
         } = account;
 
-        LIQUIDATION_ATTEMPTS.inc();
-
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
         let liquidatee_account_address = liquidatee_account.address;
-        participating_accounts.insert(liquidatee_account_address);
         let asset_bank_wrapper = self
             .cache
             .banks
@@ -267,7 +269,6 @@ impl LiquidatorAccount {
             .marginfi_accounts
             .try_get_account(&self.liquidator_address)
             .map_err(LiquidationError::from_anyhow)?;
-        participating_accounts.insert(self.liquidator_address);
 
         let lending_account = &liquidator_account.lending_account;
         for bank_to_validate_against in [&asset_bank_wrapper, &liab_bank_wrapper] {
@@ -308,15 +309,20 @@ impl LiquidatorAccount {
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];
-        let (liquidatee_observation_accounts, liquidatee_swb_oracles, kamino_reserves) =
-            MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
-                &liquidatee_account.lending_account,
-                &banks_to_include,
-                &banks_to_exclude,
-                self.cache.clone(),
-            )
-            .map_err(LiquidationError::from_anyhow)?;
+        let (
+            liquidatee_observation_accounts,
+            liquidatee_swb_oracles,
+            kamino_reserves,
+            drift_spot_markets,
+        ) = MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
+            &liquidatee_account.lending_account,
+            &banks_to_include,
+            &banks_to_exclude,
+            self.cache.clone(),
+        )
+        .map_err(LiquidationError::from_anyhow)?;
 
+        // Note: liquidatee_observation_accounts include Kamino reserves, Drift spot markets and all of the banks and oracles.
         participating_accounts.extend(liquidatee_observation_accounts.iter());
 
         debug!(
@@ -349,9 +355,8 @@ impl LiquidatorAccount {
             signer_pk,
             liquidation_record,
             liquidatee_observation_accounts.as_ref(),
+            &mut participating_accounts,
         );
-
-        participating_accounts.insert(signer_pk);
 
         for kamino_reserve_address in kamino_reserves {
             let kamino_reserve = self
@@ -359,7 +364,7 @@ impl LiquidatorAccount {
                 .kamino_reserves
                 .get(&kamino_reserve_address)
                 .context(format!(
-                    "Couldn't find the data for kamino reserve: {}",
+                    "Couldn't find the data for Kamino reserve: {}",
                     kamino_reserve_address
                 ))
                 .map_err(LiquidationError::from_anyhow)?;
@@ -369,14 +374,40 @@ impl LiquidatorAccount {
             ixs.push(refresh_reserve_ix);
         }
 
+        for spot_market_address in drift_spot_markets {
+            let spot_market = self
+                .cache
+                .drift_markets
+                .get(&spot_market_address)
+                .context(format!(
+                    "Couldn't find the data for Drift spot market: {}",
+                    spot_market_address
+                ))
+                .map_err(LiquidationError::from_anyhow)?;
+
+            let drift_oracle = if spot_market.market.mint
+                == Pubkey::from_str_const("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+            {
+                system_program::id()
+            } else {
+                spot_market.market.oracle
+            };
+            let refresh_spot_market_ix = make_refresh_spot_market_ix(
+                spot_market_address,
+                spot_market.market.vault,
+                drift_oracle,
+            );
+            ixs.push(refresh_spot_market_ix);
+        }
+
         let asset_mint_wrapper = self
             .cache
             .mints
             .try_get_account(&asset_mint)
             .map_err(LiquidationError::from_anyhow)?;
 
-        let withdraw_ix = if asset_bank_wrapper.bank.kamino_reserve == Pubkey::default() {
-            make_withdraw_ix(
+        let withdraw_ix = match asset_bank_wrapper.bank.config.asset_tag {
+            ASSET_TAG_DEFAULT | ASSET_TAG_SOL => make_withdraw_ix(
                 self.program_id,
                 self.group,
                 liquidatee_account_address,
@@ -386,48 +417,71 @@ impl LiquidatorAccount {
                 liquidatee_observation_accounts.as_ref(),
                 asset_amount.to_num(),
                 false,
-            )
-        } else {
-            let kamino_reserve = self
-                .cache
-                .kamino_reserves
-                .get(&asset_bank_wrapper.bank.kamino_reserve)
-                .context(format!(
-                    "Couldn't find the data for kamino reserve: {}",
-                    asset_bank_wrapper.bank.kamino_reserve
-                ))
-                .map_err(LiquidationError::from_anyhow)?;
+                Some(&mut participating_accounts),
+            ),
+            ASSET_TAG_KAMINO => {
+                let kamino_reserve = self
+                    .cache
+                    .kamino_reserves
+                    .get(&asset_bank_wrapper.bank.integration_acc_1)
+                    .context(format!(
+                        "Couldn't find the data for Kamino reserve: {}",
+                        asset_bank_wrapper.bank.integration_acc_1
+                    ))
+                    .map_err(LiquidationError::from_anyhow)?;
 
-            let refresh_obligation_ix = make_refresh_obligation_ix(
-                asset_bank_wrapper.bank.kamino_obligation,
-                kamino_reserve.reserve.lending_market,
-                &[asset_bank_wrapper.bank.kamino_reserve],
-            );
-            ixs.push(refresh_obligation_ix);
+                let refresh_obligation_ix = make_refresh_obligation_ix(
+                    asset_bank_wrapper.bank.integration_acc_2,
+                    kamino_reserve.reserve.lending_market,
+                    &[asset_bank_wrapper.bank.integration_acc_1],
+                );
+                ixs.push(refresh_obligation_ix);
 
-            participating_accounts.insert(asset_bank_wrapper.bank.kamino_obligation);
-            participating_accounts.insert(kamino_reserve.reserve.lending_market);
+                make_kamino_withdraw_ix(
+                    self.program_id,
+                    self.group,
+                    liquidatee_account_address,
+                    signer_pk,
+                    &asset_bank_wrapper,
+                    &asset_mint_wrapper,
+                    asset_bank_wrapper.bank.integration_acc_2,
+                    kamino_reserve,
+                    liquidatee_observation_accounts.as_ref(),
+                    asset_amount.to_num(),
+                    false,
+                    &mut participating_accounts,
+                )
+            }
+            ASSET_TAG_DRIFT => {
+                let (drift_spot_market, reward_spot_market, reward_spot_market_2) = self
+                    .get_drift_spot_markets_for_bank(&asset_bank_wrapper.bank)
+                    .map_err(LiquidationError::from_anyhow)?;
 
-            make_kamino_withdraw_ix(
-                self.program_id,
-                self.group,
-                liquidatee_account_address,
-                signer_pk,
-                &asset_bank_wrapper,
-                &asset_mint_wrapper,
-                asset_bank_wrapper.bank.kamino_obligation,
-                kamino_reserve,
-                liquidatee_observation_accounts.as_ref(),
-                asset_amount.to_num(),
-                false,
-            )
+                make_drift_withdraw_ix(
+                    self.program_id,
+                    self.group,
+                    liquidatee_account_address,
+                    signer_pk,
+                    &asset_bank_wrapper,
+                    &asset_mint_wrapper,
+                    drift_spot_market,
+                    reward_spot_market,
+                    reward_spot_market_2,
+                    liquidatee_observation_accounts.as_ref(),
+                    asset_amount.to_num(),
+                    false,
+                    &mut participating_accounts,
+                )
+            }
+            _ => {
+                return Err(LiquidationError::Anyhow(anyhow!(
+                    "Unsupported asset tag: {}",
+                    asset_bank_wrapper.bank.config.asset_tag
+                )));
+            }
         };
         ixs.push(start_ix);
         ixs.push(withdraw_ix);
-
-        participating_accounts.insert(self.group);
-        participating_accounts.insert(asset_mint_wrapper.token);
-        participating_accounts.insert(asset_mint_wrapper.account.owner);
 
         let liab_mint_wrapper = self
             .cache
@@ -443,11 +497,9 @@ impl LiquidatorAccount {
             &liab_mint_wrapper,
             liab_amount.to_num(),
             false,
+            &mut participating_accounts,
         );
         ixs.push(repay_ix);
-
-        participating_accounts.insert(liab_mint_wrapper.token);
-        participating_accounts.insert(liab_mint_wrapper.account.owner);
 
         let end_ix = make_end_liquidate_ix(
             self.program_id,
@@ -457,11 +509,9 @@ impl LiquidatorAccount {
             self.cache.global_fee_state_key,
             self.cache.global_fee_wallet,
             liquidatee_observation_accounts.as_ref(),
+            &mut participating_accounts,
         );
         ixs.push(end_ix);
-
-        participating_accounts.insert(self.cache.global_fee_state_key);
-        participating_accounts.insert(self.cache.global_fee_wallet);
 
         let recent_blockhash = self
             .rpc_client
@@ -482,6 +532,7 @@ impl LiquidatorAccount {
             liab_amount.to_num::<u64>()
         );
 
+        LIQUIDATION_ATTEMPTS.inc();
         let _liquidation_timer = LIQUIDATION_LATENCY_SECONDS.start_timer();
 
         // TODO: refactor this!
@@ -579,9 +630,10 @@ impl LiquidatorAccount {
         } else {
             vec![]
         };
+
         debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let (observation_accounts, _, _) =
+        let (observation_accounts, _, _, _) =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &self
                     .cache
@@ -604,6 +656,7 @@ impl LiquidatorAccount {
             observation_accounts.as_ref(),
             amount,
             withdraw_all,
+            None,
         );
 
         let ixs: Vec<Instruction> = vec![self.cu_limit_ix.clone(), withdraw_ix];
@@ -717,6 +770,126 @@ impl LiquidatorAccount {
                 None
             }
         }
+    }
+
+    fn get_drift_spot_markets_for_bank(
+        &self,
+        bank: &Bank,
+    ) -> Result<(
+        &DriftSpotMarket,
+        Option<&DriftSpotMarket>,
+        Option<&DriftSpotMarket>,
+    )> {
+        let drift_spot_market = self
+            .cache
+            .drift_markets
+            .get(&bank.integration_acc_1)
+            .context(format!(
+                "Couldn't find the data for Drift spot market: {}",
+                bank.integration_acc_1
+            ))?;
+
+        let drift_user = self
+            .cache
+            .drift_users
+            .get(&bank.integration_acc_2)
+            .context(format!(
+                "Couldn't find the data for Drift user: {}",
+                bank.integration_acc_2
+            ))?;
+
+        // Note: rewards can take up to 2 positions, at indexes 2 and 3 (0 and 1 are for deposits).
+        let (reward_spot_market, reward_spot_market_2) =
+            if drift_user.spot_positions[2].scaled_balance > 0 {
+                let reward_spot_market_address =
+                    derive_spot_market(drift_user.spot_positions[2].market_index);
+
+                let reward_spot_market = self
+                    .cache
+                    .drift_markets
+                    .get(&reward_spot_market_address)
+                    .context(format!(
+                        "Couldn't find the data for Drift spot market: {}",
+                        reward_spot_market_address
+                    ))?;
+
+                if drift_user.spot_positions[3].scaled_balance > 0 {
+                    let reward_spot_market_2_address =
+                        derive_spot_market(drift_user.spot_positions[3].market_index);
+
+                    let reward_spot_market_2 = self
+                        .cache
+                        .drift_markets
+                        .get(&reward_spot_market_2_address)
+                        .context(format!(
+                            "Couldn't find the data for Drift spot market: {}",
+                            reward_spot_market_2_address
+                        ))?;
+
+                    (Some(reward_spot_market), Some(reward_spot_market_2))
+                } else {
+                    (Some(reward_spot_market), None)
+                }
+            } else {
+                (None, None)
+            };
+
+        Ok((drift_spot_market, reward_spot_market, reward_spot_market_2))
+    }
+
+    pub fn refresh_integrations(&self) -> Result<()> {
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
+        let mut ixs = Vec::new();
+
+        ixs.push(self.cu_limit_ix.clone());
+
+        self.cache
+            .kamino_reserves
+            .iter()
+            .for_each(|(address, reserve)| {
+                let refresh_reserve_ix = make_refresh_reserve_ix(*address, reserve);
+
+                ixs.push(refresh_reserve_ix);
+            });
+
+        self.cache
+            .drift_markets
+            .iter()
+            .for_each(|(address, spot_market)| {
+                // TODO check
+                let drift_oracle = if spot_market.market.mint
+                    == Pubkey::from_str_const("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+                {
+                    system_program::id()
+                } else {
+                    spot_market.market.oracle
+                };
+
+                let refresh_spot_market_ix =
+                    make_refresh_spot_market_ix(*address, spot_market.market.vault, drift_oracle);
+
+                ixs.push(refresh_spot_market_ix);
+            });
+
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+
+        let signer_pk = self.signer.pubkey();
+        let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)?;
+
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])?;
+
+        self.rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: false,
+                    preflight_commitment: Some(CommitmentLevel::Processed),
+                    ..Default::default()
+                },
+            )?;
+
+        Ok(())
     }
 }
 

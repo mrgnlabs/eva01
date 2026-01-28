@@ -244,6 +244,66 @@ impl OracleWrapperTrait for OracleWrapper {
                 };
                 result = Some(oracle_wrapper);
             }
+            OracleSetup::DriftPythPull => {
+                if oracle_addresses.len() != 2 {
+                    return Err(anyhow!(
+                        "DriftPythPull setup requires exactly 2 oracle keys, but found {} for the Bank {:?}.",
+                        oracle_addresses.len(), bank_address
+                    ));
+                }
+
+                let bank_oracle_address = *oracle_addresses.first().unwrap();
+                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
+                let bank_oracle_account_info =
+                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
+
+                let spot_market_address = *oracle_addresses.get(1).unwrap();
+                let mut spot_market = cache.oracles.try_get_account(&spot_market_address)?;
+                let spot_market_account_info =
+                    (&spot_market_address, &mut spot_market).into_account_info();
+
+                let price_adapter = OraclePriceFeedAdapter::try_from_bank(
+                    &bank_wrapper.bank,
+                    &[bank_oracle_account_info, spot_market_account_info],
+                    &clock_manager::get_clock(&cache.clock)?,
+                )?;
+
+                let oracle_wrapper = Self {
+                    addresses: [bank_oracle_address, spot_market_address].to_vec(),
+                    price_adapter,
+                };
+                result = Some(oracle_wrapper);
+            }
+            OracleSetup::DriftSwitchboardPull => {
+                if oracle_addresses.len() != 2 {
+                    return Err(anyhow!(
+                        "DriftSwitchboardPull setup requires exactly 2 oracle keys, but found {} for the Bank {:?}.",
+                        oracle_addresses.len(), bank_address
+                    ));
+                }
+
+                let bank_oracle_address = *oracle_addresses.first().unwrap();
+                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
+                let bank_oracle_account_info =
+                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
+
+                let spot_market_address = *oracle_addresses.get(1).unwrap();
+                let mut spot_market = cache.oracles.try_get_account(&spot_market_address)?;
+                let spot_market_account_info =
+                    (&spot_market_address, &mut spot_market).into_account_info();
+
+                let price_adapter = OraclePriceFeedAdapter::try_from_bank(
+                    &bank_wrapper.bank,
+                    &[bank_oracle_account_info, spot_market_account_info],
+                    &clock_manager::get_clock(&cache.clock)?,
+                )?;
+
+                let oracle_wrapper = Self {
+                    addresses: [bank_oracle_address, spot_market_address].to_vec(),
+                    price_adapter,
+                };
+                result = Some(oracle_wrapper);
+            }
             _ => {
                 error!(
                     "Unsupported Oracle setup for the Bank {:?} : {:?}",

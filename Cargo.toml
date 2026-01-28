@@ -68,12 +68,12 @@ rustls-pemfile = { version = "2", optional = true }
 
 [dependencies.marginfi_type_crate]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-tag = "mrgn-0.1.6-rc2"
+tag = "mrgn-0.1.7-rc2"
 package = "marginfi-type-crate"
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-tag = "mrgn-0.1.6-rc2"
+tag = "mrgn-0.1.7-rc2"
 features = ["mainnet-beta", "client", "no-entrypoint"]
 
 [dependencies.jupiter-swap-api-client]

@@ -75,12 +75,14 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
+    // TODO: refactor
+    #[allow(clippy::type_complexity)]
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         cache: Arc<Cache>,
-    ) -> Result<(Vec<Pubkey>, Vec<Pubkey>, HashSet<Pubkey>)> {
+    ) -> Result<(Vec<Pubkey>, Vec<Pubkey>, HashSet<Pubkey>, HashSet<Pubkey>)> {
         let mut bank_pks: HashSet<Pubkey> =
             MarginfiAccountWrapper::get_active_banks(lending_account)
                 .into_iter()
@@ -99,6 +101,7 @@ impl MarginfiAccountWrapper {
         let mut swb_oracles = vec![];
         let mut observation_accounts: Vec<Pubkey> = vec![];
         let mut kamino_reserves = HashSet::new();
+        let mut drift_spot_markets = HashSet::new();
 
         for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
@@ -120,7 +123,7 @@ impl MarginfiAccountWrapper {
                     ]
                 }
                 OracleSetup::KaminoPythPush => {
-                    kamino_reserves.insert(bank_wrapper.bank.kamino_reserve);
+                    kamino_reserves.insert(bank_wrapper.bank.integration_acc_1);
                     vec![
                         *bank_pk,
                         oracle_wrapper.get_address(),
@@ -128,7 +131,7 @@ impl MarginfiAccountWrapper {
                     ]
                 }
                 OracleSetup::KaminoSwitchboardPull => {
-                    kamino_reserves.insert(bank_wrapper.bank.kamino_reserve);
+                    kamino_reserves.insert(bank_wrapper.bank.integration_acc_1);
                     swb_oracles.push(oracle_wrapper.get_address());
                     vec![
                         *bank_pk,
@@ -142,6 +145,23 @@ impl MarginfiAccountWrapper {
                         // no oracles here!
                     ]
                 }
+                OracleSetup::DriftPythPull => {
+                    drift_spot_markets.insert(bank_wrapper.bank.integration_acc_1);
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
+                OracleSetup::DriftSwitchboardPull => {
+                    drift_spot_markets.insert(bank_wrapper.bank.integration_acc_1);
+                    swb_oracles.push(oracle_wrapper.get_address());
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
                 _ => {
                     return Err(Error::msg("Unsupported Oracle setup"));
                 }
@@ -149,7 +169,12 @@ impl MarginfiAccountWrapper {
             observation_accounts.extend(bank_and_oracles);
         }
 
-        Ok((observation_accounts, swb_oracles, kamino_reserves))
+        Ok((
+            observation_accounts,
+            swb_oracles,
+            kamino_reserves,
+            drift_spot_markets,
+        ))
     }
 }
 
@@ -369,6 +394,7 @@ mod tests {
                     usdc_bank.bank.config.oracle_keys[0],
                 ],
                 vec![],
+                HashSet::new(),
                 HashSet::new()
             )
         );
@@ -410,6 +436,7 @@ mod tests {
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
                 vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                HashSet::new(),
                 HashSet::new()
             )
         );
@@ -452,6 +479,7 @@ mod tests {
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
                 vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                HashSet::new(),
                 HashSet::new()
             )
         );

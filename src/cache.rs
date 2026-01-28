@@ -28,18 +28,13 @@ use solana_sdk::{
 use tokens::TokensCache;
 
 use crate::{
+    drift::accounts::{SpotMarket, User as DriftUser},
     kamino_lending::accounts::Reserve,
     utils::accessor,
     wrappers::{oracle::OracleWrapperTrait, token_account::TokenAccountWrapper},
 };
 
 const LUT_CAPACITY: usize = 265usize;
-
-pub struct KaminoReserve {
-    pub address: Pubkey,
-    pub reserve: Reserve,
-    pub lending_market_authority: Pubkey,
-}
 
 pub struct Cache {
     pub signer_pk: Pubkey,
@@ -55,6 +50,19 @@ pub struct Cache {
     pub global_fee_state_key: Pubkey,
     pub global_fee_wallet: Pubkey,
     pub kamino_reserves: HashMap<Pubkey, KaminoReserve>,
+    pub drift_markets: HashMap<Pubkey, DriftSpotMarket>,
+    pub drift_users: HashMap<Pubkey, DriftUser>,
+}
+
+pub struct KaminoReserve {
+    pub address: Pubkey,
+    pub reserve: Reserve,
+    pub lending_market_authority: Pubkey,
+}
+
+pub struct DriftSpotMarket {
+    pub address: Pubkey,
+    pub market: SpotMarket,
 }
 
 impl Cache {
@@ -81,6 +89,8 @@ impl Cache {
             global_fee_state_key,
             global_fee_wallet: Pubkey::default(),
             kamino_reserves: HashMap::new(),
+            drift_markets: HashMap::new(),
+            drift_users: HashMap::new(),
         }
     }
 
