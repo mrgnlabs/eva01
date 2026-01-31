@@ -1706,6 +1706,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "drift-mocks"
 version = "0.1.0"
 source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.7-rc2#4a2768beba4f4b6a6c3e1ba3e314c6da6fc2fcba"
@@ -5817,7 +5823,7 @@ dependencies = [
 [[package]]
 name = "solana-dex-superagg"
 version = "1.0.0"
-source = "git+https://github.com/abdulrabbani00/solana-dex-superagg?tag=v1.1.1#ce3c1bbb9d98c649bec3eb00b7a54da20178e068"
+source = "git+https://github.com/abdulrabbani00/solana-dex-superagg?rev=70e296b84cc1b6ee90ff3414c3ff184a911060ae#70e296b84cc1b6ee90ff3414c3ff184a911060ae"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5825,6 +5831,7 @@ dependencies = [
  "bincode",
  "bs58 0.5.1",
  "bytes",
+ "dotenvy",
  "figment",
  "futures-util",
  "jupiter-swap-api-client",
@@ -5837,6 +5844,7 @@ dependencies = [
  "solana-sdk",
  "spl-associated-token-account 6.0.0",
  "spl-token 7.0.0",
+ "spl-token-2022 7.0.0",
  "tokio",
  "tokio-tungstenite 0.28.0",
  "tracing",
@@ -7275,12 +7283,40 @@ dependencies = [
  "spl-token 7.0.0",
  "spl-token-confidential-transfer-ciphertext-arithmetic",
  "spl-token-confidential-transfer-proof-extraction",
- "spl-token-confidential-transfer-proof-generation",
+ "spl-token-confidential-transfer-proof-generation 0.2.0",
  "spl-token-group-interface 0.5.0",
  "spl-token-metadata-interface 0.6.0",
  "spl-transfer-hook-interface 0.9.0",
  "spl-type-length-value 0.7.0",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "spl-token-2022"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9048b26b0df0290f929ff91317c83db28b3ef99af2b3493dd35baa146774924c"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "num-derive",
+ "num-traits",
+ "num_enum",
+ "solana-program",
+ "solana-security-txt",
+ "solana-zk-sdk",
+ "spl-elgamal-registry",
+ "spl-memo 6.0.0",
+ "spl-pod 0.5.0",
+ "spl-token 7.0.0",
+ "spl-token-confidential-transfer-ciphertext-arithmetic",
+ "spl-token-confidential-transfer-proof-extraction",
+ "spl-token-confidential-transfer-proof-generation 0.3.0",
+ "spl-token-group-interface 0.5.0",
+ "spl-token-metadata-interface 0.6.0",
+ "spl-transfer-hook-interface 0.9.0",
+ "spl-type-length-value 0.7.0",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -7318,6 +7354,17 @@ dependencies = [
  "curve25519-dalek 4.1.3",
  "solana-zk-sdk",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "spl-token-confidential-transfer-proof-generation"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e3597628b0d2fe94e7900fd17cdb4cfbb31ee35c66f82809d27d86e44b2848b"
+dependencies = [
+ "curve25519-dalek 4.1.3",
+ "solana-zk-sdk",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
