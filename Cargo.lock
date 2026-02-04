@@ -1910,7 +1910,8 @@ dependencies = [
  "solana-sdk",
  "spl-associated-token-account 6.0.0",
  "spl-token 7.0.0",
- "switchboard-on-demand",
+ "switchboard-on-demand 0.11.3",
+ "switchboard-on-demand 0.3.8",
  "switchboard-on-demand-client",
  "tiny_http",
  "tokio",
@@ -1972,6 +1973,16 @@ dependencies = [
  "rand 0.9.1",
  "siphasher 1.0.1",
  "wide",
+]
+
+[[package]]
+name = "faster-hex"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7223ae2d2f179b803433d9c830478527e92b8117eab39460edae7f1614d9fb73"
+dependencies = [
+ "heapless",
+ "serde",
 ]
 
 [[package]]
@@ -2361,6 +2372,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2421,6 +2441,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7f66481bfee273957b1f20485a4ff3362987f85b2c236580d81b4eb7a326429"
 dependencies = [
  "http 0.2.12",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32 0.3.1",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -3185,11 +3215,14 @@ dependencies = [
  "arrayref",
  "base64 0.22.1",
  "digest 0.9.0",
+ "hmac-drbg",
  "libsecp256k1-core 0.3.0",
  "libsecp256k1-gen-ecmult 0.3.0",
  "libsecp256k1-gen-genmult 0.3.0",
  "rand 0.8.5",
  "serde",
+ "sha2 0.9.9",
+ "typenum",
 ]
 
 [[package]]
@@ -3307,7 +3340,7 @@ dependencies = [
  "solend-mocks",
  "spl-transfer-hook-interface 0.9.0",
  "static_assertions",
- "switchboard-on-demand",
+ "switchboard-on-demand 0.3.8",
 ]
 
 [[package]]
@@ -5823,7 +5856,7 @@ dependencies = [
 [[package]]
 name = "solana-dex-superagg"
 version = "1.0.0"
-source = "git+https://github.com/abdulrabbani00/solana-dex-superagg?rev=70e296b84cc1b6ee90ff3414c3ff184a911060ae#70e296b84cc1b6ee90ff3414c3ff184a911060ae"
+source = "git+https://github.com/0dotxyz/solana-dex-superagg?rev=3ab0b4f4de424a0044e983576d113e3b349b3d94#3ab0b4f4de424a0044e983576d113e3b349b3d94"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5844,7 +5877,6 @@ dependencies = [
  "solana-sdk",
  "spl-associated-token-account 6.0.0",
  "spl-token 7.0.0",
- "spl-token-2022 7.0.0",
  "tokio",
  "tokio-tungstenite 0.28.0",
  "tracing",
@@ -6928,7 +6960,7 @@ checksum = "1c1941b5ef0c3ce8f2ac5dd984d0fb1a97423c4ff2a02eec81e3913f02e2ac2b"
 dependencies = [
  "byteorder",
  "combine 3.8.1",
- "hash32",
+ "hash32 0.2.1",
  "libc",
  "log",
  "rand 0.8.5",
@@ -7283,40 +7315,12 @@ dependencies = [
  "spl-token 7.0.0",
  "spl-token-confidential-transfer-ciphertext-arithmetic",
  "spl-token-confidential-transfer-proof-extraction",
- "spl-token-confidential-transfer-proof-generation 0.2.0",
+ "spl-token-confidential-transfer-proof-generation",
  "spl-token-group-interface 0.5.0",
  "spl-token-metadata-interface 0.6.0",
  "spl-transfer-hook-interface 0.9.0",
  "spl-type-length-value 0.7.0",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "spl-token-2022"
-version = "7.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9048b26b0df0290f929ff91317c83db28b3ef99af2b3493dd35baa146774924c"
-dependencies = [
- "arrayref",
- "bytemuck",
- "num-derive",
- "num-traits",
- "num_enum",
- "solana-program",
- "solana-security-txt",
- "solana-zk-sdk",
- "spl-elgamal-registry",
- "spl-memo 6.0.0",
- "spl-pod 0.5.0",
- "spl-token 7.0.0",
- "spl-token-confidential-transfer-ciphertext-arithmetic",
- "spl-token-confidential-transfer-proof-extraction",
- "spl-token-confidential-transfer-proof-generation 0.3.0",
- "spl-token-group-interface 0.5.0",
- "spl-token-metadata-interface 0.6.0",
- "spl-transfer-hook-interface 0.9.0",
- "spl-type-length-value 0.7.0",
- "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -7354,17 +7358,6 @@ dependencies = [
  "curve25519-dalek 4.1.3",
  "solana-zk-sdk",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "spl-token-confidential-transfer-proof-generation"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e3597628b0d2fe94e7900fd17cdb4cfbb31ee35c66f82809d27d86e44b2848b"
-dependencies = [
- "curve25519-dalek 4.1.3",
- "solana-zk-sdk",
- "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -7587,10 +7580,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-on-demand"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "038c5374a2b8caf01dcccc8a95e7789cddea056e0f34a4d67876fdbb743ddc3d"
+dependencies = [
+ "anyhow",
+ "arrayref",
+ "base64ct",
+ "bincode",
+ "borsh 1.5.7",
+ "bytemuck",
+ "cc",
+ "faster-hex",
+ "libsecp256k1 0.7.2",
+ "rust_decimal",
+ "serde",
+ "sha2 0.10.9",
+ "solana-program",
+ "switchboard-protos",
+]
+
+[[package]]
 name = "switchboard-on-demand-client"
 version = "0.4.1-alpha0.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11ab31e0c606a89b0ef6bb988419fe937c871de716908659ceb342990b4846aa"
+source = "git+https://github.com/abdulrabbani00/switchboard-sdk?rev=99cf3f29143b81fd3ad17649725a3f994b253fbb#99cf3f29143b81fd3ad17649725a3f994b253fbb"
 dependencies = [
  "anyhow_ext",
  "arrayref",

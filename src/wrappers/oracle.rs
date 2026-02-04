@@ -12,7 +12,9 @@ use switchboard_on_demand_client::PullFeedAccountData;
 use crate::{
     cache::Cache,
     clock_manager,
-    utils::{find_oracle_keys, load_swb_pull_account_from_bytes},
+    utils::{
+        convert_oracle_result_to_lite_pull_feed, find_oracle_keys, load_swb_pull_account_from_bytes,
+    },
 };
 
 pub trait OracleWrapperTrait {
@@ -68,7 +70,9 @@ impl OracleWrapperTrait for OracleWrapper {
                         Result::Ok(swb_feed) => {
                             let price_adapter =
                                 OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
-                                    feed: Box::new((&swb_feed).into()),
+                                    feed: Box::new(convert_oracle_result_to_lite_pull_feed(
+                                        swb_feed,
+                                    )),
                                 });
                             let oracle_wrapper = Self {
                                 addresses: vec![oracle_address],
@@ -151,25 +155,16 @@ impl OracleWrapperTrait for OracleWrapper {
                         sol_pool_account_info,
                     ],
                     &clock_manager::get_clock(&cache.clock)?,
-                );
-                match price_adapter {
-                    Ok(price_adapter) => {
-                        let oracle_wrapper = Self {
-                            addresses: vec![
-                                bank_oracle_address,
-                                mint_oracle_address,
-                                sol_pool_oracle_address,
-                            ],
-                            price_adapter,
-                        };
-                        result = Some(oracle_wrapper);
-                    }
-                    Err(_e) => {
-                        // TODO: re-enable when dealing with Staked liquidations
-                        // error!("Error when calculating asset price: {}", e);
-                        result = None;
-                    }
-                }
+                )?;
+                let oracle_wrapper = Self {
+                    addresses: vec![
+                        bank_oracle_address,
+                        mint_oracle_address,
+                        sol_pool_oracle_address,
+                    ],
+                    price_adapter,
+                };
+                result = Some(oracle_wrapper);
             }
             OracleSetup::KaminoPythPush => {
                 if oracle_addresses.len() != 2 {

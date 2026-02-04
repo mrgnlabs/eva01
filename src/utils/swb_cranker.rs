@@ -140,7 +140,7 @@ impl SwbCranker {
         self.rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
                 &tx,
-                CommitmentConfig::finalized(),
+                CommitmentConfig::confirmed(),
                 RpcSendTransactionConfig {
                     skip_preflight: false,
                     preflight_commitment: Some(CommitmentLevel::Processed),

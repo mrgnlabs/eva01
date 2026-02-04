@@ -186,7 +186,10 @@ impl Rebalancer {
                 .cache
                 .try_get_token_wrapper::<OracleWrapper>(&mint, &token);
             if let Err(e) = wrapper {
-                warn!("Skipping the token {} in rebalancing: {}", mint, e);
+                // Ignore empty stake banks
+                if !e.to_string().contains("Stake pool supply is zero") {
+                    warn!("Skipping the token {} in rebalancing: {}", mint, e);
+                }
                 continue;
             }
 
