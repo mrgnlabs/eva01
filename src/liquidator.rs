@@ -109,7 +109,7 @@ impl Liquidator {
             self.run_liquidation.store(false, Ordering::Relaxed);
 
             // TODO: come up with a better heuristics here
-            if liquidation_rounds % 5 == 0 {
+            if liquidation_rounds % 10 == 0 {
                 if let Err(e) = self.liquidator_account.refresh_integrations() {
                     error!("Integrations failed to refresh: {}", e);
                 }

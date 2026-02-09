@@ -42,7 +42,6 @@ use solana_sdk::{
     signature::{Keypair, Signature},
     signer::{Signer, SignerError},
     system_instruction::transfer,
-    system_program,
     transaction::VersionedTransaction,
 };
 use std::{collections::HashSet, sync::Arc, thread, time::Duration};
@@ -305,7 +304,7 @@ impl LiquidatorAccount {
         } else {
             (
                 *asset_amount,
-                liab_amount.checked_mul(I80F48::from_num(0.925)).unwrap(),
+                liab_amount.checked_mul(I80F48::from_num(0.915)).unwrap(),
             )
         };
 
@@ -395,17 +394,10 @@ impl LiquidatorAccount {
                 ))
                 .map_err(LiquidationError::from_anyhow)?;
 
-            let drift_oracle = if spot_market.market.mint
-                == Pubkey::from_str_const("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
-            {
-                system_program::id()
-            } else {
-                spot_market.market.oracle
-            };
             let refresh_spot_market_ix = make_refresh_spot_market_ix(
                 spot_market_address,
                 spot_market.market.vault,
-                drift_oracle,
+                spot_market.market.oracle,
                 &mut participating_accounts,
             );
             ixs.push(refresh_spot_market_ix);
@@ -862,6 +854,10 @@ impl LiquidatorAccount {
             .for_each(|(address, reserve)| {
                 let refresh_reserve_ix =
                     make_refresh_reserve_ix(*address, reserve, &mut participating_accounts);
+                debug!(
+                    "Refreshing: reserve {}, mint {}!!!",
+                    address, reserve.reserve.collateral.mint_pubkey
+                );
 
                 ixs.push(refresh_reserve_ix);
             });
@@ -870,23 +866,15 @@ impl LiquidatorAccount {
             .drift_markets
             .iter()
             .for_each(|(address, spot_market)| {
-                // TODO check
-                let drift_oracle = if spot_market.market.mint
-                    == Pubkey::from_str_const("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
-                {
-                    system_program::id()
-                } else {
-                    spot_market.market.oracle
-                };
                 debug!(
                     "Refreshing: market {}, mint {}, oracle {}!!!",
-                    address, spot_market.market.mint, drift_oracle
+                    address, spot_market.market.mint, spot_market.market.oracle
                 );
 
                 let refresh_spot_market_ix = make_refresh_spot_market_ix(
                     *address,
                     spot_market.market.vault,
-                    drift_oracle,
+                    spot_market.market.oracle,
                     &mut participating_accounts,
                 );
 
@@ -916,6 +904,7 @@ impl LiquidatorAccount {
                 warn!("The refresh tx was too large: adding the observation accounts to a LUT and retrying");
                 self.retry_with_new_luts(ixs, participating_accounts)?;
             }
+            return Err(anyhow!(err.to_string()));
         }
         Ok(())
     }
