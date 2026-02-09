@@ -39,7 +39,7 @@ use solana_sdk::{
     instruction::Instruction,
     message::{v0::Message, CompileError, VersionedMessage},
     pubkey,
-    signature::Keypair,
+    signature::{Keypair, Signature},
     signer::{Signer, SignerError},
     system_instruction::transfer,
     system_program,
@@ -239,6 +239,8 @@ impl LiquidatorAccount {
             ..
         } = account;
 
+        LIQUIDATION_ATTEMPTS.inc();
+
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
         let liquidatee_account_address = liquidatee_account.address;
         let asset_bank_wrapper = self
@@ -369,8 +371,16 @@ impl LiquidatorAccount {
                 ))
                 .map_err(LiquidationError::from_anyhow)?;
 
-            let refresh_reserve_ix =
-                make_refresh_reserve_ix(kamino_reserve_address, kamino_reserve);
+            debug!(
+                "Putting a refresh ix for Kamino Reserve: {}",
+                kamino_reserve_address
+            );
+
+            let refresh_reserve_ix = make_refresh_reserve_ix(
+                kamino_reserve_address,
+                kamino_reserve,
+                &mut participating_accounts,
+            );
             ixs.push(refresh_reserve_ix);
         }
 
@@ -396,6 +406,7 @@ impl LiquidatorAccount {
                 spot_market_address,
                 spot_market.market.vault,
                 drift_oracle,
+                &mut participating_accounts,
             );
             ixs.push(refresh_spot_market_ix);
         }
@@ -434,6 +445,7 @@ impl LiquidatorAccount {
                     asset_bank_wrapper.bank.integration_acc_2,
                     kamino_reserve.reserve.lending_market,
                     &[asset_bank_wrapper.bank.integration_acc_1],
+                    &mut participating_accounts,
                 );
                 ixs.push(refresh_obligation_ix);
 
@@ -532,10 +544,8 @@ impl LiquidatorAccount {
             liab_amount.to_num::<u64>()
         );
 
-        LIQUIDATION_ATTEMPTS.inc();
         let _liquidation_timer = LIQUIDATION_LATENCY_SECONDS.start_timer();
 
-        // TODO: refactor this!
         match self
             .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
@@ -557,41 +567,8 @@ impl LiquidatorAccount {
             }
             Err(err) => {
                 if is_tx_too_large_client(&err) {
-                    warn!("The attempted tx was too large: adding the observation accounts to a LUT and retrying");
-                    self.cache
-                        .add_addresses_to_lut(
-                            &self.rpc_client,
-                            &self.signer,
-                            participating_accounts,
-                        )
-                        .map_err(LiquidationError::from_anyhow)?;
-
-                    let luts: Vec<AddressLookupTableAccount> =
-                        self.cache.luts.lock().unwrap().clone();
-
-                    let recent_blockhash = self
-                        .rpc_client
-                        .get_latest_blockhash()
-                        .map_err(LiquidationError::from_client)?;
-
-                    let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)
-                        .map_err(LiquidationError::from_compile)?;
-
-                    let tx =
-                        VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
-                            .map_err(LiquidationError::from_signer)?;
-
-                    match self
-                        .rpc_client
-                        .send_and_confirm_transaction_with_spinner_and_config(
-                            &tx,
-                            CommitmentConfig::confirmed(),
-                            RpcSendTransactionConfig {
-                                skip_preflight: false,
-                                preflight_commitment: Some(CommitmentLevel::Processed),
-                                ..Default::default()
-                            },
-                        ) {
+                    warn!("The liquidation tx was too large: adding the observation accounts to a LUT and retrying");
+                    match self.retry_with_new_luts(ixs, participating_accounts) {
                         Ok(signature) => {
                             info!(
                                 "Liquidation tx for the Account {} was confirmed. Signature: {}",
@@ -601,11 +578,15 @@ impl LiquidatorAccount {
                             Ok(())
                         }
                         Err(err) => {
-                            if is_stale_swb_price_error(&err) {
+                            let err_string = err.to_string();
+                            if err
+                                .downcast::<ClientError>()
+                                .is_ok_and(|e| is_stale_swb_price_error(&e))
+                            {
                                 // TODO: Should we just crank always?? Also refresh Kamino reserves?
                                 Err(LiquidationError::StaleOracles(liquidatee_swb_oracles))
                             } else {
-                                Err(LiquidationError::from_client(err))
+                                Err(LiquidationError::Anyhow(anyhow!(err_string)))
                             }
                         }
                     }
@@ -617,6 +598,37 @@ impl LiquidatorAccount {
                 }
             }
         }
+    }
+
+    fn retry_with_new_luts(
+        &self,
+        ixs: Vec<Instruction>,
+        participating_accounts: HashSet<Pubkey>,
+    ) -> Result<Signature> {
+        self.cache
+            .add_addresses_to_lut(&self.rpc_client, &self.signer, participating_accounts)?;
+
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
+
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+
+        let msg = Message::try_compile(&self.signer.pubkey(), &ixs, &luts, recent_blockhash)?;
+
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])?;
+
+        let signature = self
+            .rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: false,
+                    preflight_commitment: Some(CommitmentLevel::Processed),
+                    ..Default::default()
+                },
+            )?;
+
+        Ok(signature)
     }
 
     pub fn withdraw(&self, bank: &BankWrapper, amount: u64, withdraw_all: bool) -> Result<()> {
@@ -840,6 +852,7 @@ impl LiquidatorAccount {
     pub fn refresh_integrations(&self) -> Result<()> {
         let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
         let mut ixs = Vec::new();
+        let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
 
         ixs.push(self.cu_limit_ix.clone());
 
@@ -847,7 +860,8 @@ impl LiquidatorAccount {
             .kamino_reserves
             .iter()
             .for_each(|(address, reserve)| {
-                let refresh_reserve_ix = make_refresh_reserve_ix(*address, reserve);
+                let refresh_reserve_ix =
+                    make_refresh_reserve_ix(*address, reserve, &mut participating_accounts);
 
                 ixs.push(refresh_reserve_ix);
             });
@@ -864,9 +878,17 @@ impl LiquidatorAccount {
                 } else {
                     spot_market.market.oracle
                 };
+                debug!(
+                    "Refreshing: market {}, mint {}, oracle {}!!!",
+                    address, spot_market.market.mint, drift_oracle
+                );
 
-                let refresh_spot_market_ix =
-                    make_refresh_spot_market_ix(*address, spot_market.market.vault, drift_oracle);
+                let refresh_spot_market_ix = make_refresh_spot_market_ix(
+                    *address,
+                    spot_market.market.vault,
+                    drift_oracle,
+                    &mut participating_accounts,
+                );
 
                 ixs.push(refresh_spot_market_ix);
             });
@@ -878,7 +900,8 @@ impl LiquidatorAccount {
 
         let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])?;
 
-        self.rpc_client
+        if let Err(err) = self
+            .rpc_client
             .send_and_confirm_transaction_with_spinner_and_config(
                 &tx,
                 CommitmentConfig::confirmed(),
@@ -887,8 +910,13 @@ impl LiquidatorAccount {
                     preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },
-            )?;
-
+            )
+        {
+            if is_tx_too_large_client(&err) {
+                warn!("The refresh tx was too large: adding the observation accounts to a LUT and retrying");
+                self.retry_with_new_luts(ixs, participating_accounts)?;
+            }
+        }
         Ok(())
     }
 }

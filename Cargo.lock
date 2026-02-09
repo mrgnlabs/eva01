@@ -1706,6 +1706,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "drift-mocks"
 version = "0.1.0"
 source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.7-rc2#4a2768beba4f4b6a6c3e1ba3e314c6da6fc2fcba"
@@ -1904,7 +1910,8 @@ dependencies = [
  "solana-sdk",
  "spl-associated-token-account 6.0.0",
  "spl-token 7.0.0",
- "switchboard-on-demand",
+ "switchboard-on-demand 0.11.3",
+ "switchboard-on-demand 0.3.8",
  "switchboard-on-demand-client",
  "tiny_http",
  "tokio",
@@ -1966,6 +1973,16 @@ dependencies = [
  "rand 0.9.1",
  "siphasher 1.0.1",
  "wide",
+]
+
+[[package]]
+name = "faster-hex"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7223ae2d2f179b803433d9c830478527e92b8117eab39460edae7f1614d9fb73"
+dependencies = [
+ "heapless",
+ "serde",
 ]
 
 [[package]]
@@ -2355,6 +2372,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2415,6 +2441,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7f66481bfee273957b1f20485a4ff3362987f85b2c236580d81b4eb7a326429"
 dependencies = [
  "http 0.2.12",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32 0.3.1",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -3179,11 +3215,14 @@ dependencies = [
  "arrayref",
  "base64 0.22.1",
  "digest 0.9.0",
+ "hmac-drbg",
  "libsecp256k1-core 0.3.0",
  "libsecp256k1-gen-ecmult 0.3.0",
  "libsecp256k1-gen-genmult 0.3.0",
  "rand 0.8.5",
  "serde",
+ "sha2 0.9.9",
+ "typenum",
 ]
 
 [[package]]
@@ -3301,7 +3340,7 @@ dependencies = [
  "solend-mocks",
  "spl-transfer-hook-interface 0.9.0",
  "static_assertions",
- "switchboard-on-demand",
+ "switchboard-on-demand 0.3.8",
 ]
 
 [[package]]
@@ -5817,7 +5856,7 @@ dependencies = [
 [[package]]
 name = "solana-dex-superagg"
 version = "1.0.0"
-source = "git+https://github.com/abdulrabbani00/solana-dex-superagg?tag=v1.1.1#ce3c1bbb9d98c649bec3eb00b7a54da20178e068"
+source = "git+https://github.com/0dotxyz/solana-dex-superagg?rev=3ab0b4f4de424a0044e983576d113e3b349b3d94#3ab0b4f4de424a0044e983576d113e3b349b3d94"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5825,6 +5864,7 @@ dependencies = [
  "bincode",
  "bs58 0.5.1",
  "bytes",
+ "dotenvy",
  "figment",
  "futures-util",
  "jupiter-swap-api-client",
@@ -6920,7 +6960,7 @@ checksum = "1c1941b5ef0c3ce8f2ac5dd984d0fb1a97423c4ff2a02eec81e3913f02e2ac2b"
 dependencies = [
  "byteorder",
  "combine 3.8.1",
- "hash32",
+ "hash32 0.2.1",
  "libc",
  "log",
  "rand 0.8.5",
@@ -7540,10 +7580,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-on-demand"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "038c5374a2b8caf01dcccc8a95e7789cddea056e0f34a4d67876fdbb743ddc3d"
+dependencies = [
+ "anyhow",
+ "arrayref",
+ "base64ct",
+ "bincode",
+ "borsh 1.5.7",
+ "bytemuck",
+ "cc",
+ "faster-hex",
+ "libsecp256k1 0.7.2",
+ "rust_decimal",
+ "serde",
+ "sha2 0.10.9",
+ "solana-program",
+ "switchboard-protos",
+]
+
+[[package]]
 name = "switchboard-on-demand-client"
 version = "0.4.1-alpha0.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11ab31e0c606a89b0ef6bb988419fe937c871de716908659ceb342990b4846aa"
+source = "git+https://github.com/abdulrabbani00/switchboard-sdk?rev=99cf3f29143b81fd3ad17649725a3f994b253fbb#99cf3f29143b81fd3ad17649725a3f994b253fbb"
 dependencies = [
  "anyhow_ext",
  "arrayref",

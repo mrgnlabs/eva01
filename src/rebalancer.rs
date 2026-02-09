@@ -82,6 +82,7 @@ impl Rebalancer {
             shared: shared_config,
             jupiter: jupiter_config,
             titan: titan_config,
+            dflow: None,
         };
 
         let dex_client = Arc::new(DexSuperAggClient::new(client_config)?);
@@ -185,7 +186,10 @@ impl Rebalancer {
                 .cache
                 .try_get_token_wrapper::<OracleWrapper>(&mint, &token);
             if let Err(e) = wrapper {
-                warn!("Skipping the token {} in rebalancing: {}", mint, e);
+                // Ignore empty stake banks
+                if !e.to_string().contains("Stake pool supply is zero") {
+                    warn!("Skipping the token {} in rebalancing: {}", mint, e);
+                }
                 continue;
             }
 
@@ -214,7 +218,7 @@ impl Rebalancer {
                 .unwrap_or(self.default_token_max_threshold);
 
             if value > max_value {
-                info!("The value of {} tokens is higher than set threshold: {} > {}. Selling ${} worth of tokens.", mint, value.to_num::<f64>(), max_value.to_num::<f64>(), (value - max_value * 2).to_num::<f64>());
+                info!("The value of {} tokens is higher than set threshold: {} > {}. Selling ${} worth of tokens.", mint, value.to_num::<f64>(), max_value.to_num::<f64>(), (value - max_value / 2).to_num::<f64>());
                 let amount_to_swap = wrapper.get_amount_from_value(value - max_value / 2)?;
                 let swapped_amount = self.swap(amount_to_swap.to_num(), mint, self.swap_mint)?;
                 info!("Got {} back from the swap.", swapped_amount);
@@ -314,6 +318,7 @@ impl Rebalancer {
             &input_mint.to_string(),
             &output_mint.to_string(),
             amount,
+            false,
         ))?;
 
         info!(

@@ -26,12 +26,13 @@ impl MintsCache {
     }
 
     pub fn get_mints(&self) -> Vec<Pubkey> {
-        // TODO: remove once UXD is sunset
+        // TODO: remove once UXD & sUSD are sunset
         self.mints
             .keys()
             .cloned()
             .filter(|&mint| {
                 mint != Pubkey::from_str_const("7kbnvuGBxxj8AG9qp8Scn56muWGaRaFqxg1FsRp3PaFT")
+                    && mint != Pubkey::from_str_const("susdabGDNbhrnCa6ncrYo81u4s9GM8ecK2UwMyZiq4X")
             })
             .collect()
     }

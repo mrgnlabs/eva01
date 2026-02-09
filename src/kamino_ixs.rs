@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anchor_lang::{prelude::AccountMeta, Id, InstructionData, ToAccountMetas};
 
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
@@ -10,6 +12,7 @@ use crate::{
 pub fn make_refresh_reserve_ix(
     kamino_reserve_address: Pubkey,
     kamino_reserve: &KaminoReserve,
+    participating_accounts: &mut HashSet<Pubkey>,
 ) -> Instruction {
     let (pyth_oracle, switchboard_price_oracle, switchboard_twap_oracle, scope_prices) =
         get_oracle_setup(kamino_reserve);
@@ -23,6 +26,8 @@ pub fn make_refresh_reserve_ix(
     }
     .to_account_metas(None);
 
+    participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
+
     Instruction {
         program_id: KaminoLending::id(),
         accounts,
@@ -34,6 +39,7 @@ pub fn make_refresh_obligation_ix(
     obligation: Pubkey,
     lending_market: Pubkey,
     remaining: &[Pubkey],
+    participating_accounts: &mut HashSet<Pubkey>,
 ) -> Instruction {
     let mut accounts = kamino::accounts::RefreshObligation {
         lending_market,
@@ -46,6 +52,8 @@ pub fn make_refresh_obligation_ix(
             .iter()
             .map(|a| AccountMeta::new_readonly(*a, false)),
     );
+
+    participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
         program_id: KaminoLending::id(),

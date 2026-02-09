@@ -17,7 +17,7 @@ use marginfi::{
         bank::{BankImpl, BankVaultType},
         bank_config::BankConfigImpl,
         marginfi_account::{calc_value, RequirementType},
-        price::PriceBias,
+        price::{LitePullFeedAccountData, PriceBias},
     },
 };
 use marginfi_type_crate::{
@@ -43,6 +43,7 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
 };
 use switchboard_on_demand::PullFeedAccountData;
+use switchboard_on_demand_v03::CurrentResult as CurrentResultV03;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
 
 use crate::{
@@ -447,6 +448,37 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
             }
         })
         .collect::<Vec<_>>()
+}
+
+pub fn convert_oracle_result_to_lite_pull_feed(
+    feed_account: PullFeedAccountData,
+) -> LitePullFeedAccountData {
+    // `marginfi` depends on `switchboard-on-demand@0.3.x`, while this binary uses
+    // `switchboard-on-demand@0.11.x`. The types are versioned and therefore incompatible,
+    // so we explicitly adapt the newer account data to the older "lite" feed shape.
+
+    let r = feed_account.result;
+
+    let result_v03 = CurrentResultV03 {
+        value: r.value,
+        std_dev: r.std_dev,
+        mean: r.mean,
+        range: r.range,
+        min_value: r.min_value,
+        max_value: r.max_value,
+        num_samples: r.num_samples,
+        submission_idx: r.submission_idx,
+        padding1: r.padding1,
+        slot: r.slot,
+        min_slot: r.min_slot,
+        max_slot: r.max_slot,
+    };
+
+    LitePullFeedAccountData {
+        result: result_v03,
+        feed_hash: feed_account.feed_hash,
+        last_update_timestamp: feed_account.last_update_timestamp,
+    }
 }
 
 pub fn load_swb_pull_account_from_bytes(bytes: &[u8]) -> Result<PullFeedAccountData> {

@@ -35,6 +35,7 @@ use crate::{
 };
 
 const LUT_CAPACITY: usize = 265usize;
+const NEW_ADDRESSES_MAX: usize = 20usize;
 
 pub struct Cache {
     pub signer_pk: Pubkey,
@@ -169,7 +170,7 @@ fn create_lut(
 
     rpc_client.send_and_confirm_transaction_with_spinner_and_config(
         &tx,
-        CommitmentConfig::finalized(),
+        CommitmentConfig::confirmed(),
         RpcSendTransactionConfig {
             skip_preflight: true,
             ..Default::default()
@@ -191,35 +192,39 @@ fn extend_lut(
     lut_address: Pubkey,
     addresses: Vec<Pubkey>,
 ) -> anyhow::Result<Vec<Pubkey>> {
-    let ix = address_lookup_table::instruction::extend_lookup_table(
-        lut_address,
-        signer_keypair.pubkey(),
-        Some(signer_keypair.pubkey()),
-        addresses.clone(),
-    );
+    // Send multiple extend txs, each with at most NEW_ADDRESSES_MAX new addresses.
+    for chunk in addresses.chunks(NEW_ADDRESSES_MAX) {
+        let ix = address_lookup_table::instruction::extend_lookup_table(
+            lut_address,
+            signer_keypair.pubkey(),
+            Some(signer_keypair.pubkey()),
+            chunk.to_vec(),
+        );
 
-    let recent_blockhash = rpc_client.get_latest_blockhash()?;
-    let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
-        &[ix],
-        Some(&signer_keypair.pubkey()),
-        &[signer_keypair],
-        recent_blockhash,
-    );
+        let recent_blockhash = rpc_client.get_latest_blockhash()?;
+        let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer_keypair.pubkey()),
+            &[signer_keypair],
+            recent_blockhash,
+        );
 
-    rpc_client.send_and_confirm_transaction_with_spinner_and_config(
-        &tx,
-        CommitmentConfig::finalized(),
-        RpcSendTransactionConfig {
-            skip_preflight: true,
-            ..Default::default()
-        },
-    )?;
+        rpc_client.send_and_confirm_transaction_with_spinner_and_config(
+            &tx,
+            CommitmentConfig::confirmed(),
+            RpcSendTransactionConfig {
+                skip_preflight: true,
+                ..Default::default()
+            },
+        )?;
 
-    info!(
-        "Extended LUT: {:?} with the new addresses: {:?}",
-        lut_address, addresses
-    );
+        info!(
+            "Extended LUT: {:?} with the new addresses: {:?}",
+            lut_address, chunk
+        );
+    }
 
+    // Refresh LUT addresses once at the very end.
     let lut_account = rpc_client.get_account(&lut_address)?;
     let lut = AddressLookupTable::deserialize(&lut_account.data).unwrap();
 
