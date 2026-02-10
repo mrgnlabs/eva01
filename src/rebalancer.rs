@@ -177,6 +177,7 @@ impl Rebalancer {
         let mut mint_to_value: HashMap<Pubkey, I80F48> = HashMap::new();
         let mut necessary_swap_value = I80F48::ZERO;
         for mint in self.cache.mints.get_mints() {
+            info!("Processing token {}...", mint);
             if mint == self.swap_mint {
                 continue;
             }
@@ -220,8 +221,14 @@ impl Rebalancer {
             if value > max_value {
                 info!("The value of {} tokens is higher than set threshold: {} > {}. Selling ${} worth of tokens.", mint, value.to_num::<f64>(), max_value.to_num::<f64>(), (value - max_value / 2).to_num::<f64>());
                 let amount_to_swap = wrapper.get_amount_from_value(value - max_value / 2)?;
-                let swapped_amount = self.swap(amount_to_swap.to_num(), mint, self.swap_mint)?;
-                info!("Got {} back from the swap.", swapped_amount);
+                match self.swap(amount_to_swap.to_num(), mint, self.swap_mint) {
+                    Ok(swapped_amount) => {
+                        info!("Got {} back from the swap.", swapped_amount);
+                    }
+                    Err(e) => {
+                        error!("Swap failed: {}", e);
+                    }
+                }
             } else if value < min_value {
                 info!("The value of {} tokens is lower than set threshold: {} < {}. Will buy ${} worth of tokens.", mint, value.to_num::<f64>(), min_value.to_num::<f64>(), min_value.to_num::<f64>());
                 mint_to_value.insert(mint, min_value);
@@ -243,7 +250,9 @@ impl Rebalancer {
 
             if let Some(&value_to_swap) = mint_to_value.get(&mint) {
                 let amount_to_swap = swap_token_wrapper.get_amount_from_value(value_to_swap)?;
-                self.swap(amount_to_swap.to_num(), self.swap_mint, mint)?;
+                if let Err(e) = self.swap(amount_to_swap.to_num(), self.swap_mint, mint) {
+                    error!("Swap failed: {}", e);
+                }
             }
         }
         Ok(())
@@ -304,9 +313,12 @@ impl Rebalancer {
     fn swap(&self, amount: u64, input_mint: Pubkey, output_mint: Pubkey) -> anyhow::Result<u64> {
         if input_mint == output_mint {
             return Err(anyhow::anyhow!(
-                "Swap failed: input and output mints cannot be the same: {:?}",
+                "Input and output mints cannot be the same: {:?}",
                 input_mint
             ));
+        }
+        if amount == 0 {
+            return Err(anyhow::anyhow!("Amount cannot be zero: {:?}", input_mint));
         }
 
         info!(
