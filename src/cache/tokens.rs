@@ -48,7 +48,7 @@ impl TokensCache {
         self.mint_to_token
             .get(mint_address)
             .ok_or(anyhow!(
-                "Failed to find Token for the Mint {}!",
+                "Failed to find Token for the Mint: {}",
                 &mint_address
             ))
             .copied()
