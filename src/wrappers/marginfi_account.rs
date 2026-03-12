@@ -198,7 +198,8 @@ pub mod test_utils {
                     active: 1,
                     bank_pk: asset_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
-                    _pad0: [0; 6],
+                    tag: 0,
+                    _pad0: [0; 4],
                     asset_shares: WrappedI80F48::from(I80F48::from_num(100)),
                     liability_shares: WrappedI80F48::from(I80F48::ZERO),
                     emissions_outstanding: WrappedI80F48::from(I80F48::ZERO),
@@ -209,7 +210,8 @@ pub mod test_utils {
                     active: 1,
                     bank_pk: liability_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
-                    _pad0: [0; 6],
+                    tag: 0,
+                    _pad0: [0; 4],
                     asset_shares: WrappedI80F48::from(I80F48::ZERO),
                     liability_shares: WrappedI80F48::from(I80F48::from_num(100)),
                     emissions_outstanding: WrappedI80F48::from(I80F48::ZERO),
@@ -222,7 +224,9 @@ pub mod test_utils {
 
             let lending_account = LendingAccount {
                 balances,
-                _padding: [0u64; 8],
+                last_tag_used: 0,
+                _pad1: [0; 6],
+                _padding: [0; 7],
             };
             Self {
                 address: Pubkey::new_unique(),
@@ -239,7 +243,8 @@ pub mod test_utils {
                     active: 1,
                     bank_pk: asset_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
-                    _pad0: [0; 6],
+                    tag: 0,
+                    _pad0: [0; 4],
                     asset_shares: WrappedI80F48::from(I80F48::from_num(100)),
                     liability_shares: WrappedI80F48::from(I80F48::ZERO),
                     emissions_outstanding: WrappedI80F48::from(I80F48::ZERO),
@@ -250,7 +255,8 @@ pub mod test_utils {
                     active: 1,
                     bank_pk: liability_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
-                    _pad0: [0; 6],
+                    tag: 0,
+                    _pad0: [0; 4],
                     asset_shares: WrappedI80F48::from(I80F48::ZERO),
                     liability_shares: WrappedI80F48::from(I80F48::from_num(100)),
                     emissions_outstanding: WrappedI80F48::from(I80F48::ZERO),
@@ -263,7 +269,9 @@ pub mod test_utils {
 
             let lending_account = LendingAccount {
                 balances,
-                _padding: [0u64; 8],
+                last_tag_used: 0,
+                _pad1: [0; 6],
+                _padding: [0; 7],
             };
             Self {
                 address: Pubkey::new_unique(),

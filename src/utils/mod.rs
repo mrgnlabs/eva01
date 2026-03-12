@@ -1,8 +1,7 @@
 pub mod drift;
 pub mod healthcheck;
+pub mod juplend;
 pub mod kamino;
-#[cfg(feature = "publish_to_db")]
-pub mod supabase;
 pub mod swb_cranker;
 
 use anyhow::{anyhow, Error, Result};

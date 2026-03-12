@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use anchor_lang::{Id, InstructionData, Key, ToAccountMetas};
 
-use anchor_spl::token_2022;
+use anchor_spl::{associated_token, token_2022};
 use log::{debug, info, trace};
 use marginfi_type_crate::constants::LIQUIDATION_RECORD_SEED;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
@@ -18,11 +18,15 @@ use solana_sdk::{
 use crate::{
     cache::{DriftSpotMarket, KaminoReserve},
     drift::program::Drift,
+    juplend_earn::accounts::Lending,
     kamino_farms::program::Farms as KaminoFarms,
     kamino_lending::program::KaminoLending,
     utils::{
         drift::{derive_drift_signer, derive_drift_state, derive_spot_market_vault},
         find_bank_liquidity_vault_authority,
+        juplend::{
+            derive_lending_admin, derive_liquidity, derive_liquidity_vault, derive_rate_model,
+        },
         kamino::derive_user_state,
     },
     wrappers::{bank::BankWrapper, mint::MintWrapper},
@@ -382,6 +386,7 @@ pub fn make_kamino_withdraw_ix(
         reserve_farm_state,
         kamino_program: KaminoLending::id(),
         farms_program: KaminoFarms::id(),
+        // FIX
         collateral_token_program: mint_wrapper.account.owner, // assuming Kamino liquidity and collateral are the same as our bank's mint
         liquidity_token_program: mint_wrapper.account.owner, // assuming Kamino liquidity and collateral are the same as our bank's mint
         instruction_sysvar_account: sysvar::instructions::id(),
@@ -494,6 +499,71 @@ pub fn make_drift_withdraw_ix(
         program_id: marginfi_program_id,
         accounts,
         data: marginfi::instruction::DriftWithdraw {
+            amount,
+            withdraw_all: Some(withdraw_all),
+        }
+        .data(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn make_juplend_withdraw_ix(
+    marginfi_program_id: Pubkey,
+    group: Pubkey,
+    marginfi_account: Pubkey,
+    authority: Pubkey,
+    bank: &BankWrapper,
+    mint_wrapper: &MintWrapper,
+    lending_state: &Lending,
+    remaining: &[Pubkey],
+    amount: u64,
+    withdraw_all: bool,
+    participating_accounts: &mut HashSet<Pubkey>,
+) -> Instruction {
+    let mut accounts = marginfi::accounts::JuplendWithdraw {
+        group,
+        marginfi_account,
+        authority,
+        bank: bank.address,
+        destination_token_account: mint_wrapper.token,
+        liquidity_vault_authority: find_bank_liquidity_vault_authority(
+            &bank.address,
+            &marginfi_program_id,
+        ),
+        mint: bank.bank.mint,
+        f_token_mint: lending_state.f_token_mint,
+        integration_acc_1: bank.bank.integration_acc_1, // lending state
+        integration_acc_2: bank.bank.integration_acc_2, // f_token_vault
+        integration_acc_3: bank.bank.integration_acc_3, // intermediary ATA
+        lending_admin: derive_lending_admin(),
+        supply_token_reserves_liquidity: lending_state.token_reserves_liquidity,
+        lending_supply_position_on_liquidity: lending_state.supply_position_on_liquidity,
+        rate_model: derive_rate_model(&bank.bank.mint),
+        vault: derive_liquidity_vault(&bank.bank.mint, &mint_wrapper.account.owner),
+        claim_account: bank.bank.integration_acc_1, // NOT used -> can be any mutable account
+        liquidity: derive_liquidity(),
+        liquidity_program: crate::liquidity::ID,
+        rewards_rate_model: lending_state.rewards_rate_model,
+        juplend_program: crate::juplend_earn::ID,
+        token_program: mint_wrapper.account.owner,
+        associated_token_program: associated_token::ID,
+        system_program: system_program::id(),
+    }
+    .to_account_metas(None);
+    mark_signer(&mut accounts, authority);
+
+    accounts.extend(
+        remaining
+            .iter()
+            .map(|a| AccountMeta::new_readonly(*a, false)),
+    );
+
+    participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
+
+    Instruction {
+        program_id: marginfi_program_id,
+        accounts,
+        data: marginfi::instruction::JuplendWithdraw {
             amount,
             withdraw_all: Some(withdraw_all),
         }

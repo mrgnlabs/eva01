@@ -39,9 +39,6 @@ use std::{
 };
 use std::{sync::atomic::Ordering, thread};
 
-#[cfg(feature = "publish_to_db")]
-use crate::utils::supabase::SupabasePublisher;
-
 const DECLARED_VALUE_RANGE: f64 = 0.2;
 
 pub struct Liquidator {
@@ -89,9 +86,6 @@ impl Liquidator {
         }
 
         self.rebalancer.run(HashMap::new())?;
-
-        #[cfg(feature = "publish_to_db")]
-        let mut supabase = SupabasePublisher::from_env()?;
 
         let mut liquidation_rounds = 0;
 
@@ -193,13 +187,6 @@ impl Liquidator {
                 error!("Rebalancing failed: {:?}", error);
                 ERROR_COUNT.inc();
             }
-
-            #[cfg(feature = "publish_to_db")]
-            if liquidation_rounds % 10000 == 0 {
-                if let Err(e) = self.publish_stats(&mut supabase) {
-                    error!("Failed to publish stats: {}", e);
-                }
-            }
         }
         info!("The Liquidator loop is stopped.");
 
@@ -264,20 +251,6 @@ impl Liquidator {
         }
 
         evaluation_result
-    }
-
-    #[cfg(feature = "publish_to_db")]
-    fn publish_stats(&self, _supabase: &mut SupabasePublisher) -> Result<()> {
-        // supabase.publish_health(
-        //     account.address,
-        //     total_weighted_assets.to_num::<f64>(),
-        //     total_weighted_liabilities.to_num::<f64>(),
-        //     maintenance_health.to_num::<f64>(),
-        //     percentage_health,
-        //     schedule as i64,
-        // )?;
-
-        Ok(())
     }
 
     fn process_account(
@@ -487,6 +460,7 @@ impl Liquidator {
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
         let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
 
+        // ADDRESS TODO AND CHECK ANDREI'S COMMENT
         if liquidator_profit <= self.min_profit {
             return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
         }

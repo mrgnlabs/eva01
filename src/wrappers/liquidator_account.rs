@@ -6,8 +6,8 @@ use crate::{
     kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix},
     marginfi_ixs::{
         initialize_marginfi_account, make_deposit_ix, make_drift_withdraw_ix,
-        make_end_liquidate_ix, make_init_liquidation_record_ix, make_kamino_withdraw_ix,
-        make_repay_ix, make_start_liquidate_ix, make_withdraw_ix,
+        make_end_liquidate_ix, make_init_liquidation_record_ix, make_juplend_withdraw_ix,
+        make_kamino_withdraw_ix, make_repay_ix, make_start_liquidate_ix, make_withdraw_ix,
     },
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
@@ -20,7 +20,9 @@ use anyhow::{anyhow, Context, Result};
 use fixed::types::I80F48;
 use log::{debug, error, info, warn};
 use marginfi_type_crate::{
-    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_KAMINO, ASSET_TAG_SOL},
+    constants::{
+        ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
+    },
     types::{BalanceSide, Bank},
 };
 use solana_client::{
@@ -471,6 +473,31 @@ impl LiquidatorAccount {
                     drift_spot_market,
                     reward_spot_market,
                     reward_spot_market_2,
+                    liquidatee_observation_accounts.as_ref(),
+                    asset_amount.to_num(),
+                    false,
+                    &mut participating_accounts,
+                )
+            }
+            ASSET_TAG_JUPLEND => {
+                let lending_state = self
+                    .cache
+                    .juplend_lending_states
+                    .get(&asset_bank_wrapper.bank.integration_acc_1)
+                    .context(format!(
+                        "Couldn't find the data for Juplend lending state: {}",
+                        asset_bank_wrapper.bank.integration_acc_1
+                    ))
+                    .map_err(LiquidationError::from_anyhow)?;
+
+                make_juplend_withdraw_ix(
+                    self.program_id,
+                    self.group,
+                    liquidatee_account_address,
+                    signer_pk,
+                    &asset_bank_wrapper,
+                    &asset_mint_wrapper,
+                    lending_state,
                     liquidatee_observation_accounts.as_ref(),
                     asset_amount.to_num(),
                     false,

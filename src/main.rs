@@ -31,6 +31,8 @@ mod wrappers;
 
 declare_program!(kamino_lending);
 declare_program!(kamino_farms);
+declare_program!(juplend_earn);
+declare_program!(liquidity);
 
 #[allow(clippy::too_many_arguments)]
 mod drift_idl {

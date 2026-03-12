@@ -29,6 +29,7 @@ use tokens::TokensCache;
 
 use crate::{
     drift::accounts::{SpotMarket, User as DriftUser},
+    juplend_earn::accounts::Lending,
     kamino_lending::accounts::Reserve,
     utils::accessor,
     wrappers::{oracle::OracleWrapperTrait, token_account::TokenAccountWrapper},
@@ -53,6 +54,7 @@ pub struct Cache {
     pub kamino_reserves: HashMap<Pubkey, KaminoReserve>,
     pub drift_markets: HashMap<Pubkey, DriftSpotMarket>,
     pub drift_users: HashMap<Pubkey, DriftUser>,
+    pub juplend_lending_states: HashMap<Pubkey, Lending>,
 }
 
 pub struct KaminoReserve {
@@ -92,6 +94,7 @@ impl Cache {
             kamino_reserves: HashMap::new(),
             drift_markets: HashMap::new(),
             drift_users: HashMap::new(),
+            juplend_lending_states: HashMap::new(),
         }
     }
 
@@ -316,7 +319,7 @@ mod tests {
         cache.add_lut(lut.clone());
 
         let luts = cache.luts.lock().unwrap();
-        assert_eq!(cache.luts.lock().unwrap().len(), 1);
+        assert_eq!(luts.len(), 1);
         assert_eq!(luts[0].key, lut.key);
     }
 }

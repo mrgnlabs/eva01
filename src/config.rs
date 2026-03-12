@@ -258,7 +258,7 @@ mod tests {
         jail.set_env("TOKEN_ACCOUNT_DUST_THRESHOLD", "0.0001");
         jail.set_env("SWAP_MINT", &Pubkey::new_unique().to_string());
         jail.set_env("JUP_SWAP_API_URL", "https://dummy/swap");
-        jail.set_env("JUPITER_API_KEY", "dummy_jupiter_api_key");
+        jail.set_env("JUP_SWAP_API_KEY", "dummy_jupiter_api_key");
         jail.set_env("TITAN_WS_ENDPOINT", "dummy.titan.exchange");
         jail.set_env("TITAN_API_KEY", "dummy_titan_api_key");
         jail.set_env("SLIPPAGE_BPS", "50");
