@@ -4,13 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-publish_to_db = [
-  "postgres",
-  "tokio-postgres-rustls",
-  "rustls",
-  "rustls-native-certs",
-  "rustls-pemfile",
-]
 pretty_logs = []
 
 [dependencies]
@@ -26,47 +19,37 @@ anchor-lang = { version = "0.31.1" }
 anchor-spl = { version = "0.31.1", features = ["token_2022"] }
 anchor-client = { version = "0.31.1" }
 
-anyhow = "1.0.79"
+anyhow = "1.0.102"
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
-bincode = "1.3.3"
-dotenv = "0.15"
+dotenv = "0.15.0"
 bytemuck = "1.22.0"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
-env_logger = "0.11.3"
+env_logger = "0.11.9"
 fixed = "1.28.0"
 fixed-macro = "1.2.0"
-futures = "0.3.30"
-futures-sink = "0.3.30"
-solana-dex-superagg = { git = "https://github.com/0dotxyz/solana-dex-superagg", rev = "3ab0b4f4de424a0044e983576d113e3b349b3d94" }
+futures = "0.3.32"
+futures-sink = "0.3.32"
 lazy_static = "1.5.0"
-log = "0.4.21"
-rayon = "1.10.0"
-serde = { version = "1.0.197", features = ["derive"] }
-serde_json = "1.0.116"
-tokio = { version = "1.35.1", features = ["rt", "macros"] }
+log = "0.4.29"
+rayon = "1.11.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tokio = { version = "1.50.0", features = ["rt", "macros"] }
+chrono = "0.4.44"
+warp = "0.4.2"
+prometheus = "0.14.0"
+indexmap = "2.13.0"
+tiny_http = "0.12.0"
+signal-hook = "0.4.3"
+ctrlc = "3.5.2"
+
 yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" }
 yellowstone-grpc-proto = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" }
 switchboard-on-demand = "0.11.3"
 # Includes a fix to the way results are parsed.
 switchboard-on-demand-client = { git = "https://github.com/abdulrabbani00/switchboard-sdk", rev = "99cf3f29143b81fd3ad17649725a3f994b253fbb" }
 switchboard-on-demand-v03 = { package = "switchboard-on-demand", version = "0.3.8" }
-chrono = "0.4.38"
-warp = "0.3.7"
-prometheus = "0.13.4"
-indexmap = "2.9"
-tiny_http = "0.12"
-signal-hook = "0.3.18"
-ctrlc = "3.4.7"
-
-postgres = { version = "0.19.10", optional = true, features = [
-  "with-chrono-0_4",
-] }
-tokio-postgres-rustls = { version = "=0.12", optional = true }
-rustls = { version = "0.23.31", optional = true, default-features = false, features = [
-  "std",
-] }
-rustls-native-certs = { version = "0.8.1", optional = true }
-rustls-pemfile = { version = "2", optional = true }
+solana-dex-superagg = { git = "https://github.com/0dotxyz/solana-dex-superagg", rev = "3ab0b4f4de424a0044e983576d113e3b349b3d94" }
 
 [dependencies.marginfi_type_crate]
 git = "https://github.com/mrgnlabs/marginfi-v2"

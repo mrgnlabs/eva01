@@ -38,7 +38,6 @@ pub struct SwbCranker {
     swb_gateway: Gateway,
     crossbar: Option<CrossbarClient>,
     payer: Keypair,
-    unstable_feeds: Vec<Pubkey>,
 }
 
 impl SwbCranker {
@@ -83,7 +82,6 @@ impl SwbCranker {
             swb_gateway,
             crossbar,
             payer,
-            unstable_feeds: config.unstable_swb_feeds.clone(),
         })
     }
 
@@ -97,11 +95,6 @@ impl SwbCranker {
                 warn!("SWB Simulation failed: {:?}", result);
             }
         }
-
-        let swb_oracles: Vec<_> = swb_oracles
-            .into_iter()
-            .filter(|f| !self.unstable_feeds.contains(f))
-            .collect();
 
         for chunk in swb_oracles.chunks(CHUNK_SIZE) {
             self.crank_oracles_internal(chunk.to_vec())?;
