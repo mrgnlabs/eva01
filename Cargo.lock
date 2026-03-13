@@ -1871,7 +1871,6 @@ dependencies = [
  "spl-associated-token-account 6.0.0",
  "spl-token 7.0.0",
  "switchboard-on-demand 0.11.3",
- "switchboard-on-demand 0.3.8",
  "switchboard-on-demand-client",
  "tiny_http",
  "tokio",

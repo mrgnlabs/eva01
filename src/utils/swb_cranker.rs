@@ -28,6 +28,8 @@ use crate::config::Eva01Config;
 pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
 
 pub const SWB_STALE_PRICE_ERROR_CODE: &str = "17a1";
+pub const SWB_STALE_PRICE_ERROR_CODE_NUMBER: u32 = 6049;
+pub const SWB_STALE_HANDLED_ERROR: &str = "STALE HANDLED";
 
 const CHUNK_SIZE: usize = 6;
 

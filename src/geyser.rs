@@ -171,7 +171,7 @@ impl GeyserService {
     }
 
     pub fn start(&self) -> Result<()> {
-        info!("Staring GeyserService.");
+        info!("Staring GeyserService");
 
         let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().copied().collect();
         let tls_config = ClientTlsConfig::new().with_native_roots();
@@ -193,7 +193,7 @@ impl GeyserService {
                 .tokio_rt
                 .block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
 
-            info!("Entering the GeyserService loop.");
+            info!("Entering the GeyserService loop");
             while let Some(msg) = self.tokio_rt.block_on(stream.next()) {
                 match msg {
                     Ok(msg) => {
@@ -203,7 +203,7 @@ impl GeyserService {
                             // Make sure that the message is not too old.
                             let clock = clock_manager::get_clock(&self.clock)?;
                             if account.slot < clock.slot {
-                                trace!("Discarding stale message {:?}.", account);
+                                trace!("Discarding stale message {:?}", account);
                                 continue;
                             }
 

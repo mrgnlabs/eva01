@@ -5,7 +5,6 @@ use solana_program::pubkey::Pubkey;
 pub const SEED_LENDING_MARKET_AUTH: &str = "lma";
 pub const SEED_USER_STATE: &str = "user";
 
-// FIX
 // TODO: expose these from the program side?
 pub fn derive_lending_market_authority(lending_market: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(

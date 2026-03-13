@@ -1,21 +1,13 @@
+use anchor_lang::AccountDeserialize;
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
-use log::{error, trace, warn};
-use marginfi::state::price::{
-    OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias, SwitchboardPullPriceFeed,
-};
+use log::error;
+use marginfi::state::price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias};
 use marginfi_type_crate::types::OracleSetup;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account_info::IntoAccountInfo;
-use switchboard_on_demand_client::PullFeedAccountData;
 
-use crate::{
-    cache::Cache,
-    clock_manager,
-    utils::{
-        convert_oracle_result_to_lite_pull_feed, find_oracle_keys, load_swb_pull_account_from_bytes,
-    },
-};
+use crate::{cache::Cache, clock_manager, juplend_earn, utils::find_oracle_keys};
 
 pub trait OracleWrapperTrait {
     fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self>
@@ -58,75 +50,35 @@ impl OracleWrapperTrait for OracleWrapper {
 
         let mut result: Option<Self> = None;
         match bank_wrapper.bank.config.oracle_setup {
-            OracleSetup::SwitchboardPull => {
-                for (oracle_address, oracle_account) in
-                    cache.oracles.try_get_accounts(&oracle_addresses)?
-                {
-                    let mut offsets_data = [0u8; std::mem::size_of::<PullFeedAccountData>()];
-                    offsets_data.copy_from_slice(
-                        &oracle_account.data[8..std::mem::size_of::<PullFeedAccountData>() + 8],
-                    );
-                    match load_swb_pull_account_from_bytes(&offsets_data) {
-                        Result::Ok(swb_feed) => {
-                            let price_adapter =
-                                OraclePriceFeedAdapter::SwitchboardPull(SwitchboardPullPriceFeed {
-                                    feed: Box::new(convert_oracle_result_to_lite_pull_feed(
-                                        swb_feed,
-                                    )),
-                                });
-                            let oracle_wrapper = Self {
-                                addresses: vec![oracle_address],
-                                price_adapter,
-                            };
-                            result = Some(oracle_wrapper);
-                            break;
-                        }
-                        Err(e) => {
-                            warn!(
-                            "Failed to deserialize Switchboard Pull account data for Oracle {:?} : {}",
-                            oracle_address,
-                            e
-                        );
-                            continue;
-                        }
-                    }
+            OracleSetup::PythPushOracle | OracleSetup::SwitchboardPull => {
+                if oracle_addresses.len() != 1 {
+                    return Err(anyhow!(
+                        "PythPull/SwitchboardPull setup requires exactly 1 oracle key, but found {} for the Bank {:?} (setup: {:?})",
+                        oracle_addresses.len(), bank_address, bank_wrapper.bank.config.oracle_setup
+                    ));
                 }
-            }
-            OracleSetup::PythPushOracle => {
-                for (oracle_address, oracle_account) in
-                    cache.oracles.try_get_accounts(&oracle_addresses)?
-                {
-                    let mut oracle_tuple = (oracle_address, oracle_account);
-                    let oracle_account_info = oracle_tuple.into_account_info();
-                    match OraclePriceFeedAdapter::try_from_bank(
-                        &bank_wrapper.bank,
-                        &[oracle_account_info],
-                        &clock_manager::get_clock(&cache.clock)?,
-                    ) {
-                        Result::Ok(price_adapter) => {
-                            let oracle_wrapper = Self {
-                                addresses: vec![oracle_address],
-                                price_adapter,
-                            };
-                            result = Some(oracle_wrapper);
-                            break;
-                        }
-                        Err(e) => {
-                            trace!(
-                            "Failed to build Pyth Push price adapter for Bank {:?} and Oracle {:?} : {}",
-                            bank_address,
-                            oracle_address,
-                            e
-                        );
-                            continue;
-                        }
-                    }
-                }
+
+                let bank_oracle_address = *oracle_addresses.first().unwrap();
+                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
+                let bank_oracle_account_info =
+                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
+
+                let price_adapter = OraclePriceFeedAdapter::try_from_bank(
+                    &bank_wrapper.bank,
+                    &[bank_oracle_account_info],
+                    &clock_manager::get_clock(&cache.clock)?,
+                )?;
+
+                let oracle_wrapper = Self {
+                    addresses: [bank_oracle_address].to_vec(),
+                    price_adapter,
+                };
+                result = Some(oracle_wrapper);
             }
             OracleSetup::StakedWithPythPush => {
                 if oracle_addresses.len() != 3 {
                     return Err(anyhow!(
-                        "StakedWithPythPush setup requires exactly 3 oracle keys, but found {} for the Bank {:?}.",
+                        "StakedWithPythPush setup requires exactly 3 oracle keys, but found {} for the Bank {:?}",
                         oracle_addresses.len(), bank_address
                     ));
                 }
@@ -166,66 +118,6 @@ impl OracleWrapperTrait for OracleWrapper {
                 };
                 result = Some(oracle_wrapper);
             }
-            OracleSetup::KaminoPythPush => {
-                if oracle_addresses.len() != 2 {
-                    return Err(anyhow!(
-                        "KaminoPythPush setup requires exactly 2 oracle keys, but found {} for the Bank {:?}.",
-                        oracle_addresses.len(), bank_address
-                    ));
-                }
-
-                let bank_oracle_address = *oracle_addresses.first().unwrap();
-                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
-                let bank_oracle_account_info =
-                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
-
-                let reserve_oracle_address = *oracle_addresses.get(1).unwrap();
-                let mut reserve_oracle = cache.oracles.try_get_account(&reserve_oracle_address)?;
-                let reserve_oracle_account_info =
-                    (&reserve_oracle_address, &mut reserve_oracle).into_account_info();
-
-                let price_adapter = OraclePriceFeedAdapter::try_from_bank(
-                    &bank_wrapper.bank,
-                    &[bank_oracle_account_info, reserve_oracle_account_info],
-                    &clock_manager::get_clock(&cache.clock)?,
-                )?;
-
-                let oracle_wrapper = Self {
-                    addresses: [bank_oracle_address, reserve_oracle_address].to_vec(),
-                    price_adapter,
-                };
-                result = Some(oracle_wrapper);
-            }
-            OracleSetup::KaminoSwitchboardPull => {
-                if oracle_addresses.len() != 2 {
-                    return Err(anyhow!(
-                        "KaminoSwitchboardPull setup requires exactly 2 oracle keys, but found {} for the Bank {:?}.",
-                        oracle_addresses.len(), bank_address
-                    ));
-                }
-
-                let bank_oracle_address = *oracle_addresses.first().unwrap();
-                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
-                let bank_oracle_account_info =
-                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
-
-                let reserve_oracle_address = *oracle_addresses.get(1).unwrap();
-                let mut reserve_oracle = cache.oracles.try_get_account(&reserve_oracle_address)?;
-                let reserve_oracle_account_info =
-                    (&reserve_oracle_address, &mut reserve_oracle).into_account_info();
-
-                let price_adapter = OraclePriceFeedAdapter::try_from_bank(
-                    &bank_wrapper.bank,
-                    &[bank_oracle_account_info, reserve_oracle_account_info],
-                    &clock_manager::get_clock(&cache.clock)?,
-                )?;
-
-                let oracle_wrapper = Self {
-                    addresses: [bank_oracle_address, reserve_oracle_address].to_vec(),
-                    price_adapter,
-                };
-                result = Some(oracle_wrapper);
-            }
             OracleSetup::Fixed => {
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
@@ -239,11 +131,16 @@ impl OracleWrapperTrait for OracleWrapper {
                 };
                 result = Some(oracle_wrapper);
             }
-            OracleSetup::DriftPythPull => {
+            OracleSetup::KaminoPythPush
+            | OracleSetup::KaminoSwitchboardPull
+            | OracleSetup::DriftPythPull
+            | OracleSetup::DriftSwitchboardPull
+            | OracleSetup::JuplendPythPull
+            | OracleSetup::JuplendSwitchboardPull => {
                 if oracle_addresses.len() != 2 {
                     return Err(anyhow!(
-                        "DriftPythPull setup requires exactly 2 oracle keys, but found {} for the Bank {:?}.",
-                        oracle_addresses.len(), bank_address
+                        "Integration PythPush/SwitchboardPull setup requires exactly 2 oracle keys, but found {} for the Bank {:?} (setup: {:?})",
+                        oracle_addresses.len(), bank_address, bank_wrapper.bank.config.oracle_setup
                     ));
                 }
 
@@ -252,49 +149,52 @@ impl OracleWrapperTrait for OracleWrapper {
                 let bank_oracle_account_info =
                     (&bank_oracle_address, &mut bank_oracle).into_account_info();
 
-                let spot_market_address = *oracle_addresses.get(1).unwrap();
-                let mut spot_market = cache.oracles.try_get_account(&spot_market_address)?;
-                let spot_market_account_info =
-                    (&spot_market_address, &mut spot_market).into_account_info();
+                let integration_oracle_address = *oracle_addresses.get(1).unwrap();
+                let mut integration_oracle =
+                    cache.oracles.try_get_account(&integration_oracle_address)?;
 
+                let mut clock = clock_manager::get_clock(&cache.clock)?;
+                if bank_wrapper.bank.config.oracle_setup == OracleSetup::JuplendSwitchboardPull {
+                    let mut data: &[u8] = &integration_oracle.data;
+                    let state = juplend_earn::accounts::Lending::try_deserialize(&mut data)?;
+                    clock.unix_timestamp = state.last_update_timestamp as i64;
+                }
+                let integration_oracle_account_info =
+                    (&integration_oracle_address, &mut integration_oracle).into_account_info();
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
-                    &[bank_oracle_account_info, spot_market_account_info],
-                    &clock_manager::get_clock(&cache.clock)?,
+                    &[bank_oracle_account_info, integration_oracle_account_info],
+                    &clock,
                 )?;
 
                 let oracle_wrapper = Self {
-                    addresses: [bank_oracle_address, spot_market_address].to_vec(),
+                    addresses: [bank_oracle_address, integration_oracle_address].to_vec(),
                     price_adapter,
                 };
                 result = Some(oracle_wrapper);
             }
-            OracleSetup::DriftSwitchboardPull => {
-                if oracle_addresses.len() != 2 {
+            OracleSetup::FixedKamino | OracleSetup::FixedDrift | OracleSetup::FixedJuplend => {
+                if oracle_addresses.len() != 1 {
                     return Err(anyhow!(
-                        "DriftSwitchboardPull setup requires exactly 2 oracle keys, but found {} for the Bank {:?}.",
-                        oracle_addresses.len(), bank_address
+                        "Integration Fixed setup requires exactly 1 oracle key, but found {} for the Bank {:?} (setup: {:?})",
+                        oracle_addresses.len(), bank_address, bank_wrapper.bank.config.oracle_setup
                     ));
                 }
 
-                let bank_oracle_address = *oracle_addresses.first().unwrap();
-                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
-                let bank_oracle_account_info =
-                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
-
-                let spot_market_address = *oracle_addresses.get(1).unwrap();
-                let mut spot_market = cache.oracles.try_get_account(&spot_market_address)?;
-                let spot_market_account_info =
-                    (&spot_market_address, &mut spot_market).into_account_info();
+                let integration_oracle_address = *oracle_addresses.first().unwrap();
+                let mut integration_oracle =
+                    cache.oracles.try_get_account(&integration_oracle_address)?;
+                let integration_oracle_account_info =
+                    (&integration_oracle_address, &mut integration_oracle).into_account_info();
 
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
-                    &[bank_oracle_account_info, spot_market_account_info],
+                    &[integration_oracle_account_info],
                     &clock_manager::get_clock(&cache.clock)?,
                 )?;
 
                 let oracle_wrapper = Self {
-                    addresses: [bank_oracle_address, spot_market_address].to_vec(),
+                    addresses: vec![integration_oracle_address],
                     price_adapter,
                 };
                 result = Some(oracle_wrapper);
@@ -322,6 +222,7 @@ pub mod test_utils {
     use std::str::FromStr;
 
     use solana_sdk::account::Account;
+    use switchboard_on_demand::PullFeedAccountData;
 
     use super::*;
 

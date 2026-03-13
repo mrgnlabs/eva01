@@ -69,6 +69,7 @@ pub fn make_start_liquidate_ix(
     liquidator_account: Pubkey,
     liquidation_record: Pubkey,
     observation_accounts: &[Pubkey],
+    banks: &[Pubkey],
     participating_accounts: &mut HashSet<Pubkey>,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::StartLiquidation {
@@ -80,11 +81,13 @@ pub fn make_start_liquidate_ix(
     .to_account_metas(None);
     mark_signer(&mut accounts, liquidator_account);
 
-    accounts.extend(
-        observation_accounts
-            .iter()
-            .map(|a| AccountMeta::new_readonly(a.key(), false)),
-    );
+    accounts.extend(observation_accounts.iter().map(|a| {
+        if banks.contains(a) {
+            AccountMeta::new(a.key(), false)
+        } else {
+            AccountMeta::new_readonly(a.key(), false)
+        }
+    }));
 
     participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
@@ -230,7 +233,7 @@ pub fn make_end_liquidate_ix(
     liquidation_record: Pubkey,
     fee_state: Pubkey,
     global_fee_wallet: Pubkey,
-    observation_accounts: &[Pubkey],
+    banks: &[Pubkey],
     participating_accounts: &mut HashSet<Pubkey>,
 ) -> Instruction {
     let mut accounts = marginfi::accounts::EndLiquidation {
@@ -244,11 +247,7 @@ pub fn make_end_liquidate_ix(
     .to_account_metas(None);
     mark_signer(&mut accounts, liquidator_account);
 
-    accounts.extend(
-        observation_accounts
-            .iter()
-            .map(|a| AccountMeta::new_readonly(a.key(), false)),
-    );
+    accounts.extend(banks.iter().map(|a| AccountMeta::new(a.key(), false)));
 
     participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
