@@ -1,4 +1,3 @@
-use anchor_lang::AccountDeserialize;
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use log::error;
@@ -7,7 +6,7 @@ use marginfi_type_crate::types::OracleSetup;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account_info::IntoAccountInfo;
 
-use crate::{cache::Cache, clock_manager, juplend_earn, utils::find_oracle_keys};
+use crate::{cache::Cache, clock_manager, utils::find_oracle_keys};
 
 pub trait OracleWrapperTrait {
     fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self>
@@ -153,12 +152,7 @@ impl OracleWrapperTrait for OracleWrapper {
                 let mut integration_oracle =
                     cache.oracles.try_get_account(&integration_oracle_address)?;
 
-                let mut clock = clock_manager::get_clock(&cache.clock)?;
-                if bank_wrapper.bank.config.oracle_setup == OracleSetup::JuplendSwitchboardPull {
-                    let mut data: &[u8] = &integration_oracle.data;
-                    let state = juplend_earn::accounts::Lending::try_deserialize(&mut data)?;
-                    clock.unix_timestamp = state.last_update_timestamp as i64;
-                }
+                let clock = clock_manager::get_clock(&cache.clock)?;
                 let integration_oracle_account_info =
                     (&integration_oracle_address, &mut integration_oracle).into_account_info();
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(

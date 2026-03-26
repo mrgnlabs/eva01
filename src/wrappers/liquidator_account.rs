@@ -49,6 +49,8 @@ use solana_sdk::{
 };
 use std::{collections::HashSet, sync::Arc, thread, time::Duration};
 
+pub const PROFIT_SHARE: f64 = 0.085;
+
 #[derive(Debug)]
 pub enum LiquidationError {
     Anyhow(anyhow::Error),
@@ -307,7 +309,9 @@ impl LiquidatorAccount {
         } else {
             (
                 *asset_amount,
-                liab_amount.checked_mul(I80F48::from_num(0.915)).unwrap(),
+                liab_amount
+                    .checked_mul(I80F48::from_num(1.0 - PROFIT_SHARE))
+                    .unwrap(),
             )
         };
 

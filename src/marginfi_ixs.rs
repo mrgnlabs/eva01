@@ -377,7 +377,7 @@ pub fn make_kamino_withdraw_ix(
         integration_acc_2: kamino_obligation,
         lending_market_authority: kamino_reserve.lending_market_authority,
         integration_acc_1: kamino_reserve.address,
-        reserve_liquidity_mint: kamino_reserve.reserve.liquidity.mint_pubkey,
+        mint: kamino_reserve.reserve.liquidity.mint_pubkey,
         reserve_liquidity_supply: kamino_reserve.reserve.liquidity.supply_vault,
         reserve_collateral_mint: kamino_reserve.reserve.collateral.mint_pubkey,
         reserve_source_collateral: kamino_reserve.reserve.collateral.supply_vault,

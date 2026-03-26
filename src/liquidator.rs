@@ -14,7 +14,9 @@ use crate::{
     },
     wrappers::{
         bank::BankWrapper,
-        liquidator_account::{LiquidationError, LiquidatorAccount, PreparedLiquidatableAccount},
+        liquidator_account::{
+            LiquidationError, LiquidatorAccount, PreparedLiquidatableAccount, PROFIT_SHARE,
+        },
         marginfi_account::MarginfiAccountWrapper,
         oracle::{OracleWrapper, OracleWrapperTrait},
     },
@@ -472,7 +474,9 @@ impl Liquidator {
         )?;
 
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
-        let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
+        let liquidator_profit = max_liquidatable_value
+            .checked_mul(I80F48::from_num(PROFIT_SHARE))
+            .unwrap();
 
         if liquidator_profit <= self.min_profit {
             return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
