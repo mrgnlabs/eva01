@@ -66,7 +66,7 @@ impl Liquidator {
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
-        let swb_cranker = SwbCranker::new(&config)?;
+        let swb_cranker = SwbCranker::new(&config, cache.as_ref())?;
 
         let rebalancer =
             Rebalancer::new(config.clone(), liquidator_account.clone(), cache.clone())?;
@@ -105,6 +105,13 @@ impl Liquidator {
             info!("Running the Liquidation process...");
             self.run_liquidation.store(false, Ordering::Relaxed);
 
+            if let Err(err) = self.swb_cranker.simulate_oracles(self.cache.as_ref()) {
+                error!(
+                    "Failed to simulate all Switchboard Oracles before evaluation: {}",
+                    err
+                );
+                continue;
+            }
             // TODO: come up with a better heuristics here
             if liquidation_rounds % 5 == 0 {
                 if let Err(e) = self.liquidator_account.refresh_integrations() {

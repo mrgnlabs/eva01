@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use marginfi_type_crate::{
     constants::{ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO},
-    types::Bank,
+    types::{Bank, OracleSetup},
 };
 use solana_sdk::pubkey::Pubkey;
 
@@ -37,6 +37,25 @@ impl BanksCache {
         self.banks
             .iter()
             .flat_map(|(_, bank)| find_oracle_keys(&bank.bank.config))
+            .collect()
+    }
+
+    pub fn get_swb_oracles(&self) -> HashSet<Pubkey> {
+        self.banks
+            .iter()
+            .filter_map(|(_, bank)| {
+                if matches!(
+                    bank.bank.config.oracle_setup,
+                    OracleSetup::SwitchboardPull
+                        | OracleSetup::KaminoSwitchboardPull
+                        | OracleSetup::DriftSwitchboardPull
+                        | OracleSetup::JuplendSwitchboardPull
+                ) {
+                    Some(bank.bank.config.oracle_keys[0])
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
