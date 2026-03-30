@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use base64::{prelude::BASE64_STANDARD, Engine};
-use log::warn;
+use log::{debug, warn};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use solana_account_decoder::{UiAccount, UiAccountEncoding};
@@ -15,7 +15,6 @@ use solana_client::{
     rpc_request::{RpcError, RpcRequest},
 };
 use solana_sdk::{
-    account::Account,
     commitment_config::{CommitmentConfig, CommitmentLevel},
     genesis_config::ClusterType,
     message::{v0, VersionedMessage},
@@ -30,7 +29,7 @@ use switchboard_on_demand_client::{
 };
 use tokio::runtime::{Builder, Runtime};
 
-use crate::config::Eva01Config;
+use crate::{config::Eva01Config, utils::simulation_cache::decode_and_apply_simulated_accounts};
 
 //TODO: parametrize the Swb Program ID.
 pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
@@ -157,41 +156,7 @@ impl SwbCranker {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let (simulation_result, raw_response) = match self.simulate_bundle(&bundle_txs) {
-            Ok(result) => result,
-            Err(err) if err.to_string().contains("incomplete postExecutionAccounts") => {
-                warn!(
-                    "simulateBundle omitted postExecutionAccounts; falling back to simulateTransaction for account capture"
-                );
-                let tx_accounts = self.simulate_transactions_for_accounts(&bundle_txs)?;
-
-                for (bundle_tx, post_execution_accounts) in
-                    bundle_txs.iter().zip(tx_accounts.iter())
-                {
-                    for (oracle_address, ui_account_opt) in bundle_tx
-                        .oracle_addresses
-                        .iter()
-                        .zip(post_execution_accounts.iter())
-                    {
-                        let Some(ui_account) = ui_account_opt else {
-                            return Err(anyhow!(
-                                "simulateTransaction returned null account for oracle {}",
-                                oracle_address
-                            ));
-                        };
-
-                        let account = ui_account.decode::<Account>().ok_or_else(|| {
-                            anyhow!("Failed to decode simulated account for {}", oracle_address)
-                        })?;
-
-                        cache.oracles.try_update(oracle_address, account)?;
-                    }
-                }
-
-                return Ok(());
-            }
-            Err(err) => return Err(err),
-        };
+        let (simulation_result, raw_response) = self.simulate_bundle(&bundle_txs)?;
 
         if let Some(summary) = simulation_result.summary.as_ref() {
             if !simulation_summary_succeeded(summary) {
@@ -221,9 +186,20 @@ impl SwbCranker {
             ));
         }
 
-        for (bundle_tx, tx_result) in bundle_txs
+        let fallback_accounts =
+            if has_complete_post_execution_accounts(&simulation_result, &bundle_txs) {
+                None
+            } else {
+                debug!(
+                    "simulateBundle did not provide postExecutionAccounts; using simulateTransaction fallback for account capture"
+                );
+                Some(self.simulate_transactions_for_accounts(&bundle_txs)?)
+            };
+
+        for (index, (bundle_tx, tx_result)) in bundle_txs
             .iter()
             .zip(simulation_result.transaction_results.iter())
+            .enumerate()
         {
             if tx_result.err.is_some() {
                 warn!(
@@ -233,37 +209,22 @@ impl SwbCranker {
                 );
             }
 
-            let post_execution_accounts = tx_result
-                .post_execution_accounts
-                .as_ref()
-                .ok_or_else(|| anyhow!("simulateBundle did not return post execution accounts"))?;
-
-            if post_execution_accounts.len() != bundle_tx.oracle_addresses.len() {
-                return Err(anyhow!(
-                    "simulateBundle returned {} post accounts, expected {}",
-                    post_execution_accounts.len(),
-                    bundle_tx.oracle_addresses.len(),
-                ));
-            }
-
-            for (oracle_address, ui_account_opt) in bundle_tx
-                .oracle_addresses
-                .iter()
-                .zip(post_execution_accounts.iter())
+            let post_execution_accounts = if let Some(fallback_accounts) = fallback_accounts.as_ref()
             {
-                let Some(ui_account) = ui_account_opt else {
-                    return Err(anyhow!(
-                        "simulateBundle returned null account for oracle {}",
-                        oracle_address
-                    ));
-                };
+                &fallback_accounts[index]
+            } else {
+                tx_result
+                    .post_execution_accounts
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("simulateBundle did not return post execution accounts"))?
+            };
 
-                let account = ui_account.decode::<Account>().ok_or_else(|| {
-                    anyhow!("Failed to decode simulated account for {}", oracle_address)
-                })?;
-
-                cache.oracles.try_update(oracle_address, account)?;
-            }
+            decode_and_apply_simulated_accounts(
+                &bundle_tx.oracle_addresses,
+                post_execution_accounts,
+                "simulateBundle",
+                |oracle_address, account| cache.oracles.try_update(oracle_address, account),
+            )?;
         }
 
         Ok(())
@@ -378,21 +339,7 @@ impl SwbCranker {
                 anyhow!("simulateBundle response parse failed: {err}")
             })?;
 
-        if has_complete_post_execution_accounts(&parsed, bundle_txs) {
-            Ok((parsed, raw_result))
-        } else {
-            let raw = truncate_for_log(
-                &raw_result.to_string(),
-                RAW_SIMULATE_BUNDLE_RESPONSE_LOG_LIMIT,
-            );
-            warn!(
-                "simulateBundle returned incomplete postExecutionAccounts. Raw response (truncated): {}",
-                raw
-            );
-            Err(anyhow!(
-                "simulateBundle returned incomplete postExecutionAccounts"
-            ))
-        }
+        Ok((parsed, raw_result))
     }
 
     fn simulate_transactions_for_accounts(

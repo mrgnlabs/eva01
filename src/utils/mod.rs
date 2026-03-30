@@ -2,6 +2,7 @@ pub mod drift;
 pub mod healthcheck;
 pub mod juplend;
 pub mod kamino;
+pub mod simulation_cache;
 pub mod swb_cranker;
 
 use anyhow::{anyhow, Error, Result};
