@@ -92,8 +92,6 @@ impl Liquidator {
 
         self.rebalancer.run(HashMap::new())?;
 
-        let mut liquidation_rounds = 0;
-
         info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             debug!("Waiting for any data change...");
@@ -112,14 +110,6 @@ impl Liquidator {
                 );
                 continue;
             }
-            // TODO: come up with a better heuristics here
-            if liquidation_rounds % 5 == 0 {
-                if let Err(e) = self.liquidator_account.refresh_integrations() {
-                    error!("Integrations failed to refresh: {}", e);
-                }
-            }
-
-            liquidation_rounds += 1;
 
             let mut missing_tokens: HashMap<Pubkey, I80F48> = HashMap::new();
             let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
@@ -127,6 +117,11 @@ impl Liquidator {
                 // Accounts are sorted from the highest profit to the lowest
                 accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                 accounts.reverse();
+
+                if !stale_swb_oracles.is_empty() {
+                    error!("STALE stale_swb_oracles: {:?}", stale_swb_oracles);
+                    continue;
+                }
 
                 let mut tokens_in_shortage: HashSet<Pubkey> = HashSet::new();
                 for acc in accounts {
@@ -203,6 +198,11 @@ impl Liquidator {
         info!("The Liquidator loop is stopped.");
 
         Ok(())
+    }
+
+    fn simulate_pre_liquidation_updates(&self) -> Result<()> {
+        self.liquidator_account.simulate_refresh_integrations()?;
+        self.swb_cranker.simulate_oracles(self.cache.as_ref())
     }
 
     /// Checks if liquidation is needed, for each account one by one

@@ -29,7 +29,7 @@ use marginfi_type_crate::{
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
-    rpc_config::RpcSendTransactionConfig,
+    rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig},
     rpc_request::RpcError,
 };
 
@@ -894,8 +894,7 @@ impl LiquidatorAccount {
         Ok((drift_spot_market, reward_spot_market, reward_spot_market_2))
     }
 
-    pub fn refresh_integrations(&self) -> Result<()> {
-        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
+    fn build_refresh_integrations_ixs(&self) -> (Vec<Instruction>, HashSet<Pubkey>) {
         let mut ixs = Vec::new();
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
 
@@ -948,31 +947,35 @@ impl LiquidatorAccount {
                 ixs.push(update_lending_rate_ix);
             });
 
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        (ixs, participating_accounts)
+    }
 
+    pub fn simulate_refresh_integrations(&self) -> Result<()> {
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
+        let (ixs, _) = self.build_refresh_integrations_ixs();
+
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
         let signer_pk = self.signer.pubkey();
         let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)?;
-
         let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])?;
 
-        if let Err(err) = self
-            .rpc_client
-            .send_and_confirm_transaction_with_spinner_and_config(
-                &tx,
-                CommitmentConfig::confirmed(),
-                RpcSendTransactionConfig {
-                    skip_preflight: false,
-                    preflight_commitment: Some(CommitmentLevel::Processed),
-                    ..Default::default()
-                },
-            )
-        {
-            if is_tx_too_large_client(&err) {
-                warn!("The refresh tx was too large: adding the observation accounts to a LUT and retrying");
-                self.retry_with_new_luts(ixs, participating_accounts)?;
-            }
-            return Err(anyhow!(err.to_string()));
+        let simulation = self.rpc_client.simulate_transaction_with_config(
+            &tx,
+            RpcSimulateTransactionConfig {
+                sig_verify: false,
+                replace_recent_blockhash: true,
+                commitment: Some(CommitmentConfig::confirmed()),
+                ..Default::default()
+            },
+        )?;
+
+        if let Some(err) = simulation.value.err {
+            return Err(anyhow!(
+                "Integrations refresh simulation failed with transaction error: {:?}",
+                err
+            ));
         }
+
         Ok(())
     }
 }

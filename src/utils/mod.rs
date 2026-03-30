@@ -164,7 +164,7 @@ pub mod accessor {
         Ok(u64::from_le_bytes(amount_bytes))
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn mint(bytes: &[u8]) -> Pubkey {
         let mut mint_bytes = [0u8; 32];
         mint_bytes.copy_from_slice(&bytes[..32]);
