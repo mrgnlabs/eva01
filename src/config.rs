@@ -30,7 +30,6 @@ pub struct Eva01Config {
     pub token_thresholds: HashMap<Pubkey, TokenThresholds>,
     pub default_token_max_threshold: I80F48,
     pub token_dust_threshold: I80F48,
-    pub unstable_swb_feeds: Vec<Pubkey>,
     pub titan_ws_endpoint: String,
     pub titan_api_key: String,
     pub jupiter_api_key: String,
@@ -119,9 +118,6 @@ impl Eva01Config {
                 .expect("Invalid TOKEN_DUST_THRESHOLD number"),
         );
 
-        let unstable_swb_feeds: Vec<Pubkey> =
-            parse_pubkey_list("UNSTABLE_SWB_FEEDS").unwrap_or_else(|_| vec![]);
-
         let titan_ws_endpoint = std::env::var("TITAN_WS_ENDPOINT")
             .expect("TITAN_WS_ENDPOINT environment variable is not set");
         let titan_api_key =
@@ -150,7 +146,6 @@ impl Eva01Config {
             token_thresholds,
             default_token_max_threshold,
             token_dust_threshold,
-            unstable_swb_feeds,
             titan_ws_endpoint,
             titan_api_key,
             jupiter_api_key,
@@ -230,7 +225,6 @@ mod tests {
         let min_profit = "0.01";
         let default_token_max_threshold = "10.0";
         let token_dust_threshold = "0.01";
-        let unstable_swb_feeds = Pubkey::new_unique().to_string();
         let metrics_port = "9898";
         let healthcheck_port = "3000";
 
@@ -251,14 +245,13 @@ mod tests {
         jail.set_env("METRICS_PORT", metrics_port);
         jail.set_env("DEFAULT_TOKEN_MAX_THRESHOLD", default_token_max_threshold);
         jail.set_env("TOKEN_DUST_THRESHOLD", token_dust_threshold);
-        jail.set_env("UNSTABLE_SWB_FEEDS", &unstable_swb_feeds);
     }
 
     fn setup_rebalancer_env(jail: &mut Jail) {
         jail.set_env("TOKEN_ACCOUNT_DUST_THRESHOLD", "0.0001");
         jail.set_env("SWAP_MINT", &Pubkey::new_unique().to_string());
         jail.set_env("JUP_SWAP_API_URL", "https://dummy/swap");
-        jail.set_env("JUPITER_API_KEY", "dummy_jupiter_api_key");
+        jail.set_env("JUP_SWAP_API_KEY", "dummy_jupiter_api_key");
         jail.set_env("TITAN_WS_ENDPOINT", "dummy.titan.exchange");
         jail.set_env("TITAN_API_KEY", "dummy_titan_api_key");
         jail.set_env("SLIPPAGE_BPS", "50");

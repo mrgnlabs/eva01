@@ -8,10 +8,15 @@ use crate::{
         LIQUIDATABLE_ACCOUNTS_FOUND_TOTAL, LIQUIDATION_SCAN_IN_PROGRESS,
     },
     rebalancer::Rebalancer,
-    utils::{calc_total_weighted_assets_liabs, swb_cranker::SwbCranker},
+    utils::{
+        calc_total_weighted_assets_liabs,
+        swb_cranker::{SwbCranker, SWB_STALE_HANDLED_ERROR, SWB_STALE_PRICE_ERROR_CODE_NUMBER},
+    },
     wrappers::{
         bank::BankWrapper,
-        liquidator_account::{LiquidationError, LiquidatorAccount, PreparedLiquidatableAccount},
+        liquidator_account::{
+            LiquidationError, LiquidatorAccount, PreparedLiquidatableAccount, PROFIT_SHARE,
+        },
         marginfi_account::MarginfiAccountWrapper,
         oracle::{OracleWrapper, OracleWrapperTrait},
     },
@@ -39,9 +44,6 @@ use std::{
 };
 use std::{sync::atomic::Ordering, thread};
 
-#[cfg(feature = "publish_to_db")]
-use crate::utils::supabase::SupabasePublisher;
-
 const DECLARED_VALUE_RANGE: f64 = 0.2;
 
 pub struct Liquidator {
@@ -64,7 +66,7 @@ impl Liquidator {
         stop_liquidator: Arc<AtomicBool>,
         cache: Arc<Cache>,
     ) -> Result<Self> {
-        let swb_cranker = SwbCranker::new(&config)?;
+        let swb_cranker = SwbCranker::new(&config, cache.as_ref())?;
 
         let rebalancer =
             Rebalancer::new(config.clone(), liquidator_account.clone(), cache.clone())?;
@@ -90,9 +92,6 @@ impl Liquidator {
 
         self.rebalancer.run(HashMap::new())?;
 
-        #[cfg(feature = "publish_to_db")]
-        let mut supabase = SupabasePublisher::from_env()?;
-
         let mut liquidation_rounds = 0;
 
         info!("Staring the Liquidator loop.");
@@ -103,11 +102,16 @@ impl Liquidator {
                 continue;
             }
 
-            liquidation_rounds += 1;
-
             info!("Running the Liquidation process...");
             self.run_liquidation.store(false, Ordering::Relaxed);
 
+            if let Err(err) = self.swb_cranker.simulate_oracles(self.cache.as_ref()) {
+                error!(
+                    "Failed to simulate all Switchboard Oracles before evaluation: {}",
+                    err
+                );
+                continue;
+            }
             // TODO: come up with a better heuristics here
             if liquidation_rounds % 5 == 0 {
                 if let Err(e) = self.liquidator_account.refresh_integrations() {
@@ -115,13 +119,15 @@ impl Liquidator {
                 }
             }
 
+            liquidation_rounds += 1;
+
             let mut missing_tokens: HashMap<Pubkey, I80F48> = HashMap::new();
-            if let Ok(mut accounts) = self.evaluate_all_accounts() {
+            let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
+            if let Ok(mut accounts) = self.evaluate_all_accounts(&mut stale_swb_oracles) {
                 // Accounts are sorted from the highest profit to the lowest
                 accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                 accounts.reverse();
 
-                let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
                 let mut tokens_in_shortage: HashSet<Pubkey> = HashSet::new();
                 for acc in accounts {
                     // Get the liability mint for metrics
@@ -193,13 +199,6 @@ impl Liquidator {
                 error!("Rebalancing failed: {:?}", error);
                 ERROR_COUNT.inc();
             }
-
-            #[cfg(feature = "publish_to_db")]
-            if liquidation_rounds % 10000 == 0 {
-                if let Err(e) = self.publish_stats(&mut supabase) {
-                    error!("Failed to publish stats: {}", e);
-                }
-            }
         }
         info!("The Liquidator loop is stopped.");
 
@@ -207,7 +206,10 @@ impl Liquidator {
     }
 
     /// Checks if liquidation is needed, for each account one by one
-    fn evaluate_all_accounts(&mut self) -> Result<Vec<PreparedLiquidatableAccount>> {
+    fn evaluate_all_accounts(
+        &mut self,
+        stale_swb_oracles: &mut HashSet<Pubkey>,
+    ) -> Result<Vec<PreparedLiquidatableAccount>> {
         LIQUIDATION_SCAN_IN_PROGRESS.set(1);
         let scan_started = Instant::now();
         let mut total_scanned: u64 = 0;
@@ -223,15 +225,20 @@ impl Liquidator {
                             index += 1;
                             continue;
                         }
-                        match self.process_account(&account) {
+                        match self.process_account(&account, stale_swb_oracles) {
                             Ok(acc_opt) => {
                                 if let Some(acc) = acc_opt {
                                     result.push(acc);
                                 }
                             }
-                            Err(e) => {
-                                debug!("Failed to process account {:?}: {:?}", account.address, e);
-                                ERROR_COUNT.inc();
+                            Err(err) => {
+                                if !err.to_string().contains(SWB_STALE_HANDLED_ERROR) {
+                                    debug!(
+                                        "Failed to process account {:?}: {:?}",
+                                        account.address, err
+                                    );
+                                    ERROR_COUNT.inc();
+                                }
                             }
                         }
                     }
@@ -266,23 +273,10 @@ impl Liquidator {
         evaluation_result
     }
 
-    #[cfg(feature = "publish_to_db")]
-    fn publish_stats(&self, _supabase: &mut SupabasePublisher) -> Result<()> {
-        // supabase.publish_health(
-        //     account.address,
-        //     total_weighted_assets.to_num::<f64>(),
-        //     total_weighted_liabilities.to_num::<f64>(),
-        //     maintenance_health.to_num::<f64>(),
-        //     percentage_health,
-        //     schedule as i64,
-        // )?;
-
-        Ok(())
-    }
-
     fn process_account(
         &self,
         account: &MarginfiAccountWrapper,
+        stale_swb_oracles: &mut HashSet<Pubkey>,
     ) -> Result<Option<PreparedLiquidatableAccount>> {
         let (deposit_shares, liab_shares) = account.get_deposits_and_liabilities_shares();
         if liab_shares.is_empty() {
@@ -293,12 +287,14 @@ impl Liquidator {
             deposit_shares,
             &BalanceSide::Assets,
             RequirementType::Maintenance,
+            stale_swb_oracles,
         )?;
 
         let liab_values = self.get_value_of_shares(
             liab_shares,
             &BalanceSide::Liabilities,
             RequirementType::Maintenance,
+            stale_swb_oracles,
         )?;
 
         let (asset_bank_pk, liab_bank_pk) =
@@ -396,8 +392,8 @@ impl Liquidator {
         )?;
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         debug!(
-            "Account {} maintenance_health = {:?}",
-            account.address, maintenance_health
+            "Account {} maintenance_health = {:?} (assets {:?}, liabilities {:?})",
+            account.address, maintenance_health, total_weighted_assets, total_weighted_liabilities
         );
         if maintenance_health >= I80F48::ZERO {
             // TODO: revisit this crazy return type
@@ -485,7 +481,9 @@ impl Liquidator {
         )?;
 
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_maint_value);
-        let liquidator_profit = max_liquidatable_value * fixed_macro::types::I80F48!(0.025);
+        let liquidator_profit = max_liquidatable_value
+            .checked_mul(I80F48::from_num(PROFIT_SHARE))
+            .unwrap();
 
         if liquidator_profit <= self.min_profit {
             return Ok((I80F48::ZERO, I80F48::ZERO, I80F48::ZERO, I80F48::ZERO));
@@ -568,12 +566,37 @@ impl Liquidator {
         shares: Vec<(I80F48, Pubkey)>,
         balance_side: &BalanceSide,
         requirement_type: RequirementType,
+        stale_swb_oracles: &mut HashSet<Pubkey>,
     ) -> Result<Vec<(I80F48, Pubkey)>> {
         let mut values: Vec<(I80F48, Pubkey)> = Vec::new();
 
         for (shares_amount, bank_pk) in shares {
             let bank_wrapper = self.cache.banks.try_get_bank(&bank_pk)?;
-            let oracle_wrapper = OracleWrapper::build(&self.cache, &bank_pk)?;
+            if stale_swb_oracles.contains(&bank_wrapper.bank.config.oracle_keys[0]) {
+                return Err(anyhow!(SWB_STALE_HANDLED_ERROR));
+            }
+
+            let oracle_wrapper = match OracleWrapper::build(&self.cache, &bank_pk) {
+                Ok(oracle_wrapper) => oracle_wrapper,
+                Err(err) => {
+                    if err
+                        .downcast_ref::<anchor_lang::error::Error>()
+                        .is_some_and(|e| {
+                            if let anchor_lang::error::Error::AnchorError(anchor_error) = e {
+                                return anchor_error.error_code_number
+                                    == SWB_STALE_PRICE_ERROR_CODE_NUMBER;
+                            }
+                            false
+                        })
+                    {
+                        // If it's Switchboard, then it's always at position 0
+                        stale_swb_oracles.insert(bank_wrapper.bank.config.oracle_keys[0]);
+                        return Err(anyhow!(SWB_STALE_HANDLED_ERROR));
+                    }
+
+                    return Err(err);
+                }
+            };
 
             // TODO: add support for isolated or deprecate completely?
             if matches!(bank_wrapper.bank.config.risk_tier, RiskTier::Isolated) {
@@ -599,7 +622,6 @@ impl Liquidator {
                         .bank
                         .get_liability_amount(shares_amount)
                         .map_err(|e| anyhow!("Couldn't calculate liability amount for: {}", e))?;
-                    let oracle_wrapper = OracleWrapper::build(&self.cache, &bank_pk)?;
                     bank_wrapper.calc_value(
                         &oracle_wrapper,
                         liabilities,

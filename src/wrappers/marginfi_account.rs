@@ -82,7 +82,14 @@ impl MarginfiAccountWrapper {
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         cache: Arc<Cache>,
-    ) -> Result<(Vec<Pubkey>, Vec<Pubkey>, HashSet<Pubkey>, HashSet<Pubkey>)> {
+    ) -> Result<(
+        Vec<Pubkey>,
+        Vec<Pubkey>,
+        Vec<Pubkey>,
+        HashSet<Pubkey>,
+        HashSet<Pubkey>,
+        HashSet<Pubkey>,
+    )> {
         let mut bank_pks: HashSet<Pubkey> =
             MarginfiAccountWrapper::get_active_banks(lending_account)
                 .into_iter()
@@ -102,6 +109,7 @@ impl MarginfiAccountWrapper {
         let mut observation_accounts: Vec<Pubkey> = vec![];
         let mut kamino_reserves = HashSet::new();
         let mut drift_spot_markets = HashSet::new();
+        let mut juplend_states = HashSet::new();
 
         for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
@@ -122,6 +130,12 @@ impl MarginfiAccountWrapper {
                         bank_wrapper.bank.config.oracle_keys[2],
                     ]
                 }
+                OracleSetup::Fixed => {
+                    vec![
+                        *bank_pk,
+                        // no oracles here!
+                    ]
+                }
                 OracleSetup::KaminoPythPush => {
                     kamino_reserves.insert(bank_wrapper.bank.integration_acc_1);
                     vec![
@@ -139,11 +153,9 @@ impl MarginfiAccountWrapper {
                         bank_wrapper.bank.config.oracle_keys[1],
                     ]
                 }
-                OracleSetup::Fixed => {
-                    vec![
-                        *bank_pk,
-                        // no oracles here!
-                    ]
+                OracleSetup::FixedKamino => {
+                    kamino_reserves.insert(bank_wrapper.bank.integration_acc_1);
+                    vec![*bank_pk, bank_wrapper.bank.config.oracle_keys[1]]
                 }
                 OracleSetup::DriftPythPull => {
                     drift_spot_markets.insert(bank_wrapper.bank.integration_acc_1);
@@ -162,6 +174,31 @@ impl MarginfiAccountWrapper {
                         bank_wrapper.bank.config.oracle_keys[1],
                     ]
                 }
+                OracleSetup::FixedDrift => {
+                    drift_spot_markets.insert(bank_wrapper.bank.integration_acc_1);
+                    vec![*bank_pk, bank_wrapper.bank.config.oracle_keys[1]]
+                }
+                OracleSetup::JuplendPythPull => {
+                    juplend_states.insert(bank_wrapper.bank.integration_acc_1);
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
+                OracleSetup::JuplendSwitchboardPull => {
+                    juplend_states.insert(bank_wrapper.bank.integration_acc_1);
+                    swb_oracles.push(oracle_wrapper.get_address());
+                    vec![
+                        *bank_pk,
+                        oracle_wrapper.get_address(),
+                        bank_wrapper.bank.config.oracle_keys[1],
+                    ]
+                }
+                OracleSetup::FixedJuplend => {
+                    juplend_states.insert(bank_wrapper.bank.integration_acc_1);
+                    vec![*bank_pk, bank_wrapper.bank.config.oracle_keys[1]]
+                }
                 _ => {
                     return Err(Error::msg("Unsupported Oracle setup"));
                 }
@@ -172,8 +209,10 @@ impl MarginfiAccountWrapper {
         Ok((
             observation_accounts,
             swb_oracles,
+            bank_pks,
             kamino_reserves,
             drift_spot_markets,
+            juplend_states,
         ))
     }
 }
@@ -198,7 +237,8 @@ pub mod test_utils {
                     active: 1,
                     bank_pk: asset_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
-                    _pad0: [0; 6],
+                    tag: 0,
+                    _pad0: [0; 4],
                     asset_shares: WrappedI80F48::from(I80F48::from_num(100)),
                     liability_shares: WrappedI80F48::from(I80F48::ZERO),
                     emissions_outstanding: WrappedI80F48::from(I80F48::ZERO),
@@ -209,7 +249,8 @@ pub mod test_utils {
                     active: 1,
                     bank_pk: liability_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
-                    _pad0: [0; 6],
+                    tag: 0,
+                    _pad0: [0; 4],
                     asset_shares: WrappedI80F48::from(I80F48::ZERO),
                     liability_shares: WrappedI80F48::from(I80F48::from_num(100)),
                     emissions_outstanding: WrappedI80F48::from(I80F48::ZERO),
@@ -222,7 +263,9 @@ pub mod test_utils {
 
             let lending_account = LendingAccount {
                 balances,
-                _padding: [0u64; 8],
+                last_tag_used: 0,
+                _pad1: [0; 6],
+                _padding: [0; 7],
             };
             Self {
                 address: Pubkey::new_unique(),
@@ -239,7 +282,8 @@ pub mod test_utils {
                     active: 1,
                     bank_pk: asset_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
-                    _pad0: [0; 6],
+                    tag: 0,
+                    _pad0: [0; 4],
                     asset_shares: WrappedI80F48::from(I80F48::from_num(100)),
                     liability_shares: WrappedI80F48::from(I80F48::ZERO),
                     emissions_outstanding: WrappedI80F48::from(I80F48::ZERO),
@@ -250,7 +294,8 @@ pub mod test_utils {
                     active: 1,
                     bank_pk: liability_bank.address,
                     bank_asset_tag: ASSET_TAG_DEFAULT,
-                    _pad0: [0; 6],
+                    tag: 0,
+                    _pad0: [0; 4],
                     asset_shares: WrappedI80F48::from(I80F48::ZERO),
                     liability_shares: WrappedI80F48::from(I80F48::from_num(100)),
                     emissions_outstanding: WrappedI80F48::from(I80F48::ZERO),
@@ -263,7 +308,9 @@ pub mod test_utils {
 
             let lending_account = LendingAccount {
                 balances,
-                _padding: [0u64; 8],
+                last_tag_used: 0,
+                _pad1: [0; 6],
+                _padding: [0; 7],
             };
             Self {
                 address: Pubkey::new_unique(),
@@ -394,6 +441,8 @@ mod tests {
                     usdc_bank.bank.config.oracle_keys[0],
                 ],
                 vec![],
+                vec![sol_bank.address, usdc_bank.address],
+                HashSet::new(),
                 HashSet::new(),
                 HashSet::new()
             )
@@ -436,6 +485,12 @@ mod tests {
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
                 vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                vec![
+                    bonk_bank_wrapper.address,
+                    sol_bank_wrapper.address,
+                    usdc_bank_wrapper.address
+                ],
+                HashSet::new(),
                 HashSet::new(),
                 HashSet::new()
             )
@@ -479,6 +534,8 @@ mod tests {
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
                 vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                vec![bonk_bank_wrapper.address, usdc_bank_wrapper.address],
+                HashSet::new(),
                 HashSet::new(),
                 HashSet::new()
             )

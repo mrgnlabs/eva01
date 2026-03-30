@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use marginfi_type_crate::{
-    constants::{ASSET_TAG_DRIFT, ASSET_TAG_KAMINO},
-    types::Bank,
+    constants::{ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO},
+    types::{Bank, OracleSetup},
 };
 use solana_sdk::pubkey::Pubkey;
 
@@ -40,6 +40,25 @@ impl BanksCache {
             .collect()
     }
 
+    pub fn get_swb_oracles(&self) -> HashSet<Pubkey> {
+        self.banks
+            .iter()
+            .filter_map(|(_, bank)| {
+                if matches!(
+                    bank.bank.config.oracle_setup,
+                    OracleSetup::SwitchboardPull
+                        | OracleSetup::KaminoSwitchboardPull
+                        | OracleSetup::DriftSwitchboardPull
+                        | OracleSetup::JuplendSwitchboardPull
+                ) {
+                    Some(bank.bank.config.oracle_keys[0])
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn get_kamino_reserves(&self) -> HashSet<Pubkey> {
         self.banks
             .iter()
@@ -72,6 +91,19 @@ impl BanksCache {
             .filter_map(|(_, bank)| {
                 if bank.bank.config.asset_tag == ASSET_TAG_DRIFT {
                     Some(bank.bank.integration_acc_2)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_juplend_lending_states(&self) -> HashSet<Pubkey> {
+        self.banks
+            .iter()
+            .filter_map(|(_, bank)| {
+                if bank.bank.config.asset_tag == ASSET_TAG_JUPLEND {
+                    Some(bank.bank.integration_acc_1)
                 } else {
                     None
                 }

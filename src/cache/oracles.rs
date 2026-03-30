@@ -47,7 +47,8 @@ impl OraclesCache {
             .cloned()
     }
 
-    pub fn try_get_accounts(&self, addresses: &[Pubkey]) -> Result<Vec<(Pubkey, Account)>> {
+    #[cfg(test)]
+    fn try_get_accounts(&self, addresses: &[Pubkey]) -> Result<Vec<(Pubkey, Account)>> {
         let accounts_guard = self.accounts.read().map_err(|e| {
             anyhow!(
                 "Failed to lock the Oracle accounts map for returning specific accounts! {}",
@@ -89,6 +90,7 @@ impl OraclesCache {
             .len())
     }
 }
+
 #[cfg(test)]
 mod tests {
     use crate::wrappers::oracle::test_utils::TestOracleWrapper;

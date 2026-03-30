@@ -3,11 +3,12 @@ use crate::{
     cache::{Cache, DriftSpotMarket},
     config::Eva01Config,
     drift_ixs::make_refresh_spot_market_ix,
+    juplend_ixs::make_update_lending_rate_ix,
     kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix},
     marginfi_ixs::{
         initialize_marginfi_account, make_deposit_ix, make_drift_withdraw_ix,
-        make_end_liquidate_ix, make_init_liquidation_record_ix, make_kamino_withdraw_ix,
-        make_repay_ix, make_start_liquidate_ix, make_withdraw_ix,
+        make_end_liquidate_ix, make_init_liquidation_record_ix, make_juplend_withdraw_ix,
+        make_kamino_withdraw_ix, make_repay_ix, make_start_liquidate_ix, make_withdraw_ix,
     },
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
@@ -20,7 +21,9 @@ use anyhow::{anyhow, Context, Result};
 use fixed::types::I80F48;
 use log::{debug, error, info, warn};
 use marginfi_type_crate::{
-    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_KAMINO, ASSET_TAG_SOL},
+    constants::{
+        ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
+    },
     types::{BalanceSide, Bank},
 };
 use solana_client::{
@@ -45,6 +48,8 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use std::{collections::HashSet, sync::Arc, thread, time::Duration};
+
+pub const PROFIT_SHARE: f64 = 0.085;
 
 #[derive(Debug)]
 pub enum LiquidationError {
@@ -304,7 +309,9 @@ impl LiquidatorAccount {
         } else {
             (
                 *asset_amount,
-                liab_amount.checked_mul(I80F48::from_num(0.915)).unwrap(),
+                liab_amount
+                    .checked_mul(I80F48::from_num(1.0 - PROFIT_SHARE))
+                    .unwrap(),
             )
         };
 
@@ -313,8 +320,10 @@ impl LiquidatorAccount {
         let (
             liquidatee_observation_accounts,
             liquidatee_swb_oracles,
+            liquidatee_banks,
             kamino_reserves,
             drift_spot_markets,
+            juplend_states,
         ) = MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
             &liquidatee_account.lending_account,
             &banks_to_include,
@@ -356,6 +365,7 @@ impl LiquidatorAccount {
             signer_pk,
             liquidation_record,
             liquidatee_observation_accounts.as_ref(),
+            &liquidatee_banks,
             &mut participating_accounts,
         );
 
@@ -401,6 +411,25 @@ impl LiquidatorAccount {
                 &mut participating_accounts,
             );
             ixs.push(refresh_spot_market_ix);
+        }
+
+        for lending_state_address in juplend_states {
+            let lending_state = self
+                .cache
+                .juplend_lending_states
+                .get(&lending_state_address)
+                .context(format!(
+                    "Couldn't find the data for Juplend lending state: {}",
+                    lending_state_address
+                ))
+                .map_err(LiquidationError::from_anyhow)?;
+
+            let update_lending_rate_ix = make_update_lending_rate_ix(
+                lending_state_address,
+                lending_state,
+                &mut participating_accounts,
+            );
+            ixs.push(update_lending_rate_ix);
         }
 
         let asset_mint_wrapper = self
@@ -477,6 +506,31 @@ impl LiquidatorAccount {
                     &mut participating_accounts,
                 )
             }
+            ASSET_TAG_JUPLEND => {
+                let lending_state = self
+                    .cache
+                    .juplend_lending_states
+                    .get(&asset_bank_wrapper.bank.integration_acc_1)
+                    .context(format!(
+                        "Couldn't find the data for Juplend lending state: {}",
+                        asset_bank_wrapper.bank.integration_acc_1
+                    ))
+                    .map_err(LiquidationError::from_anyhow)?;
+
+                make_juplend_withdraw_ix(
+                    self.program_id,
+                    self.group,
+                    liquidatee_account_address,
+                    signer_pk,
+                    &asset_bank_wrapper,
+                    &asset_mint_wrapper,
+                    lending_state,
+                    liquidatee_observation_accounts.as_ref(),
+                    asset_amount.to_num(),
+                    false,
+                    &mut participating_accounts,
+                )
+            }
             _ => {
                 return Err(LiquidationError::Anyhow(anyhow!(
                     "Unsupported asset tag: {}",
@@ -512,7 +566,7 @@ impl LiquidatorAccount {
             liquidation_record,
             self.cache.global_fee_state_key,
             self.cache.global_fee_wallet,
-            liquidatee_observation_accounts.as_ref(),
+            &liquidatee_banks,
             &mut participating_accounts,
         );
         ixs.push(end_ix);
@@ -570,15 +624,14 @@ impl LiquidatorAccount {
                             Ok(())
                         }
                         Err(err) => {
-                            let err_string = err.to_string();
                             if err
-                                .downcast::<ClientError>()
-                                .is_ok_and(|e| is_stale_swb_price_error(&e))
+                                .downcast_ref::<ClientError>()
+                                .is_some_and(is_stale_swb_price_error)
                             {
                                 // TODO: Should we just crank always?? Also refresh Kamino reserves?
                                 Err(LiquidationError::StaleOracles(liquidatee_swb_oracles))
                             } else {
-                                Err(LiquidationError::Anyhow(anyhow!(err_string)))
+                                Err(LiquidationError::Anyhow(err))
                             }
                         }
                     }
@@ -637,7 +690,7 @@ impl LiquidatorAccount {
 
         debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let (observation_accounts, _, _, _) =
+        let (observation_accounts, _, _, _, _, _) =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &self
                     .cache
@@ -855,7 +908,7 @@ impl LiquidatorAccount {
                 let refresh_reserve_ix =
                     make_refresh_reserve_ix(*address, reserve, &mut participating_accounts);
                 debug!(
-                    "Refreshing: reserve {}, mint {}!!!",
+                    "Refreshing: reserve {}, mint {}",
                     address, reserve.reserve.collateral.mint_pubkey
                 );
 
@@ -867,7 +920,7 @@ impl LiquidatorAccount {
             .iter()
             .for_each(|(address, spot_market)| {
                 debug!(
-                    "Refreshing: market {}, mint {}, oracle {}!!!",
+                    "Refreshing: market {}, mint {}, oracle {}",
                     address, spot_market.market.mint, spot_market.market.oracle
                 );
 
@@ -879,6 +932,20 @@ impl LiquidatorAccount {
                 );
 
                 ixs.push(refresh_spot_market_ix);
+            });
+
+        self.cache
+            .juplend_lending_states
+            .iter()
+            .for_each(|(address, lending_state)| {
+                debug!("Refreshing: state {}, mint {}", address, lending_state.mint);
+
+                let update_lending_rate_ix = make_update_lending_rate_ix(
+                    *address,
+                    lending_state,
+                    &mut participating_accounts,
+                );
+                ixs.push(update_lending_rate_ix);
             });
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;

@@ -1,9 +1,9 @@
 
-# Eva01 - the Marginfi Liquidator
+# Eva01 - the Project 0 Liquidator
 
 ## Structure
 * `bin` - shell scripts and environment configuration file templare
-* `idls` - IDLs for Project 0 integrations (Kamino, Drift etc.)
+* `idls` - IDLs for Project 0 integrations (Kamino, Drift, Juplend)
 * `src` - source code
 * eva.Dockerfile - the Docker configuration for building an image to run on Kubernetes
 

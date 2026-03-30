@@ -1,4 +1,3 @@
-use bincode::deserialize;
 use log::{debug, error, info};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::clock::Clock;
@@ -57,9 +56,9 @@ impl ClockManager {
 }
 
 pub fn fetch_clock(rpc_client: &RpcClient) -> anyhow::Result<Clock> {
-    let clock_account = rpc_client.get_account(&sysvar::clock::id())?;
-    let clock = deserialize(&clock_account.data)?;
-    Ok(clock)
+    Ok(rpc_client
+        .get_account(&sysvar::clock::id())?
+        .deserialize_data()?)
 }
 
 pub fn get_clock(clock: &Arc<Mutex<Clock>>) -> anyhow::Result<Clock> {

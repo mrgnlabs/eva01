@@ -20,6 +20,7 @@ mod config;
 mod drift_ixs;
 mod geyser;
 mod geyser_processor;
+mod juplend_ixs;
 mod kamino_ixs;
 mod liquidator;
 mod marginfi_ixs;
@@ -31,6 +32,8 @@ mod wrappers;
 
 declare_program!(kamino_lending);
 declare_program!(kamino_farms);
+declare_program!(juplend_earn);
+declare_program!(liquidity);
 
 #[allow(clippy::too_many_arguments)]
 mod drift_idl {

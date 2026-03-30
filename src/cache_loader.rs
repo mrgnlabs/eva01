@@ -26,7 +26,7 @@ use crate::{
     cache::{Cache, DriftSpotMarket, KaminoReserve},
     drift,
     geyser::AccountType,
-    kamino_lending,
+    juplend_earn, kamino_lending,
     utils::{
         batch_get_multiple_accounts, kamino::derive_lending_market_authority, BatchLoadingConfig,
     },
@@ -74,6 +74,7 @@ impl CacheLoader {
         self.load_kamino_reserves(cache)?;
         self.load_drift_spot_markets(cache)?;
         self.load_drift_users(cache)?;
+        self.load_juplend_lending_states(cache)?;
 
         Ok(())
     }
@@ -498,6 +499,40 @@ impl CacheLoader {
         }
 
         info!("Loaded {} Drift Users.", cache.drift_users.len());
+
+        Ok(())
+    }
+
+    fn load_juplend_lending_states(&self, cache: &mut Cache) -> anyhow::Result<()> {
+        info!("Loading Juplend Lending States...");
+
+        let state_addresses = cache
+            .banks
+            .get_juplend_lending_states()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let lending_states = batch_get_multiple_accounts(
+            &self.rpc_client,
+            &state_addresses,
+            BatchLoadingConfig::DEFAULT,
+        )?;
+
+        for (&address, account) in state_addresses.iter().zip(lending_states.iter()) {
+            if let Some(account) = account {
+                debug!("Loaded Juplend Lending State: {:?}", address);
+                let mut data: &[u8] = &account.data;
+                let state = juplend_earn::accounts::Lending::try_deserialize(&mut data)?;
+
+                cache.juplend_lending_states.insert(address, state);
+            } else {
+                error!("Lending State account {:?} not found.", address);
+            }
+        }
+
+        info!(
+            "Loaded {} Juplend Lending States.",
+            cache.juplend_lending_states.len()
+        );
 
         Ok(())
     }
