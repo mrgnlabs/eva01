@@ -21,7 +21,7 @@ use crate::{
         oracle::{OracleWrapper, OracleWrapperTrait},
     },
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{debug, error, info, warn};
@@ -103,11 +103,8 @@ impl Liquidator {
             info!("Running the Liquidation process...");
             self.run_liquidation.store(false, Ordering::Relaxed);
 
-            if let Err(err) = self.swb_cranker.simulate_oracles(self.cache.as_ref()) {
-                error!(
-                    "Failed to simulate all Switchboard Oracles before evaluation: {}",
-                    err
-                );
+            if let Err(err) = self.simulate_pre_liquidation_updates() {
+                error!("Failed pre-liquidation simulation round: {}", err);
                 continue;
             }
 
@@ -201,8 +198,12 @@ impl Liquidator {
     }
 
     fn simulate_pre_liquidation_updates(&self) -> Result<()> {
-        self.liquidator_account.simulate_refresh_integrations()?;
-        self.swb_cranker.simulate_oracles(self.cache.as_ref())
+        self.liquidator_account
+            .simulate_refresh_integrations()
+            .context("simulate_refresh_integrations failed")?;
+        self.swb_cranker
+            .simulate_oracles(self.cache.as_ref())
+            .context("simulate_oracles failed")
     }
 
     /// Checks if liquidation is needed, for each account one by one

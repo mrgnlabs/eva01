@@ -13,6 +13,7 @@ use crate::{
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
         self, check_asset_tags_matching, drift::derive_spot_market, marginfi_account_by_authority,
+        simulation_cache::decode_and_apply_simulated_accounts,
         swb_cranker::is_stale_swb_price_error,
     },
     wrappers::oracle::OracleWrapper,
@@ -26,10 +27,14 @@ use marginfi_type_crate::{
     },
     types::{BalanceSide, Bank},
 };
+use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
-    rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig},
+    rpc_config::{
+        RpcSendTransactionConfig, RpcSimulateTransactionAccountsConfig,
+        RpcSimulateTransactionConfig,
+    },
     rpc_request::RpcError,
 };
 
@@ -372,12 +377,7 @@ impl LiquidatorAccount {
         for kamino_reserve_address in kamino_reserves {
             let kamino_reserve = self
                 .cache
-                .kamino_reserves
-                .get(&kamino_reserve_address)
-                .context(format!(
-                    "Couldn't find the data for Kamino reserve: {}",
-                    kamino_reserve_address
-                ))
+                .try_get_kamino_reserve(&kamino_reserve_address)
                 .map_err(LiquidationError::from_anyhow)?;
 
             debug!(
@@ -387,7 +387,7 @@ impl LiquidatorAccount {
 
             let refresh_reserve_ix = make_refresh_reserve_ix(
                 kamino_reserve_address,
-                kamino_reserve,
+                &kamino_reserve,
                 &mut participating_accounts,
             );
             ixs.push(refresh_reserve_ix);
@@ -396,12 +396,7 @@ impl LiquidatorAccount {
         for spot_market_address in drift_spot_markets {
             let spot_market = self
                 .cache
-                .drift_markets
-                .get(&spot_market_address)
-                .context(format!(
-                    "Couldn't find the data for Drift spot market: {}",
-                    spot_market_address
-                ))
+                .try_get_drift_market(&spot_market_address)
                 .map_err(LiquidationError::from_anyhow)?;
 
             let refresh_spot_market_ix = make_refresh_spot_market_ix(
@@ -416,17 +411,12 @@ impl LiquidatorAccount {
         for lending_state_address in juplend_states {
             let lending_state = self
                 .cache
-                .juplend_lending_states
-                .get(&lending_state_address)
-                .context(format!(
-                    "Couldn't find the data for Juplend lending state: {}",
-                    lending_state_address
-                ))
+                .try_get_juplend_lending_state(&lending_state_address)
                 .map_err(LiquidationError::from_anyhow)?;
 
             let update_lending_rate_ix = make_update_lending_rate_ix(
                 lending_state_address,
-                lending_state,
+                &lending_state,
                 &mut participating_accounts,
             );
             ixs.push(update_lending_rate_ix);
@@ -454,12 +444,7 @@ impl LiquidatorAccount {
             ASSET_TAG_KAMINO => {
                 let kamino_reserve = self
                     .cache
-                    .kamino_reserves
-                    .get(&asset_bank_wrapper.bank.integration_acc_1)
-                    .context(format!(
-                        "Couldn't find the data for Kamino reserve: {}",
-                        asset_bank_wrapper.bank.integration_acc_1
-                    ))
+                    .try_get_kamino_reserve(&asset_bank_wrapper.bank.integration_acc_1)
                     .map_err(LiquidationError::from_anyhow)?;
 
                 let refresh_obligation_ix = make_refresh_obligation_ix(
@@ -478,7 +463,7 @@ impl LiquidatorAccount {
                     &asset_bank_wrapper,
                     &asset_mint_wrapper,
                     asset_bank_wrapper.bank.integration_acc_2,
-                    kamino_reserve,
+                    &kamino_reserve,
                     liquidatee_observation_accounts.as_ref(),
                     asset_amount.to_num(),
                     false,
@@ -497,9 +482,9 @@ impl LiquidatorAccount {
                     signer_pk,
                     &asset_bank_wrapper,
                     &asset_mint_wrapper,
-                    drift_spot_market,
-                    reward_spot_market,
-                    reward_spot_market_2,
+                    &drift_spot_market,
+                    reward_spot_market.as_ref(),
+                    reward_spot_market_2.as_ref(),
                     liquidatee_observation_accounts.as_ref(),
                     asset_amount.to_num(),
                     false,
@@ -509,12 +494,7 @@ impl LiquidatorAccount {
             ASSET_TAG_JUPLEND => {
                 let lending_state = self
                     .cache
-                    .juplend_lending_states
-                    .get(&asset_bank_wrapper.bank.integration_acc_1)
-                    .context(format!(
-                        "Couldn't find the data for Juplend lending state: {}",
-                        asset_bank_wrapper.bank.integration_acc_1
-                    ))
+                    .try_get_juplend_lending_state(&asset_bank_wrapper.bank.integration_acc_1)
                     .map_err(LiquidationError::from_anyhow)?;
 
                 make_juplend_withdraw_ix(
@@ -524,7 +504,7 @@ impl LiquidatorAccount {
                     signer_pk,
                     &asset_bank_wrapper,
                     &asset_mint_wrapper,
-                    lending_state,
+                    &lending_state,
                     liquidatee_observation_accounts.as_ref(),
                     asset_amount.to_num(),
                     false,
@@ -833,18 +813,11 @@ impl LiquidatorAccount {
         &self,
         bank: &Bank,
     ) -> Result<(
-        &DriftSpotMarket,
-        Option<&DriftSpotMarket>,
-        Option<&DriftSpotMarket>,
+        DriftSpotMarket,
+        Option<DriftSpotMarket>,
+        Option<DriftSpotMarket>,
     )> {
-        let drift_spot_market = self
-            .cache
-            .drift_markets
-            .get(&bank.integration_acc_1)
-            .context(format!(
-                "Couldn't find the data for Drift spot market: {}",
-                bank.integration_acc_1
-            ))?;
+        let drift_spot_market = self.cache.try_get_drift_market(&bank.integration_acc_1)?;
 
         let drift_user = self
             .cache
@@ -863,12 +836,7 @@ impl LiquidatorAccount {
 
                 let reward_spot_market = self
                     .cache
-                    .drift_markets
-                    .get(&reward_spot_market_address)
-                    .context(format!(
-                        "Couldn't find the data for Drift spot market: {}",
-                        reward_spot_market_address
-                    ))?;
+                    .try_get_drift_market(&reward_spot_market_address)?;
 
                 if drift_user.spot_positions[3].scaled_balance > 0 {
                     let reward_spot_market_2_address =
@@ -876,12 +844,7 @@ impl LiquidatorAccount {
 
                     let reward_spot_market_2 = self
                         .cache
-                        .drift_markets
-                        .get(&reward_spot_market_2_address)
-                        .context(format!(
-                            "Couldn't find the data for Drift spot market: {}",
-                            reward_spot_market_2_address
-                        ))?;
+                        .try_get_drift_market(&reward_spot_market_2_address)?;
 
                     (Some(reward_spot_market), Some(reward_spot_market_2))
                 } else {
@@ -894,65 +857,60 @@ impl LiquidatorAccount {
         Ok((drift_spot_market, reward_spot_market, reward_spot_market_2))
     }
 
-    fn build_refresh_integrations_ixs(&self) -> (Vec<Instruction>, HashSet<Pubkey>) {
+    fn build_refresh_integrations_ixs(&self) -> Result<(Vec<Instruction>, HashSet<Pubkey>)> {
         let mut ixs = Vec::new();
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
 
         ixs.push(self.cu_limit_ix.clone());
 
-        self.cache
-            .kamino_reserves
-            .iter()
-            .for_each(|(address, reserve)| {
-                let refresh_reserve_ix =
-                    make_refresh_reserve_ix(*address, reserve, &mut participating_accounts);
-                debug!(
-                    "Refreshing: reserve {}, mint {}",
-                    address, reserve.reserve.collateral.mint_pubkey
-                );
+        for (address, reserve) in self.cache.try_get_kamino_reserves()? {
+            let refresh_reserve_ix =
+                make_refresh_reserve_ix(address, &reserve, &mut participating_accounts);
+            debug!(
+                "Refreshing: reserve {}, mint {}",
+                address, reserve.reserve.collateral.mint_pubkey
+            );
+            ixs.push(refresh_reserve_ix);
+        }
 
-                ixs.push(refresh_reserve_ix);
-            });
+        for (address, spot_market) in self.cache.try_get_drift_markets()? {
+            debug!(
+                "Refreshing: market {}, mint {}, oracle {}",
+                address, spot_market.market.mint, spot_market.market.oracle
+            );
 
-        self.cache
-            .drift_markets
-            .iter()
-            .for_each(|(address, spot_market)| {
-                debug!(
-                    "Refreshing: market {}, mint {}, oracle {}",
-                    address, spot_market.market.mint, spot_market.market.oracle
-                );
+            let refresh_spot_market_ix = make_refresh_spot_market_ix(
+                address,
+                spot_market.market.vault,
+                spot_market.market.oracle,
+                &mut participating_accounts,
+            );
+            ixs.push(refresh_spot_market_ix);
+        }
 
-                let refresh_spot_market_ix = make_refresh_spot_market_ix(
-                    *address,
-                    spot_market.market.vault,
-                    spot_market.market.oracle,
-                    &mut participating_accounts,
-                );
+        for (address, lending_state) in self.cache.try_get_juplend_lending_states()? {
+            debug!("Refreshing: state {}, mint {}", address, lending_state.mint);
+            let update_lending_rate_ix =
+                make_update_lending_rate_ix(address, &lending_state, &mut participating_accounts);
+            ixs.push(update_lending_rate_ix);
+        }
 
-                ixs.push(refresh_spot_market_ix);
-            });
-
-        self.cache
-            .juplend_lending_states
-            .iter()
-            .for_each(|(address, lending_state)| {
-                debug!("Refreshing: state {}, mint {}", address, lending_state.mint);
-
-                let update_lending_rate_ix = make_update_lending_rate_ix(
-                    *address,
-                    lending_state,
-                    &mut participating_accounts,
-                );
-                ixs.push(update_lending_rate_ix);
-            });
-
-        (ixs, participating_accounts)
+        Ok((ixs, participating_accounts))
     }
 
     pub fn simulate_refresh_integrations(&self) -> Result<()> {
         let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
-        let (ixs, _) = self.build_refresh_integrations_ixs();
+        let (ixs, _) = self.build_refresh_integrations_ixs()?;
+
+        let kamino_reserve_addresses = self.cache.try_get_kamino_reserve_addresses()?;
+        let drift_market_addresses = self.cache.try_get_drift_market_addresses()?;
+        let juplend_state_addresses = self.cache.try_get_juplend_lending_state_addresses()?;
+        let integration_addresses = [
+            kamino_reserve_addresses.as_slice(),
+            drift_market_addresses.as_slice(),
+            juplend_state_addresses.as_slice(),
+        ]
+        .concat();
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
         let signer_pk = self.signer.pubkey();
@@ -965,6 +923,15 @@ impl LiquidatorAccount {
                 sig_verify: false,
                 replace_recent_blockhash: true,
                 commitment: Some(CommitmentConfig::confirmed()),
+                accounts: (!integration_addresses.is_empty()).then_some(
+                    RpcSimulateTransactionAccountsConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        addresses: integration_addresses
+                            .iter()
+                            .map(|pk| pk.to_string())
+                            .collect(),
+                    },
+                ),
                 ..Default::default()
             },
         )?;
@@ -975,6 +942,50 @@ impl LiquidatorAccount {
                 err
             ));
         }
+
+        if integration_addresses.is_empty() {
+            return Ok(());
+        }
+
+        let simulated_accounts = simulation.value.accounts.ok_or_else(|| {
+            anyhow!("Integrations refresh simulation did not return post-simulation accounts")
+        })?;
+
+        let kamino_count = kamino_reserve_addresses.len();
+        let drift_count = drift_market_addresses.len();
+        let juplend_count = juplend_state_addresses.len();
+
+        if simulated_accounts.len() != kamino_count + drift_count + juplend_count {
+            return Err(anyhow!(
+                "Integrations refresh simulation returned {} accounts, expected {}",
+                simulated_accounts.len(),
+                kamino_count + drift_count + juplend_count
+            ));
+        }
+
+        let (kamino_accounts, rest) = simulated_accounts.split_at(kamino_count);
+        let (drift_accounts, juplend_accounts) = rest.split_at(drift_count);
+
+        decode_and_apply_simulated_accounts(
+            &kamino_reserve_addresses,
+            kamino_accounts,
+            "simulateTransaction integrations refresh (kamino)",
+            |address, account| self.cache.oracles.try_update(address, account),
+        )?;
+
+        decode_and_apply_simulated_accounts(
+            &drift_market_addresses,
+            drift_accounts,
+            "simulateTransaction integrations refresh (drift)",
+            |address, account| self.cache.oracles.try_update(address, account),
+        )?;
+
+        decode_and_apply_simulated_accounts(
+            &juplend_state_addresses,
+            juplend_accounts,
+            "simulateTransaction integrations refresh (juplend)",
+            |address, account| self.cache.oracles.try_update(address, account),
+        )?;
 
         Ok(())
     }

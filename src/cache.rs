@@ -10,7 +10,8 @@ use std::{
 };
 
 use accounts::MarginfiAccountsCache;
-use anyhow::Result;
+use anchor_lang::AccountDeserialize;
+use anyhow::{anyhow, Result};
 use banks::BanksCache;
 use log::info;
 use marginfi_type_crate::constants::FEE_STATE_SEED;
@@ -31,7 +32,7 @@ use crate::{
     drift::accounts::{SpotMarket, User as DriftUser},
     juplend_earn::accounts::Lending,
     kamino_lending::accounts::Reserve,
-    utils::accessor,
+    utils::{accessor, kamino::derive_lending_market_authority},
     wrappers::{oracle::OracleWrapperTrait, token_account::TokenAccountWrapper},
 };
 
@@ -51,18 +52,17 @@ pub struct Cache {
     pub luts: Arc<Mutex<Vec<AddressLookupTableAccount>>>,
     pub global_fee_state_key: Pubkey,
     pub global_fee_wallet: Pubkey,
-    pub kamino_reserves: HashMap<Pubkey, KaminoReserve>,
-    pub drift_markets: HashMap<Pubkey, DriftSpotMarket>,
     pub drift_users: HashMap<Pubkey, DriftUser>,
-    pub juplend_lending_states: HashMap<Pubkey, Lending>,
 }
 
+#[derive(Clone)]
 pub struct KaminoReserve {
     pub address: Pubkey,
     pub reserve: Reserve,
     pub lending_market_authority: Pubkey,
 }
 
+#[derive(Clone)]
 pub struct DriftSpotMarket {
     pub address: Pubkey,
     pub market: SpotMarket,
@@ -91,11 +91,97 @@ impl Cache {
             luts,
             global_fee_state_key,
             global_fee_wallet: Pubkey::default(),
-            kamino_reserves: HashMap::new(),
-            drift_markets: HashMap::new(),
             drift_users: HashMap::new(),
-            juplend_lending_states: HashMap::new(),
         }
+    }
+
+    fn build_kamino_reserve(address: Pubkey, reserve: Reserve) -> KaminoReserve {
+        let lending_market_authority = derive_lending_market_authority(&reserve.lending_market);
+        KaminoReserve {
+            address,
+            reserve,
+            lending_market_authority,
+        }
+    }
+
+    pub fn try_get_kamino_reserve(&self, address: &Pubkey) -> Result<KaminoReserve> {
+        let account = self.oracles.try_get_account(address)?;
+        let mut data: &[u8] = &account.data;
+        let reserve = Reserve::try_deserialize(&mut data).map_err(|e| {
+            anyhow!(
+                "Failed to deserialize Kamino reserve {} from OracleCache: {}",
+                address,
+                e
+            )
+        })?;
+
+        Ok(Self::build_kamino_reserve(*address, reserve))
+    }
+
+    pub fn try_get_kamino_reserves(&self) -> Result<Vec<(Pubkey, KaminoReserve)>> {
+        self.try_get_kamino_reserve_addresses()?
+            .into_iter()
+            .map(|address| Ok((address, self.try_get_kamino_reserve(&address)?)))
+            .collect()
+    }
+
+    pub fn try_get_kamino_reserve_addresses(&self) -> Result<Vec<Pubkey>> {
+        Ok(self.banks.get_kamino_reserves().into_iter().collect())
+    }
+
+    pub fn try_get_drift_market(&self, address: &Pubkey) -> Result<DriftSpotMarket> {
+        let account = self.oracles.try_get_account(address)?;
+        let mut data: &[u8] = &account.data;
+        let market = SpotMarket::try_deserialize(&mut data).map_err(|e| {
+            anyhow!(
+                "Failed to deserialize Drift spot market {} from OracleCache: {}",
+                address,
+                e
+            )
+        })?;
+
+        Ok(DriftSpotMarket {
+            address: *address,
+            market,
+        })
+    }
+
+    pub fn try_get_drift_markets(&self) -> Result<Vec<(Pubkey, DriftSpotMarket)>> {
+        self.try_get_drift_market_addresses()?
+            .into_iter()
+            .map(|address| Ok((address, self.try_get_drift_market(&address)?)))
+            .collect()
+    }
+
+    pub fn try_get_drift_market_addresses(&self) -> Result<Vec<Pubkey>> {
+        Ok(self.banks.get_drift_spot_markets().into_iter().collect())
+    }
+
+    pub fn try_get_juplend_lending_state(&self, address: &Pubkey) -> Result<Lending> {
+        let account = self.oracles.try_get_account(address)?;
+        let mut data: &[u8] = &account.data;
+        Lending::try_deserialize(&mut data).map_err(|e| {
+            anyhow!(
+                "Failed to deserialize Juplend lending state {} from OracleCache: {}",
+                address,
+                e
+            )
+        })
+    }
+
+    pub fn try_get_juplend_lending_states(&self) -> Result<Vec<(Pubkey, Lending)>> {
+        self.try_get_juplend_lending_state_addresses()?
+            .into_iter()
+            .map(|address| Ok((address, self.try_get_juplend_lending_state(&address)?)))
+            .collect()
+    }
+
+    pub fn try_get_juplend_lending_state_addresses(&self) -> Result<Vec<Pubkey>> {
+        Ok(self
+            .banks
+            .get_juplend_lending_states()
+            .into_iter()
+            .collect())
     }
 
     pub fn add_lut(&mut self, lut: AddressLookupTableAccount) {

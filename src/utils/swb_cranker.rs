@@ -156,7 +156,29 @@ impl SwbCranker {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let (simulation_result, raw_response) = self.simulate_bundle(&bundle_txs)?;
+        let (simulation_result, raw_response) = match self.simulate_bundle(&bundle_txs) {
+            Ok(result) => result,
+            Err(err) if err.to_string().contains("incomplete postExecutionAccounts") => {
+                warn!(
+                    "simulateBundle omitted postExecutionAccounts; falling back to simulateTransaction for account capture"
+                );
+                let tx_accounts = self.simulate_transactions_for_accounts(&bundle_txs)?;
+
+                for (bundle_tx, post_execution_accounts) in
+                    bundle_txs.iter().zip(tx_accounts.iter())
+                {
+                    decode_and_apply_simulated_accounts(
+                        &bundle_tx.oracle_addresses,
+                        post_execution_accounts,
+                        "simulateTransaction fallback",
+                        |oracle_address, account| cache.oracles.try_update(oracle_address, account),
+                    )?;
+                }
+
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
 
         if let Some(summary) = simulation_result.summary.as_ref() {
             if !simulation_summary_succeeded(summary) {
