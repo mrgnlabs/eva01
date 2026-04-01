@@ -18,7 +18,10 @@ use solana_dex_superagg::{
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::ReadableAccount, commitment_config::CommitmentLevel};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::runtime::{Builder, Runtime};
 
 const SLIPPAGE_MULTIPLIER: I80F48 = I80F48!(1.05);
@@ -34,6 +37,7 @@ pub struct Rebalancer {
     default_token_max_threshold: I80F48,
     token_thresholds: HashMap<Pubkey, TokenThresholds>,
     dex_client: Arc<DexSuperAggClient>,
+    empty_stake_banks: HashSet<Pubkey>,
 }
 
 impl Rebalancer {
@@ -96,6 +100,7 @@ impl Rebalancer {
             default_token_max_threshold,
             token_thresholds,
             dex_client,
+            empty_stake_banks: HashSet::new(),
         })
     }
 
@@ -178,7 +183,7 @@ impl Rebalancer {
         let mut necessary_swap_value = I80F48::ZERO;
         for mint in self.cache.mints.get_mints() {
             debug!("Processing token {}...", mint);
-            if mint == self.swap_mint {
+            if mint == self.swap_mint || self.empty_stake_banks.contains(&mint) {
                 continue;
             }
 
@@ -190,6 +195,7 @@ impl Rebalancer {
                 // Ignore empty stake banks
                 if !e.to_string().contains("Stake pool supply is zero") {
                     warn!("Skipping the token {} in rebalancing: {}", mint, e);
+                    self.empty_stake_banks.insert(mint);
                 }
                 continue;
             }

@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::{prelude::BASE64_STANDARD, Engine};
-use log::{debug, warn};
+use log::warn;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use solana_account_decoder::{UiAccount, UiAccountEncoding};
@@ -41,6 +41,8 @@ pub const SWB_STALE_HANDLED_ERROR: &str = "STALE HANDLED";
 const CHUNK_SIZE: usize = 6;
 const JITO_SIMULATE_BUNDLE_METHOD: &str = "simulateBundle";
 const RAW_SIMULATE_BUNDLE_RESPONSE_LOG_LIMIT: usize = 8_000;
+const SIMULATION_LOG_LINE_LIMIT: usize = 30;
+const SIMULATION_LOG_CHAR_LIMIT: usize = 8_000;
 
 struct SimulateBundleTx {
     encoded_tx: String,
@@ -59,7 +61,8 @@ struct RpcSimulateBundleResult {
 #[serde(rename_all = "camelCase")]
 struct RpcSimulateBundleTransactionResult {
     err: Option<Value>,
-    post_execution_accounts: Option<Vec<Option<UiAccount>>>,
+    #[serde(default)]
+    logs: Option<Vec<String>>,
 }
 
 pub struct SwbCranker {
@@ -144,9 +147,19 @@ impl SwbCranker {
         let bundle_txs: Vec<SimulateBundleTx> = self
             .all_swb_oracles
             .chunks(CHUNK_SIZE)
-            .map(|chunk| {
+            .enumerate()
+            .map(|(chunk_index, chunk)| {
                 let chunk_oracles = chunk.to_vec();
-                let tx = self.build_crank_transaction(chunk_oracles.clone())?;
+                let tx = self
+                    .build_crank_transaction(chunk_oracles.clone())
+                    .with_context(|| {
+                        format!(
+                            "failed to build SWB simulation transaction for chunk {} ({} feeds): {:?}",
+                            chunk_index,
+                            chunk_oracles.len(),
+                            chunk_oracles
+                        )
+                    })?;
                 let encoded_tx = BASE64_STANDARD.encode(bincode::serialize(&tx)?);
                 Ok(SimulateBundleTx {
                     encoded_tx,
@@ -156,33 +169,19 @@ impl SwbCranker {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let (simulation_result, raw_response) = match self.simulate_bundle(&bundle_txs) {
-            Ok(result) => result,
-            Err(err) if err.to_string().contains("incomplete postExecutionAccounts") => {
-                warn!(
-                    "simulateBundle omitted postExecutionAccounts; falling back to simulateTransaction for account capture"
-                );
-                let tx_accounts = self.simulate_transactions_for_accounts(&bundle_txs)?;
-
-                for (bundle_tx, post_execution_accounts) in
-                    bundle_txs.iter().zip(tx_accounts.iter())
-                {
-                    decode_and_apply_simulated_accounts(
-                        &bundle_tx.oracle_addresses,
-                        post_execution_accounts,
-                        "simulateTransaction fallback",
-                        |oracle_address, account| cache.oracles.try_update(oracle_address, account),
-                    )?;
-                }
-
-                return Ok(());
-            }
-            Err(err) => return Err(err),
-        };
+        let (simulation_result, raw_response) = self.simulate_bundle(&bundle_txs)?;
 
         if let Some(summary) = simulation_result.summary.as_ref() {
             if !simulation_summary_succeeded(summary) {
-                warn!("simulateBundle summary indicates failure: {}", summary);
+                let raw = truncate_for_log(
+                    &raw_response.to_string(),
+                    RAW_SIMULATE_BUNDLE_RESPONSE_LOG_LIMIT,
+                );
+                return Err(anyhow!(
+                    "simulateBundle summary indicates failure: {} (raw response truncated: {})",
+                    summary,
+                    raw
+                ));
             }
         }
 
@@ -208,43 +207,39 @@ impl SwbCranker {
             ));
         }
 
-        let fallback_accounts =
-            if has_complete_post_execution_accounts(&simulation_result, &bundle_txs) {
-                None
-            } else {
-                debug!(
-                    "simulateBundle did not provide postExecutionAccounts; using simulateTransaction fallback for account capture"
-                );
-                Some(self.simulate_transactions_for_accounts(&bundle_txs)?)
-            };
-
-        for (index, (bundle_tx, tx_result)) in bundle_txs
+        for (chunk_index, (bundle_tx, tx_result)) in bundle_txs
             .iter()
             .zip(simulation_result.transaction_results.iter())
             .enumerate()
         {
-            if tx_result.err.is_some() {
-                warn!(
-                    "simulateBundle returned transaction error for {} feeds: {:?}",
-                    bundle_tx.oracle_addresses.len(),
-                    tx_result.err
+            if let Some(err) = tx_result.err.as_ref() {
+                let logs = format_simulation_logs(
+                    tx_result.logs.as_deref(),
+                    SIMULATION_LOG_LINE_LIMIT,
+                    SIMULATION_LOG_CHAR_LIMIT,
                 );
+                return Err(anyhow!(
+                    "simulateBundle chunk {} failed for {} feeds {:?}: err={:?}; logs={}",
+                    chunk_index,
+                    bundle_tx.oracle_addresses.len(),
+                    bundle_tx.oracle_addresses,
+                    err,
+                    logs
+                ));
             }
+        }
 
-            let post_execution_accounts = if let Some(fallback_accounts) = fallback_accounts.as_ref()
-            {
-                &fallback_accounts[index]
-            } else {
-                tx_result
-                    .post_execution_accounts
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("simulateBundle did not return post execution accounts"))?
-            };
+        // Keep bundle simulation as the authoritative bundle-level check, but capture account
+        // states via simulateTransaction because some RPCs omit bundle pre/post account payloads.
+        let tx_accounts = self
+            .simulate_transactions_for_accounts(&bundle_txs)
+            .context("failed to capture simulated accounts via simulateTransaction")?;
 
+        for (bundle_tx, post_execution_accounts) in bundle_txs.iter().zip(tx_accounts.iter()) {
             decode_and_apply_simulated_accounts(
                 &bundle_tx.oracle_addresses,
                 post_execution_accounts,
-                "simulateBundle",
+                "simulateTransaction",
                 |oracle_address, account| cache.oracles.try_update(oracle_address, account),
             )?;
         }
@@ -370,7 +365,8 @@ impl SwbCranker {
     ) -> Result<Vec<Vec<Option<UiAccount>>>> {
         bundle_txs
             .iter()
-            .map(|bundle_tx| {
+            .enumerate()
+            .map(|(chunk_index, bundle_tx)| {
                 let accounts_config = RpcSimulateTransactionAccountsConfig {
                     encoding: Some(UiAccountEncoding::Base64),
                     addresses: bundle_tx
@@ -390,28 +386,50 @@ impl SwbCranker {
 
                 let response = self
                     .rpc_client
-                    .simulate_transaction_with_config(&bundle_tx.transaction, config)?;
+                    .simulate_transaction_with_config(&bundle_tx.transaction, config)
+                    .with_context(|| {
+                        format!(
+                            "simulateTransaction RPC failed for chunk {} ({} feeds): {:?}",
+                            chunk_index,
+                            bundle_tx.oracle_addresses.len(),
+                            bundle_tx.oracle_addresses
+                        )
+                    })?;
 
-                if response.value.err.is_some() {
-                    warn!(
-                        "simulateTransaction fallback returned transaction error for {} feeds: {:?}",
-                        bundle_tx.oracle_addresses.len(),
-                        response.value.err
+                let simulation_value = response.value;
+
+                if let Some(err) = simulation_value.err.as_ref() {
+                    let logs = format_simulation_logs(
+                        simulation_value.logs.as_deref(),
+                        SIMULATION_LOG_LINE_LIMIT,
+                        SIMULATION_LOG_CHAR_LIMIT,
                     );
+                    return Err(anyhow!(
+                        "simulateTransaction chunk {} failed for {} feeds {:?}: err={:?}; logs={}",
+                        chunk_index,
+                        bundle_tx.oracle_addresses.len(),
+                        bundle_tx.oracle_addresses,
+                        err,
+                        logs
+                    ));
                 }
 
-                let accounts = response.value.accounts.ok_or_else(|| {
+                let accounts = simulation_value.accounts.ok_or_else(|| {
                     anyhow!(
-                        "simulateTransaction fallback did not return accounts for {} feeds",
-                        bundle_tx.oracle_addresses.len()
+                        "simulateTransaction chunk {} did not return accounts for {} feeds: {:?}",
+                        chunk_index,
+                        bundle_tx.oracle_addresses.len(),
+                        bundle_tx.oracle_addresses
                     )
                 })?;
 
                 if accounts.len() != bundle_tx.oracle_addresses.len() {
                     return Err(anyhow!(
-                        "simulateTransaction fallback returned {} accounts, expected {}",
+                        "simulateTransaction chunk {} returned {} accounts, expected {} for feeds: {:?}",
+                        chunk_index,
                         accounts.len(),
-                        bundle_tx.oracle_addresses.len()
+                        bundle_tx.oracle_addresses.len(),
+                        bundle_tx.oracle_addresses
                     ));
                 }
 
@@ -431,24 +449,23 @@ fn truncate_for_log(input: &str, max_len: usize) -> String {
     out
 }
 
-fn has_complete_post_execution_accounts(
-    result: &RpcSimulateBundleResult,
-    bundle_txs: &[SimulateBundleTx],
-) -> bool {
-    if result.transaction_results.len() != bundle_txs.len() {
-        return false;
+fn format_simulation_logs(logs: Option<&[String]>, max_lines: usize, max_chars: usize) -> String {
+    let Some(logs) = logs else {
+        return "none".to_string();
+    };
+    if logs.is_empty() {
+        return "none".to_string();
     }
 
-    result
-        .transaction_results
-        .iter()
-        .zip(bundle_txs.iter())
-        .all(|(tx_result, bundle_tx)| {
-            tx_result
-                .post_execution_accounts
-                .as_ref()
-                .is_some_and(|accounts| accounts.len() == bundle_tx.oracle_addresses.len())
-        })
+    let mut lines: Vec<String> = logs.iter().take(max_lines).cloned().collect();
+    if logs.len() > max_lines {
+        lines.push(format!(
+            "...<{} additional log lines truncated>",
+            logs.len() - max_lines
+        ));
+    }
+
+    truncate_for_log(&lines.join(" | "), max_chars)
 }
 
 fn simulation_summary_succeeded(summary: &Value) -> bool {
@@ -525,5 +542,26 @@ mod tests {
             kind: ClientErrorKind::Io(std::io::Error::new(std::io::ErrorKind::Other, "io error")),
         };
         assert!(!is_stale_swb_price_error(&err));
+    }
+
+    #[test]
+    fn test_format_simulation_logs_with_none() {
+        assert_eq!(
+            format_simulation_logs(None, SIMULATION_LOG_LINE_LIMIT, SIMULATION_LOG_CHAR_LIMIT),
+            "none"
+        );
+    }
+
+    #[test]
+    fn test_format_simulation_logs_line_limit() {
+        let logs = vec![
+            "line1".to_string(),
+            "line2".to_string(),
+            "line3".to_string(),
+        ];
+        let formatted = format_simulation_logs(Some(&logs), 2, 1024);
+        assert!(formatted.contains("line1"));
+        assert!(formatted.contains("line2"));
+        assert!(formatted.contains("additional log lines truncated"));
     }
 }

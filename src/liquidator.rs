@@ -9,7 +9,7 @@ use crate::{
     },
     rebalancer::Rebalancer,
     utils::{
-        calc_total_weighted_assets_liabs,
+        calc_total_weighted_assets_liabs, format_error_chain,
         swb_cranker::{SwbCranker, SWB_STALE_HANDLED_ERROR, SWB_STALE_PRICE_ERROR_CODE_NUMBER},
     },
     wrappers::{
@@ -90,6 +90,12 @@ impl Liquidator {
             warn!("Liquidator has no funds.");
         }
 
+        if let Err(err) = self.simulate_oracles_and_integrations() {
+            warn!(
+                "Failed pre-rebalancing simulation round: {}",
+                format_error_chain(&err)
+            );
+        }
         self.rebalancer.run(HashMap::new())?;
 
         info!("Staring the Liquidator loop.");
@@ -103,8 +109,11 @@ impl Liquidator {
             info!("Running the Liquidation process...");
             self.run_liquidation.store(false, Ordering::Relaxed);
 
-            if let Err(err) = self.simulate_pre_liquidation_updates() {
-                error!("Failed pre-liquidation simulation round: {}", err);
+            if let Err(err) = self.simulate_oracles_and_integrations() {
+                error!(
+                    "Failed pre-liquidation simulation round: {}",
+                    format_error_chain(&err)
+                );
                 continue;
             }
 
@@ -187,6 +196,12 @@ impl Liquidator {
 
             info!("The Liquidation process is complete.");
 
+            if let Err(err) = self.simulate_oracles_and_integrations() {
+                warn!(
+                    "Failed pre-rebalancing simulation round: {}",
+                    format_error_chain(&err)
+                );
+            }
             if let Err(error) = self.rebalancer.run(missing_tokens) {
                 error!("Rebalancing failed: {:?}", error);
                 ERROR_COUNT.inc();
@@ -197,13 +212,19 @@ impl Liquidator {
         Ok(())
     }
 
-    fn simulate_pre_liquidation_updates(&self) -> Result<()> {
+    fn simulate_oracles_and_integrations(&self) -> Result<()> {
         self.liquidator_account
             .simulate_refresh_integrations()
             .context("simulate_refresh_integrations failed")?;
+        let swb_oracle_count = self.cache.banks.get_swb_oracles().len();
         self.swb_cranker
             .simulate_oracles(self.cache.as_ref())
-            .context("simulate_oracles failed")
+            .with_context(|| {
+                format!(
+                    "simulate_oracles failed (switchboard feed count: {})",
+                    swb_oracle_count
+                )
+            })
     }
 
     /// Checks if liquidation is needed, for each account one by one
