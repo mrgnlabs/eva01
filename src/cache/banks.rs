@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use marginfi_type_crate::{
-    constants::{ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO},
+    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED},
     types::{Bank, OracleSetup},
 };
 use solana_sdk::pubkey::Pubkey;
@@ -11,14 +11,19 @@ use anyhow::{anyhow, Result};
 #[derive(Default)]
 pub struct BanksCache {
     banks: HashMap<Pubkey, BankWrapper>,
-    mint_to_bank: HashMap<Pubkey, Pubkey>,
+    mint_to_p0_bank: HashMap<Pubkey, Pubkey>,
 }
 
 impl BanksCache {
     pub fn insert(&mut self, bank_address: Pubkey, bank: Bank) {
         self.banks
             .insert(bank_address, BankWrapper::new(bank_address, bank));
-        self.mint_to_bank.insert(bank.mint, bank_address);
+        if matches!(
+            bank.config.asset_tag,
+            ASSET_TAG_DEFAULT | ASSET_TAG_SOL | ASSET_TAG_STAKED
+        ) {
+            self.mint_to_p0_bank.insert(bank.mint, bank_address);
+        }
     }
 
     pub fn try_get_bank(&self, address: &Pubkey) -> Result<BankWrapper> {
@@ -112,7 +117,7 @@ impl BanksCache {
     }
 
     pub fn try_get_account_for_mint(&self, mint_address: &Pubkey) -> Result<Pubkey> {
-        self.mint_to_bank
+        self.mint_to_p0_bank
             .get(mint_address)
             .ok_or(anyhow!(
                 "Failed to find Bank for the Mint {} in Cache!",
