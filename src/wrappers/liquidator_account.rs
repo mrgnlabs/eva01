@@ -50,7 +50,7 @@ use solana_sdk::{
     signature::{Keypair, Signature},
     signer::{Signer, SignerError},
     system_instruction::transfer,
-    transaction::VersionedTransaction,
+    transaction::{TransactionError, VersionedTransaction},
 };
 use std::{collections::HashSet, sync::Arc, thread, time::Duration};
 
@@ -100,6 +100,18 @@ pub struct LiquidatorAccount {
     rpc_client: RpcClient,
     cu_limit_ix: Instruction,
     pub cache: Arc<Cache>,
+}
+
+#[derive(Clone, Debug)]
+struct IntegrationRefreshEntry {
+    kind: &'static str,
+    address: Pubkey,
+    instruction: Instruction,
+}
+
+enum RefreshBatchError {
+    TooLarge(anyhow::Error),
+    Other(anyhow::Error),
 }
 
 impl LiquidatorAccount {
@@ -857,20 +869,22 @@ impl LiquidatorAccount {
         Ok((drift_spot_market, reward_spot_market, reward_spot_market_2))
     }
 
-    fn build_refresh_integrations_ixs(&self) -> Result<(Vec<Instruction>, HashSet<Pubkey>)> {
-        let mut ixs = Vec::new();
+    fn build_refresh_integrations_entries(&self) -> Result<Vec<IntegrationRefreshEntry>> {
+        let mut entries = Vec::new();
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
 
-        ixs.push(self.cu_limit_ix.clone());
-
         for (address, reserve) in self.cache.try_get_kamino_reserves()? {
-            let refresh_reserve_ix =
+            let instruction =
                 make_refresh_reserve_ix(address, &reserve, &mut participating_accounts);
             debug!(
                 "Refreshing: reserve {}, mint {}",
                 address, reserve.reserve.collateral.mint_pubkey
             );
-            ixs.push(refresh_reserve_ix);
+            entries.push(IntegrationRefreshEntry {
+                kind: "kamino",
+                address,
+                instruction,
+            });
         }
 
         for (address, spot_market) in self.cache.try_get_drift_markets()? {
@@ -879,116 +893,257 @@ impl LiquidatorAccount {
                 address, spot_market.market.mint, spot_market.market.oracle
             );
 
-            let refresh_spot_market_ix = make_refresh_spot_market_ix(
+            let instruction = make_refresh_spot_market_ix(
                 address,
                 spot_market.market.vault,
                 spot_market.market.oracle,
                 &mut participating_accounts,
             );
-            ixs.push(refresh_spot_market_ix);
+            entries.push(IntegrationRefreshEntry {
+                kind: "drift",
+                address,
+                instruction,
+            });
         }
 
         for (address, lending_state) in self.cache.try_get_juplend_lending_states()? {
             debug!("Refreshing: state {}, mint {}", address, lending_state.mint);
-            let update_lending_rate_ix =
+            let instruction =
                 make_update_lending_rate_ix(address, &lending_state, &mut participating_accounts);
-            ixs.push(update_lending_rate_ix);
+            entries.push(IntegrationRefreshEntry {
+                kind: "juplend",
+                address,
+                instruction,
+            });
         }
 
-        Ok((ixs, participating_accounts))
+        Ok(entries)
     }
 
     pub fn simulate_refresh_integrations(&self) -> Result<()> {
         let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
-        let (ixs, _) = self.build_refresh_integrations_ixs()?;
-
-        let kamino_reserve_addresses = self.cache.try_get_kamino_reserve_addresses()?;
-        let drift_market_addresses = self.cache.try_get_drift_market_addresses()?;
-        let juplend_state_addresses = self.cache.try_get_juplend_lending_state_addresses()?;
-        let integration_addresses = [
-            kamino_reserve_addresses.as_slice(),
-            drift_market_addresses.as_slice(),
-            juplend_state_addresses.as_slice(),
-        ]
-        .concat();
-
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
-        let signer_pk = self.signer.pubkey();
-        let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)?;
-        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])?;
-
-        let simulation = self.rpc_client.simulate_transaction_with_config(
-            &tx,
-            RpcSimulateTransactionConfig {
-                sig_verify: false,
-                replace_recent_blockhash: true,
-                commitment: Some(CommitmentConfig::confirmed()),
-                accounts: (!integration_addresses.is_empty()).then_some(
-                    RpcSimulateTransactionAccountsConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        addresses: integration_addresses
-                            .iter()
-                            .map(|pk| pk.to_string())
-                            .collect(),
-                    },
-                ),
-                ..Default::default()
-            },
-        )?;
-
-        if let Some(err) = simulation.value.err {
-            return Err(anyhow!(
-                "Integrations refresh simulation failed with transaction error: {:?}",
-                err
-            ));
-        }
-
-        if integration_addresses.is_empty() {
+        let entries = self.build_refresh_integrations_entries()?;
+        if entries.is_empty() {
             return Ok(());
         }
 
-        let simulated_accounts = simulation.value.accounts.ok_or_else(|| {
-            anyhow!("Integrations refresh simulation did not return post-simulation accounts")
-        })?;
+        let mut skipped_entries: Vec<IntegrationRefreshEntry> = vec![];
+        let mut refreshed_batches = 0usize;
+        let mut offset = 0usize;
+        let mut preferred_batch_size = entries.len().max(1);
 
-        let kamino_count = kamino_reserve_addresses.len();
-        let drift_count = drift_market_addresses.len();
-        let juplend_count = juplend_state_addresses.len();
+        while offset < entries.len() {
+            let remaining = entries.len() - offset;
+            let mut batch_size = preferred_batch_size.min(remaining).max(1);
 
-        if simulated_accounts.len() != kamino_count + drift_count + juplend_count {
+            loop {
+                let batch_entries = entries[offset..offset + batch_size].to_vec();
+                match self.simulate_refresh_integrations_batch(
+                    &luts,
+                    batch_entries,
+                    &mut skipped_entries,
+                ) {
+                    Ok(batch_refreshed_any) => {
+                        if batch_refreshed_any {
+                            refreshed_batches += 1;
+                        }
+                        preferred_batch_size = batch_size;
+                        offset += batch_size;
+                        break;
+                    }
+                    Err(RefreshBatchError::TooLarge(_err)) if batch_size > 1 => {
+                        let new_batch_size = (batch_size / 2).max(1);
+                        warn!(
+                            "Integrations refresh simulation tx too large with {} instructions; retrying with {} instructions",
+                            batch_size, new_batch_size
+                        );
+                        batch_size = new_batch_size;
+                    }
+                    Err(RefreshBatchError::TooLarge(err)) => {
+                        let failed_entry = entries[offset].clone();
+                        warn!(
+                            "Skipping integration refresh instruction {} for {} because tx is too large even as a single instruction: {}",
+                            failed_entry.kind,
+                            failed_entry.address,
+                            err
+                        );
+                        skipped_entries.push(failed_entry);
+                        offset += 1;
+                        break;
+                    }
+                    Err(RefreshBatchError::Other(err)) => {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "Integrations refresh simulation failed for batch [{}..{})",
+                                offset,
+                                offset + batch_size
+                            )
+                        });
+                    }
+                }
+            }
+        }
+
+        if refreshed_batches == 0 {
             return Err(anyhow!(
-                "Integrations refresh simulation returned {} accounts, expected {}",
-                simulated_accounts.len(),
-                kamino_count + drift_count + juplend_count
+                "Integrations refresh simulation failed for all integrations; skipped entries: {}",
+                format_skipped_integration_entries(&skipped_entries)
             ));
         }
 
-        let (kamino_accounts, rest) = simulated_accounts.split_at(kamino_count);
-        let (drift_accounts, juplend_accounts) = rest.split_at(drift_count);
-
-        decode_and_apply_simulated_accounts(
-            &kamino_reserve_addresses,
-            kamino_accounts,
-            "simulateTransaction integrations refresh (kamino)",
-            |address, account| self.cache.oracles.try_update(address, account),
-        )?;
-
-        decode_and_apply_simulated_accounts(
-            &drift_market_addresses,
-            drift_accounts,
-            "simulateTransaction integrations refresh (drift)",
-            |address, account| self.cache.oracles.try_update(address, account),
-        )?;
-
-        decode_and_apply_simulated_accounts(
-            &juplend_state_addresses,
-            juplend_accounts,
-            "simulateTransaction integrations refresh (juplend)",
-            |address, account| self.cache.oracles.try_update(address, account),
-        )?;
+        if !skipped_entries.is_empty() {
+            warn!(
+                "Integrations refresh simulation completed while skipping {} failing integrations: {}",
+                skipped_entries.len(),
+                format_skipped_integration_entries(&skipped_entries)
+            );
+        }
 
         Ok(())
     }
+
+    fn simulate_refresh_integrations_batch(
+        &self,
+        luts: &[AddressLookupTableAccount],
+        batch_entries: Vec<IntegrationRefreshEntry>,
+        skipped_entries: &mut Vec<IntegrationRefreshEntry>,
+    ) -> std::result::Result<bool, RefreshBatchError> {
+        let mut entries = batch_entries;
+
+        loop {
+            if entries.is_empty() {
+                return Ok(false);
+            }
+
+            let integration_addresses: Vec<Pubkey> =
+                entries.iter().map(|entry| entry.address).collect();
+            let mut ixs: Vec<Instruction> = Vec::with_capacity(entries.len() + 1);
+            ixs.push(self.cu_limit_ix.clone());
+            ixs.extend(entries.iter().map(|entry| entry.instruction.clone()));
+
+            let recent_blockhash = self
+                .rpc_client
+                .get_latest_blockhash()
+                .map_err(|err| RefreshBatchError::Other(err.into()))?;
+            let signer_pk = self.signer.pubkey();
+            let msg = Message::try_compile(&signer_pk, &ixs, luts, recent_blockhash)
+                .map_err(|err| RefreshBatchError::Other(err.into()))?;
+            let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+                .map_err(|err| RefreshBatchError::Other(err.into()))?;
+
+            let simulation = self
+                .rpc_client
+                .simulate_transaction_with_config(
+                    &tx,
+                    RpcSimulateTransactionConfig {
+                        sig_verify: false,
+                        replace_recent_blockhash: true,
+                        commitment: Some(CommitmentConfig::confirmed()),
+                        accounts: Some(RpcSimulateTransactionAccountsConfig {
+                            encoding: Some(UiAccountEncoding::Base64),
+                            addresses: integration_addresses
+                                .iter()
+                                .map(|pk| pk.to_string())
+                                .collect(),
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .map_err(|err| {
+                    if is_tx_too_large_client(&err) {
+                        RefreshBatchError::TooLarge(err.into())
+                    } else {
+                        RefreshBatchError::Other(err.into())
+                    }
+                })?;
+
+            if let Some(err) = simulation.value.err.clone() {
+                if let TransactionError::InstructionError(ix_index, instruction_error) = &err {
+                    let ix_index = usize::from(*ix_index);
+                    if ix_index > 0 && ix_index <= entries.len() {
+                        let failed_entry = entries.remove(ix_index - 1);
+                        warn!(
+                            "Skipping failing integration refresh instruction {} for {} (tx instruction index {}, error {:?})",
+                            failed_entry.kind,
+                            failed_entry.address,
+                            ix_index,
+                            instruction_error
+                        );
+                        skipped_entries.push(failed_entry);
+                        continue;
+                    }
+                }
+
+                let logs = format_simulation_logs(simulation.value.logs.as_deref(), 40, 8_000);
+                return Err(RefreshBatchError::Other(anyhow!(
+                    "Integrations refresh simulation failed with transaction error: {:?}; logs={}",
+                    err,
+                    logs
+                )));
+            }
+
+            let simulated_accounts = simulation.value.accounts.ok_or_else(|| {
+                RefreshBatchError::Other(anyhow!(
+                    "Integrations refresh simulation did not return post-simulation accounts"
+                ))
+            })?;
+
+            if simulated_accounts.len() != integration_addresses.len() {
+                return Err(RefreshBatchError::Other(anyhow!(
+                    "Integrations refresh simulation returned {} accounts, expected {}",
+                    simulated_accounts.len(),
+                    integration_addresses.len()
+                )));
+            }
+
+            decode_and_apply_simulated_accounts(
+                &integration_addresses,
+                &simulated_accounts,
+                "simulateTransaction integrations refresh",
+                |address, account| self.cache.oracles.try_update(address, account),
+            )
+            .map_err(RefreshBatchError::Other)?;
+
+            return Ok(true);
+        }
+    }
+}
+
+fn format_skipped_integration_entries(entries: &[IntegrationRefreshEntry]) -> String {
+    if entries.is_empty() {
+        return "none".to_string();
+    }
+
+    entries
+        .iter()
+        .map(|entry| format!("{}:{}", entry.kind, entry.address))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_simulation_logs(logs: Option<&[String]>, max_lines: usize, max_chars: usize) -> String {
+    let Some(logs) = logs else {
+        return "none".to_string();
+    };
+    if logs.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut lines: Vec<String> = logs.iter().take(max_lines).cloned().collect();
+    if logs.len() > max_lines {
+        lines.push(format!(
+            "...<{} additional log lines truncated>",
+            logs.len() - max_lines
+        ));
+    }
+
+    let mut joined = lines.join(" | ");
+    if joined.len() > max_chars {
+        joined.truncate(max_chars);
+        joined.push_str("...<truncated>");
+    }
+
+    joined
 }
 
 fn contains_stale_oracles(stale_oracles: &HashSet<Pubkey>, account_oracles: &[Pubkey]) -> bool {
