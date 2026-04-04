@@ -887,24 +887,24 @@ impl LiquidatorAccount {
             });
         }
 
-        for (address, spot_market) in self.cache.try_get_drift_markets()? {
-            debug!(
-                "Refreshing: market {}, mint {}, oracle {}",
-                address, spot_market.market.mint, spot_market.market.oracle
-            );
+        // for (address, spot_market) in self.cache.try_get_drift_markets()? {
+        //     debug!(
+        //         "Refreshing: market {}, mint {}, oracle {}",
+        //         address, spot_market.market.mint, spot_market.market.oracle
+        //     );
 
-            let instruction = make_refresh_spot_market_ix(
-                address,
-                spot_market.market.vault,
-                spot_market.market.oracle,
-                &mut participating_accounts,
-            );
-            entries.push(IntegrationRefreshEntry {
-                kind: "drift",
-                address,
-                instruction,
-            });
-        }
+        //     let instruction = make_refresh_spot_market_ix(
+        //         address,
+        //         spot_market.market.vault,
+        //         spot_market.market.oracle,
+        //         &mut participating_accounts,
+        //     );
+        //     entries.push(IntegrationRefreshEntry {
+        //         kind: "drift",
+        //         address,
+        //         instruction,
+        //     });
+        // }
 
         for (address, lending_state) in self.cache.try_get_juplend_lending_states()? {
             debug!("Refreshing: state {}, mint {}", address, lending_state.mint);

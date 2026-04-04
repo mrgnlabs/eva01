@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use marginfi_type_crate::{
-    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED},
+    constants::{
+        ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
+        ASSET_TAG_STAKED,
+    },
     types::{Bank, OracleSetup},
 };
 use solana_sdk::pubkey::Pubkey;
