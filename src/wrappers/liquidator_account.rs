@@ -25,7 +25,7 @@ use marginfi_type_crate::{
     constants::{
         ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
     },
-    types::{BalanceSide, Bank},
+    types::Bank,
 };
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
@@ -172,25 +172,6 @@ impl LiquidatorAccount {
             cu_limit_ix: ComputeBudgetInstruction::set_compute_unit_limit(1400000),
             cache,
         })
-    }
-
-    pub fn has_funds(&self) -> Result<bool> {
-        let account = self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_address)?;
-
-        let preferred_mint_bank = self.cache.banks.try_get_bank(&self.preferred_mint_bank)?;
-
-        let validation_result =
-            account
-                .get_balance_for_bank(&preferred_mint_bank)
-                .map(|(balance, side)| match side {
-                    BalanceSide::Assets => balance > 0,
-                    _ => true,
-                });
-
-        Ok(validation_result.unwrap_or(false))
     }
 
     pub fn init_liq_record(&self, liquidatee_account: &MarginfiAccountWrapper) -> Result<Pubkey> {
@@ -887,24 +868,7 @@ impl LiquidatorAccount {
             });
         }
 
-        // for (address, spot_market) in self.cache.try_get_drift_markets()? {
-        //     debug!(
-        //         "Refreshing: market {}, mint {}, oracle {}",
-        //         address, spot_market.market.mint, spot_market.market.oracle
-        //     );
-
-        //     let instruction = make_refresh_spot_market_ix(
-        //         address,
-        //         spot_market.market.vault,
-        //         spot_market.market.oracle,
-        //         &mut participating_accounts,
-        //     );
-        //     entries.push(IntegrationRefreshEntry {
-        //         kind: "drift",
-        //         address,
-        //         instruction,
-        //     });
-        // }
+        // TODO: bring back Drift here if it's ever resurrected
 
         for (address, lending_state) in self.cache.try_get_juplend_lending_states()? {
             debug!("Refreshing: state {}, mint {}", address, lending_state.mint);

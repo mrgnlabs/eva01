@@ -119,6 +119,7 @@ impl Rebalancer {
             // Check if this is a stale oracle error and record it in metrics
             if let Some(client_err) = error.downcast_ref::<ClientError>() {
                 if is_stale_swb_price_error(client_err) {
+                    error!("MUST NEVER HAPPEN");
                     record_liquidation_failure(FAILURE_REASON_STALE_ORACLES, None, None);
                 }
             }
@@ -193,9 +194,10 @@ impl Rebalancer {
                 .try_get_token_wrapper::<OracleWrapper>(&mint, &token);
             if let Err(e) = wrapper {
                 // Ignore empty stake banks
-                if !e.to_string().contains("Stake pool supply is zero") {
-                    warn!("Skipping the token {} in rebalancing: {}", mint, e);
+                if e.to_string().contains("Stake pool supply is zero") {
                     self.empty_stake_banks.insert(mint);
+                } else {
+                    warn!("Skipping the token {} in rebalancing: {}", mint, e);
                 }
                 continue;
             }
@@ -204,11 +206,15 @@ impl Rebalancer {
 
             if let Some(&amount) = bank_to_amount.get(&wrapper.bank_wrapper.address) {
                 let value_to_swap = wrapper.get_value_for_amount(amount)?;
-                mint_to_value.insert(
-                    mint,
-                    value_to_swap.checked_mul(SLIPPAGE_MULTIPLIER).unwrap(),
-                );
-                necessary_swap_value += value_to_swap;
+                let missing_value = if value_to_swap < I80F48::from_num(1) {
+                    I80F48::from_num(1)
+                } else {
+                    value_to_swap
+                        .checked_mul(SLIPPAGE_MULTIPLIER)
+                        .ok_or_else(|| anyhow::anyhow!("Failed to calculate missing token value"))?
+                };
+                mint_to_value.insert(mint, missing_value);
+                necessary_swap_value += missing_value;
                 continue;
             }
 
@@ -331,6 +337,10 @@ impl Rebalancer {
             "Swapping {} tokens of mint {} to mint {} ...",
             amount, input_mint, output_mint
         );
+
+        if output_mint == Pubkey::from_str_const("So11111111111111111111111111111111111111112") {
+            return Err(anyhow::anyhow!("FIX WSOL SWAPS!"));
+        }
 
         let result = self.tokio_rt.block_on(self.dex_client.swap(
             &input_mint.to_string(),

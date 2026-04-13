@@ -146,17 +146,6 @@ impl Cache {
         })
     }
 
-    pub fn try_get_drift_markets(&self) -> Result<Vec<(Pubkey, DriftSpotMarket)>> {
-        self.try_get_drift_market_addresses()?
-            .into_iter()
-            .map(|address| Ok((address, self.try_get_drift_market(&address)?)))
-            .collect()
-    }
-
-    pub fn try_get_drift_market_addresses(&self) -> Result<Vec<Pubkey>> {
-        Ok(self.banks.get_drift_spot_markets().into_iter().collect())
-    }
-
     pub fn try_get_juplend_lending_state(&self, address: &Pubkey) -> Result<Lending> {
         let account = self.oracles.try_get_account(address)?;
         let mut data: &[u8] = &account.data;

@@ -1,9 +1,13 @@
 use crate::cache::Cache;
 
-use super::{bank::BankWrapper, oracle::OracleWrapperTrait};
+#[cfg(test)]
+use crate::wrappers::bank::BankWrapper;
+#[cfg(test)]
+use marginfi::state::bank::BankImpl;
+
+use super::oracle::OracleWrapperTrait;
 use anyhow::{Error, Result};
 use fixed::types::I80F48;
-use marginfi::state::bank::BankImpl;
 use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashSet, sync::Arc};
@@ -26,6 +30,7 @@ impl MarginfiAccountWrapper {
         }
     }
 
+    #[cfg(test)]
     pub fn get_balance_for_bank(&self, bank: &BankWrapper) -> Option<(I80F48, BalanceSide)> {
         self.lending_account
             .balances

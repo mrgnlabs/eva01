@@ -85,11 +85,6 @@ impl Liquidator {
     }
 
     pub fn start(&mut self) -> Result<()> {
-        // Fund the liquidator account, if needed
-        if !self.liquidator_account.has_funds()? {
-            warn!("Liquidator has no funds.");
-        }
-
         if let Err(err) = self.simulate_oracles_and_integrations() {
             warn!(
                 "Failed pre-rebalancing simulation round: {}",
@@ -147,8 +142,8 @@ impl Liquidator {
                         match e {
                             LiquidationError::Anyhow(e) => {
                                 error!(
-                                    "Failed to liquidate account {:?}: {:?}",
-                                    acc.liquidatee_account.address, e
+                                    "Failed to liquidate account {:?}",
+                                    acc.liquidatee_account.address
                                 );
                                 let reason = if e.downcast_ref::<ClientError>().is_some() {
                                     FAILURE_REASON_RPC_ERROR
@@ -301,7 +296,7 @@ impl Liquidator {
         stale_swb_oracles: &mut HashSet<Pubkey>,
     ) -> Result<Option<PreparedLiquidatableAccount>> {
         let (deposit_shares, liab_shares) = account.get_deposits_and_liabilities_shares();
-        if liab_shares.is_empty() {
+        if deposit_shares.is_empty() || liab_shares.is_empty() {
             return Ok(None);
         }
 
@@ -393,7 +388,6 @@ impl Liquidator {
             .iter()
             .max_by(|a, b| {
                 //debug!("Liab Bank {:?} value: {:?}", a.1, a.0);
-
                 a.0.cmp(&b.0)
             })
             .ok_or_else(|| anyhow!("No liability bank found"))?;

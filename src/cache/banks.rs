@@ -80,19 +80,6 @@ impl BanksCache {
             .collect()
     }
 
-    pub fn get_drift_spot_markets(&self) -> HashSet<Pubkey> {
-        self.banks
-            .iter()
-            .filter_map(|(_, bank)| {
-                if bank.bank.config.asset_tag == ASSET_TAG_DRIFT {
-                    Some(bank.bank.integration_acc_1)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     pub fn get_drift_users(&self) -> HashSet<Pubkey> {
         self.banks
             .iter()
