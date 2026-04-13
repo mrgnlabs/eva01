@@ -19,6 +19,16 @@ pub struct MarginfiAccountWrapper {
 
 type Shares = Vec<(I80F48, Pubkey)>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationAccounts {
+    pub observation_accounts: Vec<Pubkey>,
+    pub swb_oracles: Vec<Pubkey>,
+    pub bank_pks: Vec<Pubkey>,
+    pub kamino_reserves: HashSet<Pubkey>,
+    pub drift_spot_markets: HashSet<Pubkey>,
+    pub juplend_states: HashSet<Pubkey>,
+}
+
 impl MarginfiAccountWrapper {
     pub fn new(address: Pubkey, account: &MarginfiAccount) -> Self {
         MarginfiAccountWrapper {
@@ -85,21 +95,12 @@ impl MarginfiAccountWrapper {
             .collect::<Vec<_>>()
     }
 
-    // TODO: refactor
-    #[allow(clippy::type_complexity)]
     pub fn get_observation_accounts<T: OracleWrapperTrait>(
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         cache: Arc<Cache>,
-    ) -> Result<(
-        Vec<Pubkey>,
-        Vec<Pubkey>,
-        Vec<Pubkey>,
-        HashSet<Pubkey>,
-        HashSet<Pubkey>,
-        HashSet<Pubkey>,
-    )> {
+    ) -> Result<ObservationAccounts> {
         let mut bank_pks: HashSet<Pubkey> =
             MarginfiAccountWrapper::get_active_banks(lending_account)
                 .into_iter()
@@ -216,14 +217,14 @@ impl MarginfiAccountWrapper {
             observation_accounts.extend(bank_and_oracles);
         }
 
-        Ok((
+        Ok(ObservationAccounts {
             observation_accounts,
             swb_oracles,
             bank_pks,
             kamino_reserves,
             drift_spot_markets,
             juplend_states,
-        ))
+        })
     }
 }
 
@@ -431,19 +432,19 @@ mod tests {
                 cache.clone()
             )
             .unwrap(),
-            (
-                vec![
+            ObservationAccounts {
+                observation_accounts: vec![
                     sol_bank.address,
                     sol_bank.bank.config.oracle_keys[0],
                     usdc_bank.address,
                     usdc_bank.bank.config.oracle_keys[0],
                 ],
-                vec![],
-                vec![sol_bank.address, usdc_bank.address],
-                HashSet::new(),
-                HashSet::new(),
-                HashSet::new()
-            )
+                swb_oracles: vec![],
+                bank_pks: vec![sol_bank.address, usdc_bank.address],
+                kamino_reserves: HashSet::new(),
+                drift_spot_markets: HashSet::new(),
+                juplend_states: HashSet::new()
+            }
         );
     }
 
@@ -473,8 +474,8 @@ mod tests {
                 cache
             )
             .unwrap(),
-            (
-                vec![
+            ObservationAccounts {
+                observation_accounts: vec![
                     bonk_bank_wrapper.address,
                     bonk_bank_wrapper.bank.config.oracle_keys[0],
                     sol_bank_wrapper.address,
@@ -482,16 +483,16 @@ mod tests {
                     usdc_bank_wrapper.address,
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
-                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
-                vec![
+                swb_oracles: vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                bank_pks: vec![
                     bonk_bank_wrapper.address,
                     sol_bank_wrapper.address,
                     usdc_bank_wrapper.address
                 ],
-                HashSet::new(),
-                HashSet::new(),
-                HashSet::new()
-            )
+                kamino_reserves: HashSet::new(),
+                drift_spot_markets: HashSet::new(),
+                juplend_states: HashSet::new()
+            }
         );
     }
 
@@ -521,8 +522,8 @@ mod tests {
                 cache
             )
             .unwrap(),
-            (
-                vec![
+            ObservationAccounts {
+                observation_accounts: vec![
                     // SOL bank was excluded
                     // sol_bank_wrapper.address,
                     // sol_bank_wrapper.oracle_adapter.address,
@@ -531,12 +532,12 @@ mod tests {
                     usdc_bank_wrapper.address,
                     usdc_bank_wrapper.bank.config.oracle_keys[0],
                 ],
-                vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
-                vec![bonk_bank_wrapper.address, usdc_bank_wrapper.address],
-                HashSet::new(),
-                HashSet::new(),
-                HashSet::new()
-            )
+                swb_oracles: vec![bonk_bank_wrapper.bank.config.oracle_keys[0]], // Bonk oracle is the only switchboard oracle
+                bank_pks: vec![bonk_bank_wrapper.address, usdc_bank_wrapper.address],
+                kamino_reserves: HashSet::new(),
+                drift_spot_markets: HashSet::new(),
+                juplend_states: HashSet::new()
+            }
         );
     }
 }

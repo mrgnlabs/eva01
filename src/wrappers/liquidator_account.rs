@@ -1,4 +1,7 @@
-use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
+use super::{
+    bank::BankWrapper,
+    marginfi_account::{MarginfiAccountWrapper, ObservationAccounts},
+};
 use crate::{
     cache::{Cache, DriftSpotMarket},
     config::Eva01Config,
@@ -315,14 +318,14 @@ impl LiquidatorAccount {
 
         let banks_to_include: Vec<Pubkey> = vec![];
         let banks_to_exclude: Vec<Pubkey> = vec![];
-        let (
-            liquidatee_observation_accounts,
-            liquidatee_swb_oracles,
-            liquidatee_banks,
+        let ObservationAccounts {
+            observation_accounts: liquidatee_observation_accounts,
+            swb_oracles: liquidatee_swb_oracles,
+            bank_pks: liquidatee_banks,
             kamino_reserves,
             drift_spot_markets,
             juplend_states,
-        ) = MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
+        } = MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
             &liquidatee_account.lending_account,
             &banks_to_include,
             &banks_to_exclude,
@@ -663,7 +666,7 @@ impl LiquidatorAccount {
 
         debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let (observation_accounts, _, _, _, _, _) =
+        let observation_accounts =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &self
                     .cache
@@ -673,7 +676,8 @@ impl LiquidatorAccount {
                 &banks_to_include,
                 &banks_to_exclude,
                 self.cache.clone(),
-            )?;
+            )?
+            .observation_accounts;
 
         let mint_wrapper = self.cache.mints.try_get_account(&bank.bank.mint)?;
         let withdraw_ix = make_withdraw_ix(
