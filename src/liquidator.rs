@@ -32,7 +32,7 @@ use marginfi::state::{
 };
 use marginfi_type_crate::{
     constants::BANKRUPT_THRESHOLD,
-    types::{BalanceSide, BankOperationalState, RiskTier},
+    types::{BalanceSide, BankOperationalState},
 };
 use solana_client::client_error::ClientError;
 use solana_program::pubkey::Pubkey;
@@ -479,8 +479,8 @@ impl Liquidator {
         let underwater_maint_value =
             maintenance_health / (asset_weight_maint - liab_weight_maint * liquidation_discount);
 
-        let (asset_amount, _) = self.get_balance_for_bank(account, asset_bank_wrapper)?;
-        let (_, liab_amount) = self.get_balance_for_bank(account, liab_bank_wrapper)?;
+        let (asset_amount, _) = account.get_balance_for_bank(asset_bank_wrapper)?;
+        let (_, liab_amount) = account.get_balance_for_bank(liab_bank_wrapper)?;
 
         let asset_value = asset_bank_wrapper.calc_value(
             &asset_oracle_wrapper,
@@ -543,40 +543,6 @@ impl Liquidator {
         ))
     }
 
-    /// Gets the balance for a given [`MarginfiAccount`] and [`Bank`]
-    // TODO: merge with `get_balance_for_bank` in `MarginfiAccountWrapper`
-    fn get_balance_for_bank(
-        &self,
-        account: &MarginfiAccountWrapper,
-        bank_wrapper: &BankWrapper,
-    ) -> Result<(I80F48, I80F48)> {
-        let balance = account
-            .lending_account
-            .balances
-            .iter()
-            .find(|b| b.bank_pk == bank_wrapper.address && b.is_active())
-            .map(|b| match b.get_side()? {
-                BalanceSide::Assets => {
-                    let amount = bank_wrapper
-                        .bank
-                        .get_asset_amount(b.asset_shares.into())
-                        .ok()?;
-                    Some((amount, I80F48::ZERO))
-                }
-                BalanceSide::Liabilities => {
-                    let amount = bank_wrapper
-                        .bank
-                        .get_liability_amount(b.liability_shares.into())
-                        .ok()?;
-                    Some((I80F48::ZERO, amount))
-                }
-            })
-            .map(|e| e.unwrap_or_default())
-            .unwrap_or_default();
-
-        Ok(balance)
-    }
-
     fn get_value_of_shares(
         &self,
         shares: Vec<(I80F48, Pubkey)>,
@@ -614,19 +580,13 @@ impl Liquidator {
                 }
             };
 
-            // TODO: add support for isolated or deprecate completely?
-            if matches!(bank_wrapper.bank.config.risk_tier, RiskTier::Isolated) {
-                continue;
-            }
-
             if !matches!(
                 bank_wrapper.bank.config.operational_state,
-                BankOperationalState::Operational
+                BankOperationalState::Operational | BankOperationalState::ReduceOnly
             ) {
                 continue;
             }
 
-            // TODO: add Banks to Geyser!!!
             if bank_wrapper.bank.check_utilization_ratio().is_err() {
                 debug!("Skipping bankrupt bank from evaluation: {}", bank_pk);
                 continue;

@@ -207,7 +207,6 @@ impl GeyserService {
                                 continue;
                             }
 
-                            // TODO: need more elaborate message payload check, it is hiding invalid messages.
                             let account_update = ward!(&account.account, continue);
                             let account =
                                 ward!(account_update_to_account(account_update).ok(), continue);

@@ -23,16 +23,12 @@ use solana_sdk::{
     signer::Signer,
     transaction::VersionedTransaction,
 };
-use std::str::FromStr;
 use switchboard_on_demand_client::{
     CrossbarClient, FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
 };
 use tokio::runtime::{Builder, Runtime};
 
 use crate::{config::Eva01Config, utils::simulation_cache::decode_and_apply_simulated_accounts};
-
-//TODO: parametrize the Swb Program ID.
-pub const SWB_PROGRAM_ID: &str = "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w";
 
 pub const SWB_STALE_PRICE_ERROR_CODE: &str = "17a1";
 pub const SWB_STALE_PRICE_ERROR_CODE_NUMBER: u32 = 6049;
@@ -94,7 +90,7 @@ impl SwbCranker {
         );
         let queue = tokio_rt.block_on(QueueAccountData::load(
             &non_blocking_rpc_client,
-            &Pubkey::from_str(SWB_PROGRAM_ID).unwrap(),
+            &config.swb_program_id,
         ))?;
 
         // Prefer private gateway from env; fall back to first on-chain gateway

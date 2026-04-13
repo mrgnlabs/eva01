@@ -1,8 +1,6 @@
 use crate::cache::Cache;
 
-#[cfg(test)]
 use crate::wrappers::bank::BankWrapper;
-#[cfg(test)]
 use marginfi::state::bank::BankImpl;
 
 use super::oracle::OracleWrapperTrait;
@@ -30,25 +28,32 @@ impl MarginfiAccountWrapper {
         }
     }
 
-    #[cfg(test)]
-    pub fn get_balance_for_bank(&self, bank: &BankWrapper) -> Option<(I80F48, BalanceSide)> {
-        self.lending_account
+    pub fn get_balance_for_bank(&self, bank_wrapper: &BankWrapper) -> Result<(I80F48, I80F48)> {
+        let balance = self
+            .lending_account
             .balances
             .iter()
-            .find(|b| b.bank_pk == bank.address)
-            .and_then(|b| match b.get_side()? {
+            .find(|b| b.bank_pk == bank_wrapper.address && b.is_active())
+            .map(|b| match b.get_side()? {
                 BalanceSide::Assets => {
-                    let amount = bank.bank.get_asset_amount(b.asset_shares.into()).ok()?;
-                    Some((amount, BalanceSide::Assets))
+                    let amount = bank_wrapper
+                        .bank
+                        .get_asset_amount(b.asset_shares.into())
+                        .ok()?;
+                    Some((amount, I80F48::ZERO))
                 }
                 BalanceSide::Liabilities => {
-                    let amount = bank
+                    let amount = bank_wrapper
                         .bank
                         .get_liability_amount(b.liability_shares.into())
                         .ok()?;
-                    Some((amount, BalanceSide::Liabilities))
+                    Some((I80F48::ZERO, amount))
                 }
             })
+            .map(|e| e.unwrap_or_default())
+            .unwrap_or_default();
+
+        Ok(balance)
     }
 
     pub fn get_deposits_and_liabilities_shares(&self) -> (Shares, Shares) {
@@ -348,18 +353,12 @@ mod tests {
         cache.banks.insert(usdc_bank.address, usdc_bank.bank);
 
         let healthy = MarginfiAccountWrapper::test_healthy(&sol_bank, &usdc_bank);
-        let (balance, side) = healthy.get_balance_for_bank(&sol_bank).unwrap();
-        assert_eq!(balance, I80F48::from_num(100));
-        match side {
-            BalanceSide::Assets => assert!(true, "Side is Assets"),
-            BalanceSide::Liabilities => assert!(false, "Side is Liabilities"),
-        }
-        let (balance, side) = healthy.get_balance_for_bank(&usdc_bank).unwrap();
-        assert_eq!(balance, I80F48::from_num(100));
-        match side {
-            BalanceSide::Assets => assert!(false, "Side is Assets"),
-            BalanceSide::Liabilities => assert!(true, "Side is Liabilities"),
-        }
+        let (asset_amount, liab_amount) = healthy.get_balance_for_bank(&sol_bank).unwrap();
+        assert_eq!(asset_amount, I80F48::from_num(100));
+        assert_eq!(liab_amount, I80F48::ZERO);
+        let (asset_amount, liab_amount) = healthy.get_balance_for_bank(&usdc_bank).unwrap();
+        assert_eq!(asset_amount, I80F48::ZERO);
+        assert_eq!(liab_amount, I80F48::from_num(100));
         assert_eq!(
             healthy.get_deposits_and_liabilities_shares(),
             (
@@ -373,18 +372,12 @@ mod tests {
         );
 
         let mut unhealthy = MarginfiAccountWrapper::test_unhealthy();
-        let (balance, side) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
-        assert_eq!(balance, I80F48::from_num(100));
-        match side {
-            BalanceSide::Assets => assert!(false, "Side is Assets"),
-            BalanceSide::Liabilities => assert!(true, "Side is Liabilities"),
-        }
-        let (balance, side) = unhealthy.get_balance_for_bank(&usdc_bank).unwrap();
-        assert_eq!(balance, I80F48::from_num(100));
-        match side {
-            BalanceSide::Assets => assert!(true, "Side is Assets"),
-            BalanceSide::Liabilities => assert!(false, "Side is Liabilities"),
-        }
+        let (asset_amount, liab_amount) = unhealthy.get_balance_for_bank(&sol_bank).unwrap();
+        assert_eq!(asset_amount, I80F48::ZERO);
+        assert_eq!(liab_amount, I80F48::from_num(100));
+        let (asset_amount, liab_amount) = unhealthy.get_balance_for_bank(&usdc_bank).unwrap();
+        assert_eq!(asset_amount, I80F48::from_num(100));
+        assert_eq!(liab_amount, I80F48::ZERO);
         assert_eq!(
             unhealthy.get_deposits_and_liabilities_shares(),
             (

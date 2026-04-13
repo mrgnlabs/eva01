@@ -107,14 +107,18 @@ impl Rebalancer {
     pub fn run(&mut self, missing_tokens: HashMap<Pubkey, I80F48>) -> anyhow::Result<()> {
         info!("Running the Rebalancing process...");
 
-        // TODO: expand directly in this function?
-        if let Err(e) = self.handle_token_accounts(missing_tokens) {
+        let swap_token_address = self.cache.tokens.try_get_token_for_mint(&self.swap_mint)?;
+        let swap_wrapper = self
+            .cache
+            .try_get_token_wrapper::<OracleWrapper>(&self.swap_mint, &swap_token_address)?;
+
+        if let Err(e) = self.handle_token_accounts(missing_tokens, &swap_wrapper) {
             error!("Failed to handle the Liquidator's tokens: {}", e);
             // Note: Stale oracle errors from withdraw operations are now handled
             // inside handle_token_accounts where we have access to the bank context
         }
 
-        if let Err(error) = self.deposit_preferred_token() {
+        if let Err(error) = self.deposit_preferred_token(&swap_wrapper) {
             error!("Failed to deposit preferred token: {}", error);
             // Check if this is a stale oracle error and record it in metrics
             if let Some(client_err) = error.downcast_ref::<ClientError>() {
@@ -133,14 +137,11 @@ impl Rebalancer {
     fn handle_token_accounts(
         &mut self,
         missing_tokens: HashMap<Pubkey, I80F48>,
+        swap_wrapper: &TokenAccountWrapper<OracleWrapper>,
     ) -> anyhow::Result<()> {
         let (necessary_swap_value, missing_mint_to_value) =
             self.sell_excessive_tokens_and_calculate_necessary_swap_value(missing_tokens)?;
 
-        let swap_token_address = self.cache.tokens.try_get_token_for_mint(&self.swap_mint)?;
-        let swap_wrapper = self
-            .cache
-            .try_get_token_wrapper::<OracleWrapper>(&self.swap_mint, &swap_token_address)?;
         let existing_swap_value = swap_wrapper.get_value()?;
 
         if necessary_swap_value > existing_swap_value {
@@ -252,7 +253,7 @@ impl Rebalancer {
 
     fn buy_missing_tokens(
         &mut self,
-        swap_token_wrapper: TokenAccountWrapper<OracleWrapper>,
+        swap_token_wrapper: &TokenAccountWrapper<OracleWrapper>,
         mint_to_value: HashMap<Pubkey, I80F48>,
     ) -> anyhow::Result<()> {
         for mint in self.cache.mints.get_mints() {
@@ -270,16 +271,13 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn deposit_preferred_token(&self) -> anyhow::Result<()> {
+    fn deposit_preferred_token(
+        &self,
+        swap_wrapper: &TokenAccountWrapper<OracleWrapper>,
+    ) -> anyhow::Result<()> {
         let amount = self
             .get_token_balance_for_mint(&self.swap_mint)
             .unwrap_or_default();
-
-        // TODO: move on the higher level
-        let swap_token_address = self.cache.tokens.try_get_token_for_mint(&self.swap_mint)?;
-        let swap_wrapper = self
-            .cache
-            .try_get_token_wrapper::<OracleWrapper>(&self.swap_mint, &swap_token_address)?;
 
         let max_value = self
             .token_thresholds

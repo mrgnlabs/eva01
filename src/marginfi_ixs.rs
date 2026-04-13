@@ -385,9 +385,8 @@ pub fn make_kamino_withdraw_ix(
         reserve_farm_state,
         kamino_program: KaminoLending::id(),
         farms_program: KaminoFarms::id(),
-        // FIX
-        collateral_token_program: mint_wrapper.account.owner, // assuming Kamino liquidity and collateral are the same as our bank's mint
-        liquidity_token_program: mint_wrapper.account.owner, // assuming Kamino liquidity and collateral are the same as our bank's mint
+        collateral_token_program: spl_token::ID,
+        liquidity_token_program: mint_wrapper.account.owner,
         instruction_sysvar_account: sysvar::instructions::id(),
     }
     .to_account_metas(None);

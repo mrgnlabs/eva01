@@ -357,6 +357,8 @@ impl LiquidatorAccount {
 
         ixs.push(self.cu_limit_ix.clone());
 
+        // TODO: think about posting an swb_crank ix here
+
         let start_ix = make_start_liquidate_ix(
             self.program_id,
             liquidatee_account_address,
@@ -601,7 +603,6 @@ impl LiquidatorAccount {
                                 .downcast_ref::<ClientError>()
                                 .is_some_and(is_stale_swb_price_error)
                             {
-                                // TODO: Should we just crank always?? Also refresh Kamino reserves?
                                 Err(LiquidationError::StaleOracles(liquidatee_swb_oracles))
                             } else {
                                 Err(LiquidationError::Anyhow(err))
@@ -609,7 +610,6 @@ impl LiquidatorAccount {
                         }
                     }
                 } else if is_stale_swb_price_error(&err) {
-                    // TODO: Should we just crank always?? Also refresh Kamino reserves?
                     Err(LiquidationError::StaleOracles(liquidatee_swb_oracles))
                 } else {
                     Err(LiquidationError::from_client(err))

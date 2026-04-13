@@ -194,7 +194,6 @@ impl Cache {
         })
     }
 
-    // TODO: think of a better place for this
     pub fn add_addresses_to_lut(
         &self,
         rpc_client: &RpcClient,
