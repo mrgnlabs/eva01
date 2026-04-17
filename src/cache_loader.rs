@@ -119,23 +119,24 @@ impl CacheLoader {
                 max_concurrent_calls: 32,
             },
         )?;
+        let marginfi_accounts_length = marginfi_accounts.len();
 
         for (address, account_opt) in marginfi_accounts_pubkeys
-            .iter()
-            .zip(marginfi_accounts.iter())
+            .into_iter()
+            .zip(marginfi_accounts.into_iter())
         {
             if let Some(account) = account_opt {
                 let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-                let maw = MarginfiAccountWrapper::new(*address, marginfi_account);
+                let maw = MarginfiAccountWrapper::new(address, *marginfi_account);
                 cache.marginfi_accounts.try_insert(maw)?;
             } else {
-                warn!("Couldn't load Marginfi account for key: {}", *address);
+                warn!("Couldn't load Marginfi account for key: {}", address);
             }
         }
 
         info!(
             "Loaded {} marginfi accounts in {:?}",
-            marginfi_accounts.len(),
+            marginfi_accounts_length,
             start.elapsed()
         );
 
@@ -197,14 +198,33 @@ impl CacheLoader {
         let program: Program<Arc<Keypair>> = anchor_client.program(cache.marginfi_program_id)?;
 
         info!("Loading banks...");
-        for (bank_address, bank) in program
-            .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
-                BANK_GROUP_PK_OFFSET,
-                cache.marginfi_group_address.as_ref(),
-            ))])?
-            .iter()
-        {
-            cache.banks.insert(*bank_address, *bank);
+        let bank_accounts = program.rpc().get_program_accounts_with_config(
+            &cache.marginfi_program_id,
+            RpcProgramAccountsConfig {
+                account_config: RpcAccountInfoConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    ..Default::default()
+                },
+                filters: Some(vec![
+                    RpcFilterType::Memcmp(Memcmp::new(
+                        0,
+                        MemcmpEncodedBytes::Base58(bs58::encode(Bank::DISCRIMINATOR).into_string()),
+                    )),
+                    RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
+                        BANK_GROUP_PK_OFFSET,
+                        cache.marginfi_group_address.as_ref(),
+                    )),
+                ]),
+                with_context: Some(false),
+                sort_results: None,
+            },
+        )?;
+
+        for (bank_address, bank_account) in bank_accounts.into_iter() {
+            let mut data = bank_account.data.as_slice();
+            let bank = Bank::try_deserialize(&mut data)
+                .map_err(|e| anyhow!("Failed to deserialize Bank {}: {:?}", bank_address, e))?;
+            cache.banks.insert(bank_address, bank, bank_account);
             debug!("Loaded the Bank {:?}.", bank_address);
         }
 

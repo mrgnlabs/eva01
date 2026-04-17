@@ -8,7 +8,7 @@ use anyhow::{Error, Result};
 use fixed::types::I80F48;
 use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct MarginfiAccountWrapper {
@@ -30,15 +30,12 @@ pub struct ObservationAccounts {
 
 impl MarginfiAccountWrapper {
     pub fn new(address: Pubkey, account: MarginfiAccount) -> Self {
-        MarginfiAccountWrapper {
-            address,
-            account,
-        }
+        MarginfiAccountWrapper { address, account }
     }
 
     pub fn get_balance_for_bank(&self, bank_wrapper: &BankWrapper) -> Result<(I80F48, I80F48)> {
         let balance = self
-        .account
+            .account
             .lending_account
             .balances
             .iter()
@@ -98,7 +95,7 @@ impl MarginfiAccountWrapper {
         lending_account: &LendingAccount,
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
-        cache: Arc<Cache>,
+        cache: &Cache,
     ) -> Result<ObservationAccounts> {
         let mut bank_pks: HashSet<Pubkey> =
             MarginfiAccountWrapper::get_active_banks(lending_account)
@@ -123,7 +120,7 @@ impl MarginfiAccountWrapper {
 
         for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
-            let oracle_wrapper = T::build(&cache, bank_pk)?;
+            let oracle_wrapper = T::build(cache, bank_pk)?;
             let bank_and_oracles: Vec<Pubkey> = match bank_wrapper.bank.config.oracle_setup {
                 OracleSetup::PythPushOracle => {
                     vec![*bank_pk, oracle_wrapper.get_address()]

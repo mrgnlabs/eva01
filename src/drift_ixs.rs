@@ -5,9 +5,7 @@ use anchor_lang::{Id, InstructionData, ToAccountMetas};
 use marginfi_type_crate::pdas::derive_drift_state;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
-use crate::{
-    drift::{client as drift, program::Drift},
-};
+use crate::drift::{client as drift, program::Drift};
 
 pub fn make_refresh_spot_market_ix(
     spot_market: Pubkey,

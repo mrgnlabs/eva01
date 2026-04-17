@@ -15,7 +15,7 @@ use crate::{
     },
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
-        self, check_asset_tags_matching, drift::derive_spot_market, marginfi_account_by_authority,
+        self, check_asset_tags_matching, marginfi_account_by_authority,
         simulation_cache::decode_and_apply_simulated_accounts,
         swb_cranker::is_stale_swb_price_error,
     },
@@ -28,6 +28,7 @@ use marginfi_type_crate::{
     constants::{
         ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
     },
+    pdas::derive_drift_spot_market,
     types::Bank,
 };
 use solana_account_decoder::UiAccountEncoding;
@@ -86,6 +87,7 @@ impl LiquidationError {
 
 pub struct PreparedLiquidatableAccount {
     pub liquidatee_account: MarginfiAccountWrapper,
+    pub observation_accounts: ObservationAccounts,
     pub asset_bank: Pubkey,
     pub liab_bank: Pubkey,
     pub asset_amount: I80F48,
@@ -230,12 +232,13 @@ impl LiquidatorAccount {
 
     pub fn liquidate(
         &self,
-        account: &PreparedLiquidatableAccount,
+        account: PreparedLiquidatableAccount,
         stale_swb_oracles: &HashSet<Pubkey>,
         tokens_in_shortage: &mut HashSet<Pubkey>,
     ) -> Result<(), LiquidationError> {
         let PreparedLiquidatableAccount {
             liquidatee_account,
+            observation_accounts,
             asset_bank,
             liab_bank,
             asset_amount,
@@ -251,13 +254,13 @@ impl LiquidatorAccount {
         let asset_bank_wrapper = self
             .cache
             .banks
-            .try_get_bank(asset_bank)
+            .try_get_bank(&asset_bank)
             .map_err(LiquidationError::from_anyhow)?;
 
         let liab_bank_wrapper = self
             .cache
             .banks
-            .try_get_bank(liab_bank)
+            .try_get_bank(&liab_bank)
             .map_err(LiquidationError::from_anyhow)?;
 
         let signer_pk = self.signer.pubkey();
@@ -277,7 +280,7 @@ impl LiquidatorAccount {
             .try_get_account(&self.liquidator_address)
             .map_err(LiquidationError::from_anyhow)?;
 
-        let lending_account = &liquidator_account.lending_account;
+        let lending_account = &liquidator_account.account.lending_account;
         for bank_to_validate_against in [&asset_bank_wrapper, &liab_bank_wrapper] {
             if !check_asset_tags_matching(&bank_to_validate_against.bank, lending_account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
@@ -290,34 +293,32 @@ impl LiquidatorAccount {
         let liab_token_balance =
             I80F48::from_num(self.get_token_balance_for_mint(&liab_mint).unwrap());
 
-        if liab_token_balance < *dust_liab_threshold {
+        if liab_token_balance < dust_liab_threshold {
             tokens_in_shortage.insert(liab_mint);
             info!("No tokens: {}", liab_mint);
             return Err(LiquidationError::NotEnoughFunds);
         }
 
-        let (asset_amount, liab_amount) = if liab_token_balance < *liab_amount {
+        let (asset_amount, liab_amount) = if liab_token_balance < liab_amount {
             tokens_in_shortage.insert(liab_mint);
             info!(
                 "Not enough {} tokens: liquidating for: {} (of {})",
                 liab_mint, liab_token_balance, liab_amount
             );
-            let proportion = liab_token_balance.checked_div(*liab_amount).unwrap();
+            let proportion = liab_token_balance.checked_div(liab_amount).unwrap();
             (
                 asset_amount.checked_mul(proportion).unwrap(),
                 liab_token_balance,
             )
         } else {
             (
-                *asset_amount,
+                asset_amount,
                 liab_amount
                     .checked_mul(I80F48::from_num(1.0 - PROFIT_SHARE))
                     .unwrap(),
             )
         };
 
-        let banks_to_include: Vec<Pubkey> = vec![];
-        let banks_to_exclude: Vec<Pubkey> = vec![];
         let ObservationAccounts {
             observation_accounts: liquidatee_observation_accounts,
             swb_oracles: liquidatee_swb_oracles,
@@ -325,13 +326,7 @@ impl LiquidatorAccount {
             kamino_reserves,
             drift_spot_markets,
             juplend_states,
-        } = MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
-            &liquidatee_account.lending_account,
-            &banks_to_include,
-            &banks_to_exclude,
-            self.cache.clone(),
-        )
-        .map_err(LiquidationError::from_anyhow)?;
+        } = observation_accounts;
 
         // Note: liquidatee_observation_accounts include Kamino reserves, Drift spot markets and all of the banks and oracles.
         participating_accounts.extend(liquidatee_observation_accounts.iter());
@@ -345,14 +340,15 @@ impl LiquidatorAccount {
             return Ok(());
         }
 
-        let liquidation_record = if liquidatee_account.liquidation_record == Pubkey::default() {
-            // warn!("IGNORING UNINITIALIZED LIQ RECORD");
-            // return Ok(());
-            self.init_liq_record(liquidatee_account)
-                .map_err(LiquidationError::from_anyhow)?
-        } else {
-            liquidatee_account.liquidation_record
-        };
+        let liquidation_record =
+            if liquidatee_account.account.liquidation_record == Pubkey::default() {
+                // warn!("IGNORING UNINITIALIZED LIQ RECORD");
+                // return Ok(());
+                self.init_liq_record(&liquidatee_account)
+                    .map_err(LiquidationError::from_anyhow)?
+            } else {
+                liquidatee_account.account.liquidation_record
+            };
         participating_accounts.insert(liquidation_record);
 
         let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
@@ -672,10 +668,11 @@ impl LiquidatorAccount {
                     .cache
                     .marginfi_accounts
                     .try_get_account(&self.liquidator_address)?
+                    .account
                     .lending_account,
                 &banks_to_include,
                 &banks_to_exclude,
-                self.cache.clone(),
+                &self.cache,
             )?
             .observation_accounts;
 
@@ -829,7 +826,7 @@ impl LiquidatorAccount {
         let (reward_spot_market, reward_spot_market_2) =
             if drift_user.spot_positions[2].scaled_balance > 0 {
                 let reward_spot_market_address =
-                    derive_spot_market(drift_user.spot_positions[2].market_index);
+                    derive_drift_spot_market(drift_user.spot_positions[2].market_index).0;
 
                 let reward_spot_market = self
                     .cache
@@ -837,7 +834,7 @@ impl LiquidatorAccount {
 
                 if drift_user.spot_positions[3].scaled_balance > 0 {
                     let reward_spot_market_2_address =
-                        derive_spot_market(drift_user.spot_positions[3].market_index);
+                        derive_drift_spot_market(drift_user.spot_positions[3].market_index).0;
 
                     let reward_spot_market_2 = self
                         .cache

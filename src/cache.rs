@@ -14,7 +14,9 @@ use anchor_lang::AccountDeserialize;
 use anyhow::{anyhow, Result};
 use banks::BanksCache;
 use log::info;
-use marginfi_type_crate::{constants::FEE_STATE_SEED, pdas::derive_kamino_lending_market_authority};
+use marginfi_type_crate::{
+    constants::FEE_STATE_SEED, pdas::derive_kamino_lending_market_authority,
+};
 use mints::MintsCache;
 use oracles::OraclesCache;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
@@ -32,7 +34,7 @@ use crate::{
     drift::accounts::{SpotMarket, User as DriftUser},
     juplend_earn::accounts::Lending,
     kamino_lending::accounts::Reserve,
-    utils::{accessor},
+    utils::accessor,
     wrappers::{oracle::OracleWrapperTrait, token_account::TokenAccountWrapper},
 };
 
@@ -96,7 +98,8 @@ impl Cache {
     }
 
     fn build_kamino_reserve(address: Pubkey, reserve: Reserve) -> KaminoReserve {
-        let lending_market_authority = derive_kamino_lending_market_authority(&reserve.lending_market).0;
+        let lending_market_authority =
+            derive_kamino_lending_market_authority(&reserve.lending_market).0;
         KaminoReserve {
             address,
             reserve,

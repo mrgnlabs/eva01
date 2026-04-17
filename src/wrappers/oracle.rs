@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use log::error;
-use marginfi::state::price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias};
-use marginfi_type_crate::types::OracleSetup;
+use marginfi::state::price::{OraclePriceFeedAdapter, PriceAdapter, PriceBias};
+use marginfi_type_crate::types::{OraclePriceType, OracleSetup};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account_info::IntoAccountInfo;
 

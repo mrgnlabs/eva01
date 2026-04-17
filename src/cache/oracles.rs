@@ -47,25 +47,6 @@ impl OraclesCache {
             .cloned()
     }
 
-    #[cfg(test)]
-    fn try_get_accounts(&self, addresses: &[Pubkey]) -> Result<Vec<(Pubkey, Account)>> {
-        let accounts_guard = self.accounts.read().map_err(|e| {
-            anyhow!(
-                "Failed to lock the Oracle accounts map for returning specific accounts! {}",
-                e
-            )
-        })?;
-
-        Ok(addresses
-            .iter()
-            .filter_map(|address| {
-                accounts_guard
-                    .get(address)
-                    .map(|account| (*address, account.clone()))
-            })
-            .collect())
-    }
-
     pub fn try_get_addresses(&self) -> Result<Vec<Pubkey>> {
         let accounts_guard = self.accounts.read().map_err(|e| {
             anyhow!(

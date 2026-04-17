@@ -4,7 +4,14 @@ use anchor_lang::{Id, InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::{associated_token, token_2022};
 use log::{debug, info, trace};
-use marginfi_type_crate::{constants::LIQUIDATION_RECORD_SEED, pdas::{derive_drift_signer, derive_drift_spot_market_vault, derive_drift_state, derive_juplend_lending_admin, derive_juplend_liquidity, derive_juplend_liquidity_vault, derive_juplend_rate_model, derive_kamino_user_state}};
+use marginfi_type_crate::{
+    constants::LIQUIDATION_RECORD_SEED,
+    pdas::{
+        derive_drift_signer, derive_drift_state, derive_juplend_lending_admin,
+        derive_juplend_liquidity, derive_juplend_liquidity_vault, derive_juplend_rate_model,
+        derive_kamino_user_state,
+    },
+};
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -21,9 +28,7 @@ use crate::{
     juplend_earn::accounts::Lending,
     kamino_farms::program::Farms as KaminoFarms,
     kamino_lending::program::KaminoLending,
-    utils::{
-        find_bank_liquidity_vault_authority,
-    },
+    utils::find_bank_liquidity_vault_authority,
     wrappers::{bank::BankWrapper, mint::MintWrapper},
 };
 
@@ -350,10 +355,13 @@ pub fn make_kamino_withdraw_ix(
         } else {
             (
                 Some(kamino_reserve.reserve.farm_collateral),
-                Some(derive_kamino_user_state(
-                    &kamino_reserve.reserve.farm_collateral,
-                    &kamino_obligation,
-                ).0),
+                Some(
+                    derive_kamino_user_state(
+                        &kamino_reserve.reserve.farm_collateral,
+                        &kamino_obligation,
+                    )
+                    .0,
+                ),
             )
         };
 
@@ -400,7 +408,7 @@ pub fn make_kamino_withdraw_ix(
         accounts,
         data: marginfi::instruction::KaminoWithdraw {
             amount,
-            withdraw_all: Some(withdraw_all),
+            flags: if withdraw_all { Some(1) } else { None },
         }
         .data(),
     }

@@ -2,7 +2,7 @@ use crate::wrappers::oracle::OracleWrapperTrait;
 
 use super::bank::BankWrapper;
 use fixed::types::I80F48;
-use marginfi_type_crate::constants::EXP_10_I80F48;
+use marginfi_type_crate::{constants::EXP_10_I80F48, types::OraclePriceType};
 
 #[derive(Clone)]
 pub struct TokenAccountWrapper<T: OracleWrapperTrait> {
@@ -26,7 +26,7 @@ impl<T: OracleWrapperTrait> TokenAccountWrapper<T> {
         };
 
         let price = self.oracle_wrapper.get_price_of_type(
-            marginfi::state::price::OraclePriceType::RealTime,
+            OraclePriceType::RealTime,
             None,
             self.bank_wrapper.bank.config.oracle_max_confidence,
         )?;
@@ -36,7 +36,7 @@ impl<T: OracleWrapperTrait> TokenAccountWrapper<T> {
 
     pub fn get_amount_from_value(&self, value: I80F48) -> anyhow::Result<I80F48> {
         let price = self.oracle_wrapper.get_price_of_type(
-            marginfi::state::price::OraclePriceType::RealTime,
+            OraclePriceType::RealTime,
             None,
             self.bank_wrapper.bank.config.oracle_max_confidence,
         )?;

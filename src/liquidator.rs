@@ -9,7 +9,7 @@ use crate::{
     },
     rebalancer::Rebalancer,
     utils::{
-        calc_total_weighted_assets_liabs, format_error_chain,
+        format_error_chain,
         swb_cranker::{SwbCranker, SWB_STALE_HANDLED_ERROR, SWB_STALE_PRICE_ERROR_CODE_NUMBER},
     },
     wrappers::{
@@ -27,15 +27,16 @@ use fixed_macro::types::I80F48;
 use log::{debug, error, info, warn};
 use marginfi::state::{
     bank::BankImpl,
-    marginfi_account::RequirementType,
-    price::{OraclePriceType, PriceAdapter},
+    marginfi_account::{get_health_components, HealthPriceMode},
+    price::PriceAdapter,
 };
 use marginfi_type_crate::{
     constants::BANKRUPT_THRESHOLD,
-    types::{BalanceSide, BankOperationalState},
+    types::{BalanceSide, BankOperationalState, OraclePriceType, RequirementType},
 };
 use solana_client::client_error::ClientError;
 use solana_program::pubkey::Pubkey;
+use solana_sdk::account_info::IntoAccountInfo;
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
@@ -149,25 +150,25 @@ impl Liquidator {
 
                 let mut tokens_in_shortage: HashSet<Pubkey> = HashSet::new();
                 for acc in accounts {
+                    let liquidatee = acc.liquidatee_account.address;
+                    let liab_bank = acc.liab_bank;
+                    let liab_amount = acc.liab_amount;
                     // Get the liability mint for metrics
                     let liab_mint = self
                         .cache
                         .banks
-                        .try_get_bank(&acc.liab_bank)
+                        .try_get_bank(&liab_bank)
                         .ok()
                         .map(|bank| bank.bank.mint);
 
                     if let Err(e) = self.liquidator_account.liquidate(
-                        &acc,
+                        acc,
                         &stale_swb_oracles,
                         &mut tokens_in_shortage,
                     ) {
                         match e {
                             LiquidationError::Anyhow(e) => {
-                                error!(
-                                    "Failed to liquidate account {:?}",
-                                    acc.liquidatee_account.address
-                                );
+                                error!("Failed to liquidate account {:?}", liquidatee);
                                 let reason = if e.downcast_ref::<ClientError>().is_some() {
                                     FAILURE_REASON_RPC_ERROR
                                 } else {
@@ -188,9 +189,9 @@ impl Liquidator {
                             }
                             LiquidationError::NotEnoughFunds => {
                                 missing_tokens
-                                    .entry(acc.liab_bank)
-                                    .and_modify(|m| *m += acc.liab_amount)
-                                    .or_insert(acc.liab_amount);
+                                    .entry(liab_bank)
+                                    .and_modify(|m| *m += liab_amount)
+                                    .or_insert(liab_amount);
                                 record_liquidation_failure(
                                     FAILURE_REASON_NOT_ENOUGH_FUNDS,
                                     liab_mint,
@@ -346,9 +347,20 @@ impl Liquidator {
         let asset_bank_wrapper = self.cache.banks.try_get_bank(&asset_bank_pk)?;
         let liab_bank_wrapper = self.cache.banks.try_get_bank(&liab_bank_pk)?;
 
+        let banks_to_include: Vec<Pubkey> = vec![];
+        let banks_to_exclude: Vec<Pubkey> = vec![];
+        let observation_accounts = MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
+            &account.account.lending_account,
+            &banks_to_include,
+            &banks_to_exclude,
+            &self.cache,
+        )?;
+
         // Calculated max liquidatable amount is the defining factor for liquidation.
         let liquidation_amounts = self.compute_max_liquidatable_amounts_with_banks(
+            &self.cache,
             account,
+            observation_accounts.observation_accounts.as_slice(),
             &asset_bank_wrapper,
             &liab_bank_wrapper,
         )?;
@@ -369,6 +381,7 @@ impl Liquidator {
 
         Ok(Some(PreparedLiquidatableAccount {
             liquidatee_account: account.clone(),
+            observation_accounts,
             asset_bank: asset_bank_pk,
             liab_bank: liab_bank_pk,
             asset_amount: slippage_adjusted_asset_amount,
@@ -417,14 +430,34 @@ impl Liquidator {
 
     fn compute_max_liquidatable_amounts_with_banks(
         &self,
+        cache: &Cache,
         account: &MarginfiAccountWrapper,
+        banks_and_oracles: &[Pubkey],
         asset_bank_wrapper: &BankWrapper,
         liab_bank_wrapper: &BankWrapper,
     ) -> Result<LiquidationAmounts> {
-        let (total_weighted_assets, total_weighted_liabilities) = calc_total_weighted_assets_liabs(
-            &self.cache,
-            &account.lending_account,
+        let mut accounts: Vec<_> = vec![];
+        for pk in banks_and_oracles.iter() {
+            let bank_account = cache.banks.try_get_bank(pk);
+            let account = match bank_account {
+                Ok(wrapper) => wrapper.account,
+                Err(_) => cache.oracles.try_get_account(pk)?,
+            };
+
+            accounts.push(account);
+        }
+        let remaining_ais: Vec<_> = accounts
+            .iter_mut()
+            .zip(banks_and_oracles.iter())
+            .map(|(account, pk)| (pk, account).into_account_info())
+            .collect();
+
+        let (total_weighted_assets, total_weighted_liabilities) = get_health_components(
+            &account.account,
+            &remaining_ais,
             RequirementType::Maintenance,
+            &mut None,
+            HealthPriceMode::Live { liq_cache: None },
         )?;
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         debug!(

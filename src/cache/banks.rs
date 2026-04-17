@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use crate::{utils::find_oracle_keys, wrappers::bank::BankWrapper};
+use anyhow::{anyhow, Result};
 use marginfi_type_crate::{
     constants::{
         ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
@@ -6,9 +7,8 @@ use marginfi_type_crate::{
     },
     types::{Bank, OracleSetup},
 };
-use solana_sdk::{pubkey::Pubkey, account::Account};
-use crate::{utils::find_oracle_keys, wrappers::bank::BankWrapper};
-use anyhow::{anyhow, Result};
+use solana_sdk::{account::Account, pubkey::Pubkey};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub struct BanksCache {

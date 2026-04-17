@@ -1,11 +1,10 @@
 use crate::wrappers::oracle::OracleWrapperTrait;
 use fixed::types::I80F48;
 use marginfi::state::{
-        marginfi_account::{RequirementType, calc_amount, calc_value}, price::{OraclePriceType, PriceBias}
-    };
-use marginfi_type_crate::{
-    types::{BalanceSide, Bank},
+    marginfi_account::{calc_amount, calc_value},
+    price::PriceBias,
 };
+use marginfi_type_crate::types::{BalanceSide, Bank, OraclePriceType, RequirementType};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 
@@ -18,7 +17,11 @@ pub struct BankWrapper {
 
 impl BankWrapper {
     pub fn new(address: Pubkey, bank: Bank, account: Account) -> Self {
-        Self { address, bank, account }
+        Self {
+            address,
+            bank,
+            account,
+        }
     }
 
     fn get_pricing_params(

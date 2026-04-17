@@ -5,21 +5,10 @@ pub mod swb_cranker;
 use anyhow::{anyhow, Error, Result};
 use backoff::ExponentialBackoff;
 use log::{debug, error};
-use marginfi::{
-    bank_authority_seed,
-    errors::MarginfiError,
-    state::{
-        bank::{BankVaultType},
-    },
-};
+use marginfi::{bank_authority_seed, errors::MarginfiError, state::bank::BankVaultType};
 use marginfi_type_crate::{
-    constants::{
-        ASSET_TAG_DEFAULT, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED,
-    },
-    types::{
-        Balance, Bank, BankConfig,
-        LendingAccount, 
-    },
+    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED},
+    types::{Bank, BankConfig, LendingAccount},
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
@@ -32,14 +21,6 @@ use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use std::sync::{atomic::AtomicUsize, Arc};
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccountInfo;
-
-use crate::{
-    cache::Cache,
-    wrappers::{
-        bank::BankWrapper,
-        oracle::{OracleWrapperTrait},
-    },
-};
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
@@ -185,36 +166,6 @@ pub fn account_update_to_account(account_update: &SubscribeUpdateAccountInfo) ->
     };
 
     Ok(account)
-}
-
-pub struct BankAccountWithPriceFeedEva<'a, T: OracleWrapperTrait> {
-    pub bank: BankWrapper,
-    pub oracle: T,
-    balance: &'a Balance,
-}
-
-impl<'a, T: OracleWrapperTrait> BankAccountWithPriceFeedEva<'a, T> {
-    pub fn load(
-        lending_account: &'a LendingAccount,
-        cache: &Arc<Cache>,
-    ) -> Result<Vec<BankAccountWithPriceFeedEva<'a, T>>> {
-        let active_balances = lending_account
-            .balances
-            .iter()
-            .filter(|balance| balance.is_active());
-
-        active_balances
-            .map(move |balance| {
-                let bank_wrapper = cache.banks.try_get_bank(&balance.bank_pk)?;
-                let oracle_wrapper = T::build(cache, &balance.bank_pk)?;
-                Ok(BankAccountWithPriceFeedEva {
-                    bank: bank_wrapper,
-                    oracle: oracle_wrapper,
-                    balance,
-                })
-            })
-            .collect::<Result<Vec<_>>>()
-    }
 }
 
 pub fn find_bank_liquidity_vault_authority(bank_pk: &Pubkey, program_id: &Pubkey) -> Pubkey {
