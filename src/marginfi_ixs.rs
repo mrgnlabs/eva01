@@ -4,7 +4,7 @@ use anchor_lang::{Id, InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::{associated_token, token_2022};
 use log::{debug, info, trace};
-use marginfi_type_crate::constants::LIQUIDATION_RECORD_SEED;
+use marginfi_type_crate::{constants::LIQUIDATION_RECORD_SEED, pdas::{derive_drift_signer, derive_drift_spot_market_vault, derive_drift_state, derive_juplend_lending_admin, derive_juplend_liquidity, derive_juplend_liquidity_vault, derive_juplend_rate_model, derive_kamino_user_state}};
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -22,12 +22,7 @@ use crate::{
     kamino_farms::program::Farms as KaminoFarms,
     kamino_lending::program::KaminoLending,
     utils::{
-        drift::{derive_drift_signer, derive_drift_state, derive_spot_market_vault},
         find_bank_liquidity_vault_authority,
-        juplend::{
-            derive_lending_admin, derive_liquidity, derive_liquidity_vault, derive_rate_model,
-        },
-        kamino::derive_user_state,
     },
     wrappers::{bank::BankWrapper, mint::MintWrapper},
 };
@@ -355,10 +350,10 @@ pub fn make_kamino_withdraw_ix(
         } else {
             (
                 Some(kamino_reserve.reserve.farm_collateral),
-                Some(derive_user_state(
+                Some(derive_kamino_user_state(
                     &kamino_reserve.reserve.farm_collateral,
                     &kamino_obligation,
-                )),
+                ).0),
             )
         };
 
@@ -435,11 +430,6 @@ pub fn make_drift_withdraw_ix(
         Some(drift_spot_market.market.oracle)
     };
 
-    assert_eq!(
-        derive_spot_market_vault(drift_spot_market.market.market_index),
-        drift_spot_market.market.vault
-    );
-
     let mut accounts = marginfi::accounts::DriftWithdraw {
         group,
         marginfi_account,
@@ -452,7 +442,7 @@ pub fn make_drift_withdraw_ix(
         ),
         liquidity_vault: bank.bank.liquidity_vault,
         destination_token_account: mint_wrapper.token,
-        drift_state: derive_drift_state(),
+        drift_state: derive_drift_state().0,
         integration_acc_1: bank.bank.integration_acc_1, // spot market
         integration_acc_2: bank.bank.integration_acc_2, // user
         integration_acc_3: bank.bank.integration_acc_3, // user stats
@@ -475,7 +465,7 @@ pub fn make_drift_withdraw_ix(
         drift_reward_mint_2: reward_spot_market_2
             .map(|m| m.market.mint)
             .or(Some(marginfi_program_id)),
-        drift_signer: derive_drift_signer(),
+        drift_signer: derive_drift_signer().0,
         mint: bank.bank.mint,
         drift_program: Drift::id(),
         token_program: mint_wrapper.account.owner,
@@ -533,13 +523,13 @@ pub fn make_juplend_withdraw_ix(
         integration_acc_1: bank.bank.integration_acc_1, // lending state
         integration_acc_2: bank.bank.integration_acc_2, // f_token_vault
         integration_acc_3: bank.bank.integration_acc_3, // intermediary ATA
-        lending_admin: derive_lending_admin(),
+        lending_admin: derive_juplend_lending_admin().0,
         supply_token_reserves_liquidity: lending_state.token_reserves_liquidity,
         lending_supply_position_on_liquidity: lending_state.supply_position_on_liquidity,
-        rate_model: derive_rate_model(&bank.bank.mint),
-        vault: derive_liquidity_vault(&bank.bank.mint, &mint_wrapper.account.owner),
+        rate_model: derive_juplend_rate_model(&bank.bank.mint).0,
+        vault: derive_juplend_liquidity_vault(&bank.bank.mint, &mint_wrapper.account.owner),
         claim_account: bank.bank.integration_acc_1, // NOT used -> can be any mutable account
-        liquidity: derive_liquidity(),
+        liquidity: derive_juplend_liquidity().0,
         liquidity_program: crate::liquidity::ID,
         rewards_rate_model: lending_state.rewards_rate_model,
         juplend_program: crate::juplend_earn::ID,

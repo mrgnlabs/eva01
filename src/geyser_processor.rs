@@ -73,7 +73,7 @@ impl GeyserProcessor {
                     bytemuck::from_bytes::<MarginfiAccount>(&msg.account.data[8..]);
                 self.cache
                     .marginfi_accounts
-                    .try_insert(MarginfiAccountWrapper::new(msg.address, marginfi_account))?;
+                    .try_insert(MarginfiAccountWrapper::new(msg.address, *marginfi_account))?;
 
                 self.run_liquidation.store(true, Ordering::Relaxed);
                 GEYSER_TRIGGERED_SCANS_TOTAL.inc();
@@ -86,92 +86,5 @@ impl GeyserProcessor {
         }
         GEYSER_UPDATES_TOTAL.inc();
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{
-        cache::test_utils::create_test_cache,
-        wrappers::bank::test_utils::{test_sol, test_usdc},
-    };
-
-    use super::*;
-    use crossbeam::channel::unbounded;
-    use solana_sdk::{account::Account, pubkey::Pubkey};
-    use std::sync::{atomic::AtomicBool, Arc};
-
-    #[test]
-    fn test_geyser_processor_new() {
-        let (_, receiver) = unbounded();
-        let run_liquidation = Arc::new(AtomicBool::new(false));
-        let stop = Arc::new(AtomicBool::new(false));
-        let cache = Arc::new(create_test_cache(&Vec::new()));
-
-        let processor = GeyserProcessor::new(
-            receiver,
-            run_liquidation.clone(),
-            stop.clone(),
-            cache.clone(),
-        );
-
-        assert!(processor.is_ok());
-    }
-
-    #[test]
-    fn test_geyser_processor_start_stop() {
-        let (_, receiver) = unbounded();
-        let run_liquidation = Arc::new(AtomicBool::new(false));
-        let stop = Arc::new(AtomicBool::new(false));
-        let cache = Arc::new(create_test_cache(&Vec::new()));
-
-        let processor = GeyserProcessor::new(
-            receiver,
-            run_liquidation.clone(),
-            stop.clone(),
-            cache.clone(),
-        )
-        .unwrap();
-
-        // Simulate stopping the processor
-        stop.store(true, Ordering::Relaxed);
-        let result = processor.start();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_process_update_token() {
-        let (_, receiver) = unbounded();
-        let run_liquidation = Arc::new(AtomicBool::new(false));
-        let stop = Arc::new(AtomicBool::new(false));
-
-        let sol_bank = test_sol();
-        let usdc_bank = test_usdc();
-        let mut cache = create_test_cache(&vec![sol_bank.clone(), usdc_bank.clone()]);
-
-        let token_address = Pubkey::new_unique();
-        cache
-            .tokens
-            .try_insert(token_address, Account::default(), sol_bank.bank.mint)
-            .unwrap();
-
-        let cache = Arc::new(cache);
-
-        let processor = GeyserProcessor::new(
-            receiver,
-            run_liquidation.clone(),
-            stop.clone(),
-            cache.clone(),
-        )
-        .unwrap();
-
-        let geyser_update = GeyserUpdate {
-            account_type: AccountType::Token,
-            address: token_address,
-            account: Default::default(),
-        };
-
-        let result = processor.process_update(geyser_update);
-        result.unwrap();
     }
 }

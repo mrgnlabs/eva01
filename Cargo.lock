@@ -1679,12 +1679,13 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 [[package]]
 name = "drift-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.8-rc3#ef7768874ae362a0a20cd6737781941a5b6cda6b"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=bfb9a96ee0f2c3e4277959689fffee5a28b40b3b#bfb9a96ee0f2c3e4277959689fffee5a28b40b3b"
 dependencies = [
  "anchor-lang",
  "bytemuck",
  "fixed",
  "fixed-macro",
+ "marginfi-type-crate",
  "static_assertions",
 ]
 
@@ -2805,7 +2806,7 @@ dependencies = [
 [[package]]
 name = "id-crate"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.8-rc3#ef7768874ae362a0a20cd6737781941a5b6cda6b"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=bfb9a96ee0f2c3e4277959689fffee5a28b40b3b#bfb9a96ee0f2c3e4277959689fffee5a28b40b3b"
 dependencies = [
  "anchor-lang",
  "cfg-if",
@@ -3079,7 +3080,7 @@ dependencies = [
 [[package]]
 name = "juplend-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.8-rc3#ef7768874ae362a0a20cd6737781941a5b6cda6b"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=bfb9a96ee0f2c3e4277959689fffee5a28b40b3b#bfb9a96ee0f2c3e4277959689fffee5a28b40b3b"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -3088,7 +3089,7 @@ dependencies = [
 [[package]]
 name = "kamino-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.8-rc3#ef7768874ae362a0a20cd6737781941a5b6cda6b"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=bfb9a96ee0f2c3e4277959689fffee5a28b40b3b#bfb9a96ee0f2c3e4277959689fffee5a28b40b3b"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -3274,8 +3275,8 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "marginfi"
-version = "0.1.8"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.8-rc3#ef7768874ae362a0a20cd6737781941a5b6cda6b"
+version = "0.1.9"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=bfb9a96ee0f2c3e4277959689fffee5a28b40b3b#bfb9a96ee0f2c3e4277959689fffee5a28b40b3b"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -3301,8 +3302,8 @@ dependencies = [
 
 [[package]]
 name = "marginfi-type-crate"
-version = "0.1.8"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.8-rc3#ef7768874ae362a0a20cd6737781941a5b6cda6b"
+version = "0.1.9"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=bfb9a96ee0f2c3e4277959689fffee5a28b40b3b#bfb9a96ee0f2c3e4277959689fffee5a28b40b3b"
 dependencies = [
  "anchor-lang",
  "bs58 0.5.1",
@@ -3311,6 +3312,7 @@ dependencies = [
  "fixed-macro",
  "id-crate",
  "solana-instruction",
+ "spl-associated-token-account 6.0.0",
  "static_assertions",
 ]
 
@@ -6851,7 +6853,7 @@ dependencies = [
 [[package]]
 name = "solend-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.8-rc3#ef7768874ae362a0a20cd6737781941a5b6cda6b"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=bfb9a96ee0f2c3e4277959689fffee5a28b40b3b#bfb9a96ee0f2c3e4277959689fffee5a28b40b3b"
 dependencies = [
  "anchor-lang",
  "bytemuck",

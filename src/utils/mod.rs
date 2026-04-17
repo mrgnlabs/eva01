@@ -1,32 +1,24 @@
-pub mod drift;
 pub mod healthcheck;
-pub mod juplend;
-pub mod kamino;
 pub mod simulation_cache;
 pub mod swb_cranker;
 
 use anyhow::{anyhow, Error, Result};
 use backoff::ExponentialBackoff;
-use fixed::types::I80F48;
 use log::{debug, error};
 use marginfi::{
     bank_authority_seed,
-    constants::DRIFT_SCALED_BALANCE_DECIMALS,
     errors::MarginfiError,
     state::{
-        bank::{BankImpl, BankVaultType},
-        bank_config::BankConfigImpl,
-        marginfi_account::{calc_value, RequirementType},
-        price::PriceBias,
+        bank::{BankVaultType},
     },
 };
 use marginfi_type_crate::{
     constants::{
-        ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED,
+        ASSET_TAG_DEFAULT, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED,
     },
     types::{
-        reconcile_emode_configs, Balance, BalanceSide, Bank, BankConfig, EmodeConfig,
-        LendingAccount, RiskTier,
+        Balance, Bank, BankConfig,
+        LendingAccount, 
     },
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
@@ -45,10 +37,9 @@ use crate::{
     cache::Cache,
     wrappers::{
         bank::BankWrapper,
-        oracle::{OracleWrapper, OracleWrapperTrait},
+        oracle::{OracleWrapperTrait},
     },
 };
-use std::cmp::max;
 
 pub struct BatchLoadingConfig {
     pub max_batch_size: usize,
@@ -224,98 +215,6 @@ impl<'a, T: OracleWrapperTrait> BankAccountWithPriceFeedEva<'a, T> {
             })
             .collect::<Result<Vec<_>>>()
     }
-
-    #[inline(always)]
-    /// Calculate the value of weighted assets and liabilities of the account in the form of (assets, liabilities)
-    ///
-    /// Nuances:
-    /// 1. Maintenance requirement is calculated using the real time price feed.
-    /// 2. Initial requirement is calculated using the time weighted price feed, if available.
-    /// 3. Initial requirement is discounted by the initial discount, if enabled and the usd limit is exceeded.
-    /// 4. Assets are only calculated for collateral risk tier.
-    /// 5. Oracle errors are ignored for deposits in isolated risk tier.
-    pub fn calc_weighted_assets_liabs(
-        &self,
-        requirement_type: RequirementType,
-        emode_config: &EmodeConfig,
-    ) -> Result<(I80F48, I80F48)> {
-        match self.balance.get_side() {
-            Some(side) => match side {
-                BalanceSide::Assets => Ok((
-                    self.calc_weighted_assets(requirement_type, emode_config)?,
-                    I80F48::ZERO,
-                )),
-                BalanceSide::Liabilities => {
-                    Ok((I80F48::ZERO, self.calc_weighted_liabs(requirement_type)?))
-                }
-            },
-            None => Ok((I80F48::ZERO, I80F48::ZERO)),
-        }
-    }
-
-    #[inline(always)]
-    fn calc_weighted_assets(
-        &self,
-        requirement_type: RequirementType,
-        emode_config: &EmodeConfig,
-    ) -> Result<I80F48> {
-        let bank = &self.bank.bank;
-        match bank.config.risk_tier {
-            RiskTier::Collateral => {
-                let amount = bank
-                    .get_asset_amount(self.balance.asset_shares.into())
-                    .map_err(Error::from)?;
-
-                calc_weighted_bank_assets(
-                    bank,
-                    &self.oracle,
-                    amount,
-                    requirement_type,
-                    emode_config,
-                )
-            }
-            RiskTier::Isolated => Ok(I80F48::ZERO),
-        }
-    }
-
-    #[inline(always)]
-    fn calc_weighted_liabs(&self, requirement_type: RequirementType) -> Result<I80F48> {
-        let bank = &self.bank.bank;
-        let liability_amount = bank
-            .get_liability_amount(self.balance.liability_shares.into())
-            .map_err(|err| anyhow!("Failed to calculate liability amount: {}", err))?;
-        calc_weighted_bank_liabs(bank, &self.oracle, liability_amount, requirement_type)
-    }
-}
-
-pub fn calc_total_weighted_assets_liabs(
-    cache: &Arc<Cache>,
-    account: &LendingAccount,
-    requirement_type: RequirementType,
-) -> Result<(I80F48, I80F48)> {
-    let baws = BankAccountWithPriceFeedEva::<OracleWrapper>::load(account, cache)?;
-    let emode_config = build_emode_config(&baws)?;
-
-    let mut total_assets = I80F48::ZERO;
-    let mut total_liabs = I80F48::ZERO;
-
-    for baw in baws.iter() {
-        let (assets, liabs) = baw.calc_weighted_assets_liabs(requirement_type, &emode_config)?;
-        total_assets += assets;
-        total_liabs += liabs;
-    }
-
-    Ok((total_assets, total_liabs))
-}
-
-pub fn build_emode_config<T: OracleWrapperTrait + Clone>(
-    baws: &Vec<BankAccountWithPriceFeedEva<T>>,
-) -> Result<EmodeConfig> {
-    let configs = baws
-        .iter()
-        .filter(|baw| !baw.balance.is_empty(BalanceSide::Liabilities))
-        .map(|baw| baw.bank.bank.emode.emode_config);
-    Ok(reconcile_emode_configs(configs))
 }
 
 pub fn find_bank_liquidity_vault_authority(bank_pk: &Pubkey, program_id: &Pubkey) -> Pubkey {
@@ -324,111 +223,6 @@ pub fn find_bank_liquidity_vault_authority(bank_pk: &Pubkey, program_id: &Pubkey
         program_id,
     )
     .0
-}
-
-pub fn calc_weighted_bank_assets(
-    bank: &Bank,
-    oracle_wrapper: &impl OracleWrapperTrait,
-    amount: I80F48,
-    requirement_type: RequirementType,
-    emode_config: &EmodeConfig,
-) -> Result<I80F48> {
-    let mut asset_weight = calculate_bank_asset_weight(bank, emode_config, requirement_type);
-
-    let price_bias = if matches!(requirement_type, RequirementType::Equity) {
-        None
-    } else {
-        Some(PriceBias::Low)
-    };
-
-    let lower_price = oracle_wrapper.get_price_of_type(
-        requirement_type.get_oracle_price_type(),
-        price_bias,
-        bank.config.oracle_max_confidence,
-    )?;
-
-    if matches!(requirement_type, RequirementType::Initial) {
-        if let Some(discount) = bank.maybe_get_asset_weight_init_discount(lower_price)? {
-            asset_weight = asset_weight
-                .checked_mul(discount)
-                .ok_or_else(|| anyhow!("math error"))?;
-        }
-    }
-
-    let decimals = if bank.config.asset_tag == ASSET_TAG_DRIFT {
-        DRIFT_SCALED_BALANCE_DECIMALS
-    } else {
-        bank.mint_decimals
-    };
-
-    Ok(calc_value(
-        amount,
-        lower_price,
-        decimals,
-        Some(asset_weight),
-    )?)
-}
-
-#[inline(always)]
-// Copy pasta from https://github.com/mrgnlabs/marginfi-v2/blob/87f1b8fdcde591566ab51e26a3c47554af4bf856/programs/marginfi/src/state/marginfi_account.rs#L322
-// TODO: replace with the on-chain program function call when it becomes available
-fn calculate_bank_asset_weight(
-    bank: &Bank,
-    emode_config: &EmodeConfig,
-    requirement_type: RequirementType,
-) -> I80F48 {
-    if let Some(emode_entry) = emode_config.find_with_tag(bank.emode.emode_tag) {
-        let bank_weight = bank
-            .config
-            .get_weight(requirement_type, BalanceSide::Assets);
-        let emode_weight = match requirement_type {
-            RequirementType::Initial => I80F48::from(emode_entry.asset_weight_init),
-            RequirementType::Maintenance => I80F48::from(emode_entry.asset_weight_maint),
-            // Note: For equity (which is only used for bankruptcies) emode does not
-            // apply, as the asset weight is always 1
-            RequirementType::Equity => I80F48::ONE,
-        };
-        max(bank_weight, emode_weight)
-    } else {
-        bank.config
-            .get_weight(requirement_type, BalanceSide::Assets)
-    }
-}
-
-#[inline(always)]
-pub fn calc_weighted_bank_liabs(
-    bank: &Bank,
-    oracle_wrapper: &impl OracleWrapperTrait,
-    amount: I80F48,
-    requirement_type: RequirementType,
-) -> Result<I80F48> {
-    let liability_weight = bank
-        .config
-        .get_weight(requirement_type, BalanceSide::Liabilities);
-
-    let price_bias = if matches!(requirement_type, RequirementType::Equity) {
-        None
-    } else {
-        Some(PriceBias::High)
-    };
-
-    let higher_price = oracle_wrapper.get_price_of_type(
-        requirement_type.get_oracle_price_type(),
-        price_bias,
-        bank.config.oracle_max_confidence,
-    )?;
-
-    let decimals = if bank.config.asset_tag == ASSET_TAG_DRIFT {
-        DRIFT_SCALED_BALANCE_DECIMALS
-    } else {
-        bank.mint_decimals
-    };
-    Ok(calc_value(
-        amount,
-        higher_price,
-        decimals,
-        Some(liability_weight),
-    )?)
 }
 
 pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
