@@ -15,7 +15,7 @@ use crate::{
     },
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
-        self, check_asset_tags_matching, marginfi_account_by_authority,
+        self, marginfi_account_by_authority,
         simulation_cache::decode_and_apply_simulated_accounts,
         swb_cranker::is_stale_swb_price_error,
     },
@@ -29,7 +29,7 @@ use marginfi_type_crate::{
         ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
     },
     pdas::derive_drift_spot_market,
-    types::Bank,
+    types::{Bank, validate_asset_tags},
 };
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
@@ -280,9 +280,8 @@ impl LiquidatorAccount {
             .try_get_account(&self.liquidator_address)
             .map_err(LiquidationError::from_anyhow)?;
 
-        let lending_account = &liquidator_account.account.lending_account;
         for bank_to_validate_against in [&asset_bank_wrapper, &liab_bank_wrapper] {
-            if !check_asset_tags_matching(&bank_to_validate_against.bank, lending_account) {
+            if !validate_asset_tags(&bank_to_validate_against.bank, &liquidator_account.account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
                 debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_to_validate_against.address);

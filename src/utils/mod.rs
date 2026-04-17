@@ -252,33 +252,6 @@ pub fn format_error_chain(err: &Error) -> String {
     format!("{primary} | caused by: {}", causes.join(" -> "))
 }
 
-// TODO: expose from program
-pub fn check_asset_tags_matching(bank: &Bank, lending_account: &LendingAccount) -> bool {
-    let mut has_default_asset = false;
-    let mut has_staked_asset = false;
-
-    for balance in lending_account.balances.iter() {
-        if balance.is_active() {
-            match balance.bank_asset_tag {
-                ASSET_TAG_DEFAULT => has_default_asset = true,
-                ASSET_TAG_SOL => { /* Do nothing, SOL can mix with any asset type */ }
-                ASSET_TAG_STAKED => has_staked_asset = true,
-                // Kamino isn't strictly a default asset but it's close enough
-                ASSET_TAG_KAMINO => has_default_asset = true,
-                _ => panic!("unsupported asset tag"),
-            }
-        }
-    }
-
-    if bank.config.asset_tag == ASSET_TAG_DEFAULT {
-        has_default_asset = true;
-    } else if bank.config.asset_tag == ASSET_TAG_STAKED {
-        has_staked_asset = true;
-    }
-
-    !(has_default_asset && has_staked_asset)
-}
-
 pub fn marginfi_account_by_authority(
     authority: Pubkey,
     rpc_client: &RpcClient,

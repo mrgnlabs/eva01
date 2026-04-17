@@ -54,13 +54,13 @@ solana-dex-superagg = { git = "https://github.com/0dotxyz/solana-dex-superagg", 
 
 [dependencies.marginfi_type_crate]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-rev = "47dd62bc44d8d2a0850ff532282f4bdf87e32079"
+rev = "86383b46495c34b88201e3ef3a6bf915d4828812"
 # tag = "mrgn-0.1.8-rc3"
 package = "marginfi-type-crate"
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-rev = "47dd62bc44d8d2a0850ff532282f4bdf87e32079"
+rev = "86383b46495c34b88201e3ef3a6bf915d4828812"
 # tag = "mrgn-0.1.8-rc3"
 features = ["mainnet-beta", "client", "no-entrypoint"]
 
