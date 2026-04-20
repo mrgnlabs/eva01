@@ -1,5 +1,6 @@
 use crate::{
     cache::Cache,
+    clock_manager,
     config::{Eva01Config, TokenThresholds},
     metrics::{
         record_liquidation_failure, ACCOUNTS_SCANNED_TOTAL, ACCOUNT_SCAN_DURATION_SECONDS,
@@ -26,17 +27,15 @@ use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{debug, error, info, warn};
 use marginfi::state::{
-    bank::BankImpl,
-    marginfi_account::{get_health_components, HealthPriceMode},
-    price::PriceAdapter,
+    bank::BankImpl, marginfi_account::get_health_components, price::PriceAdapter,
 };
 use marginfi_type_crate::{
     constants::BANKRUPT_THRESHOLD,
-    types::{BalanceSide, BankOperationalState, OraclePriceType, RequirementType},
+    types::{BalanceSide, BankOperationalState, HealthPriceMode, OraclePriceType, RequirementType},
 };
 use solana_client::client_error::ClientError;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account_info::IntoAccountInfo;
+use solana_sdk::{account_info::IntoAccountInfo, clock::Clock};
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
@@ -254,6 +253,7 @@ impl Liquidator {
         LIQUIDATION_SCAN_IN_PROGRESS.set(1);
         let scan_started = Instant::now();
         let mut total_scanned: u64 = 0;
+        let clock = clock_manager::get_clock(&self.cache.clock)?;
 
         let evaluation_result = {
             let mut index: usize = 0;
@@ -266,7 +266,7 @@ impl Liquidator {
                             index += 1;
                             continue;
                         }
-                        match self.process_account(&account, stale_swb_oracles) {
+                        match self.process_account(&account, clock.clone(), stale_swb_oracles) {
                             Ok(acc_opt) => {
                                 if let Some(acc) = acc_opt {
                                     result.push(acc);
@@ -317,6 +317,7 @@ impl Liquidator {
     fn process_account(
         &self,
         account: &MarginfiAccountWrapper,
+        clock: Clock,
         stale_swb_oracles: &mut HashSet<Pubkey>,
     ) -> Result<Option<PreparedLiquidatableAccount>> {
         let (deposit_shares, liab_shares) = account.get_deposits_and_liabilities_shares();
@@ -325,6 +326,7 @@ impl Liquidator {
         }
 
         let deposit_values = self.get_value_of_shares(
+            &clock,
             deposit_shares,
             &BalanceSide::Assets,
             RequirementType::Maintenance,
@@ -332,6 +334,7 @@ impl Liquidator {
         )?;
 
         let liab_values = self.get_value_of_shares(
+            &clock,
             liab_shares,
             &BalanceSide::Liabilities,
             RequirementType::Maintenance,
@@ -354,11 +357,13 @@ impl Liquidator {
             &banks_to_include,
             &banks_to_exclude,
             &self.cache,
+            &clock,
         )?;
 
         // Calculated max liquidatable amount is the defining factor for liquidation.
         let liquidation_amounts = self.compute_max_liquidatable_amounts_with_banks(
             &self.cache,
+            clock,
             account,
             observation_accounts.observation_accounts.as_slice(),
             &asset_bank_wrapper,
@@ -431,6 +436,7 @@ impl Liquidator {
     fn compute_max_liquidatable_amounts_with_banks(
         &self,
         cache: &Cache,
+        clock: Clock,
         account: &MarginfiAccountWrapper,
         banks_and_oracles: &[Pubkey],
         asset_bank_wrapper: &BankWrapper,
@@ -443,9 +449,9 @@ impl Liquidator {
                 Ok(wrapper) => wrapper.account,
                 Err(_) => cache.oracles.try_get_account(pk)?,
             };
-
             accounts.push(account);
         }
+
         let remaining_ais: Vec<_> = accounts
             .iter_mut()
             .zip(banks_and_oracles.iter())
@@ -457,8 +463,9 @@ impl Liquidator {
             &remaining_ais,
             RequirementType::Maintenance,
             &mut None,
-            HealthPriceMode::Live { liq_cache: None },
+            HealthPriceMode::Client(clock.clone()),
         )?;
+
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         debug!(
             "Account {} maintenance_health = {:?} (assets {:?}, liabilities {:?})",
@@ -468,7 +475,8 @@ impl Liquidator {
             return Ok(LiquidationAmounts::none());
         }
 
-        let asset_oracle_wrapper = OracleWrapper::build(&self.cache, &asset_bank_wrapper.address)?;
+        let asset_oracle_wrapper =
+            OracleWrapper::build(&self.cache, &clock, &asset_bank_wrapper.address)?;
         let asset_price = asset_oracle_wrapper
             .price_adapter
             .get_price_of_type_ignore_conf(OraclePriceType::RealTime, None)?
@@ -492,7 +500,8 @@ impl Liquidator {
             }
         }
 
-        let liab_oracle_wrapper = OracleWrapper::build(&self.cache, &liab_bank_wrapper.address)?;
+        let liab_oracle_wrapper =
+            OracleWrapper::build(&self.cache, &clock, &liab_bank_wrapper.address)?;
         let liab_price = liab_oracle_wrapper
             .price_adapter
             .get_price_of_type_ignore_conf(OraclePriceType::RealTime, None)?
@@ -597,6 +606,7 @@ impl Liquidator {
 
     fn get_value_of_shares(
         &self,
+        clock: &Clock,
         shares: Vec<(I80F48, Pubkey)>,
         balance_side: &BalanceSide,
         requirement_type: RequirementType,
@@ -610,7 +620,7 @@ impl Liquidator {
                 return Err(anyhow!(SWB_STALE_HANDLED_ERROR));
             }
 
-            let oracle_wrapper = match OracleWrapper::build(&self.cache, &bank_pk) {
+            let oracle_wrapper = match OracleWrapper::build(&self.cache, clock, &bank_pk) {
                 Ok(oracle_wrapper) => oracle_wrapper,
                 Err(err) => {
                     if err

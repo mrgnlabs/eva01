@@ -4,6 +4,7 @@ use super::{
 };
 use crate::{
     cache::{Cache, DriftSpotMarket},
+    clock_manager,
     config::Eva01Config,
     drift_ixs::make_refresh_spot_market_ix,
     juplend_ixs::make_update_lending_rate_ix,
@@ -15,8 +16,7 @@ use crate::{
     },
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
-        self, marginfi_account_by_authority,
-        simulation_cache::decode_and_apply_simulated_accounts,
+        self, marginfi_account_by_authority, simulation_cache::decode_and_apply_simulated_accounts,
         swb_cranker::is_stale_swb_price_error,
     },
     wrappers::oracle::OracleWrapper,
@@ -29,7 +29,7 @@ use marginfi_type_crate::{
         ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
     },
     pdas::derive_drift_spot_market,
-    types::{Bank, validate_asset_tags},
+    types::{validate_asset_tags, Bank},
 };
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
@@ -659,6 +659,8 @@ impl LiquidatorAccount {
             vec![]
         };
 
+        let clock = clock_manager::get_clock(&self.cache.clock)?;
+
         debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
         let observation_accounts =
@@ -672,6 +674,7 @@ impl LiquidatorAccount {
                 &banks_to_include,
                 &banks_to_exclude,
                 &self.cache,
+                &clock,
             )?
             .observation_accounts;
 

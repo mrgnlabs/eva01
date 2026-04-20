@@ -114,6 +114,8 @@ impl BanksCache {
         self.banks
             .values()
             .map(|bank| bank.bank.mint)
+            .collect::<HashSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>()
     }
 

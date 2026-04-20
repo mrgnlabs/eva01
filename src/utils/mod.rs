@@ -6,10 +6,7 @@ use anyhow::{anyhow, Error, Result};
 use backoff::ExponentialBackoff;
 use log::{debug, error};
 use marginfi::{bank_authority_seed, errors::MarginfiError, state::bank::BankVaultType};
-use marginfi_type_crate::{
-    constants::{ASSET_TAG_DEFAULT, ASSET_TAG_KAMINO, ASSET_TAG_SOL, ASSET_TAG_STAKED},
-    types::{Bank, BankConfig, LendingAccount},
-};
+use marginfi_type_crate::types::BankConfig;
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{

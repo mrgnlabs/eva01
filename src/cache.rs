@@ -31,6 +31,7 @@ use solana_sdk::{
 use tokens::TokensCache;
 
 use crate::{
+    clock_manager,
     drift::accounts::{SpotMarket, User as DriftUser},
     juplend_earn::accounts::Lending,
     kamino_lending::accounts::Reserve,
@@ -188,7 +189,8 @@ impl Cache {
         let token_account = self.tokens.try_get_account(token_address)?;
         let bank_address = self.banks.try_get_account_for_mint(mint_address)?;
         let bank_wrapper = self.banks.try_get_bank(&bank_address)?;
-        let oracle_wrapper = T::build(self, &bank_address)?;
+        let clock = clock_manager::get_clock(&self.clock)?;
+        let oracle_wrapper = T::build(self, &clock, &bank_address)?;
 
         Ok(TokenAccountWrapper {
             balance: accessor::amount(&token_account.data)?,

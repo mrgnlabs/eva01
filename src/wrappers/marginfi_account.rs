@@ -2,6 +2,7 @@ use crate::cache::Cache;
 
 use crate::wrappers::bank::BankWrapper;
 use marginfi::state::bank::BankImpl;
+use solana_sdk::clock::Clock;
 
 use super::oracle::OracleWrapperTrait;
 use anyhow::{Error, Result};
@@ -96,6 +97,7 @@ impl MarginfiAccountWrapper {
         include_banks: &[Pubkey],
         exclude_banks: &[Pubkey],
         cache: &Cache,
+        clock: &Clock,
     ) -> Result<ObservationAccounts> {
         let mut bank_pks: HashSet<Pubkey> =
             MarginfiAccountWrapper::get_active_banks(lending_account)
@@ -120,7 +122,7 @@ impl MarginfiAccountWrapper {
 
         for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
-            let oracle_wrapper = T::build(cache, bank_pk)?;
+            let oracle_wrapper = T::build(cache, clock, bank_pk)?;
             let bank_and_oracles: Vec<Pubkey> = match bank_wrapper.bank.config.oracle_setup {
                 OracleSetup::PythPushOracle => {
                     vec![*bank_pk, oracle_wrapper.get_address()]

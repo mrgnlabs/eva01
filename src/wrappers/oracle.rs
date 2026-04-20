@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use log::error;
-use marginfi::state::price::{OraclePriceFeedAdapter, PriceAdapter, PriceBias};
-use marginfi_type_crate::types::{OraclePriceType, OracleSetup};
+use marginfi::state::price::{OraclePriceFeedAdapter, PriceAdapter};
+use marginfi_type_crate::types::{OraclePriceType, OracleSetup, PriceBias};
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account_info::IntoAccountInfo;
+use solana_sdk::{account_info::IntoAccountInfo, clock::Clock};
 
-use crate::{cache::Cache, clock_manager, utils::find_oracle_keys};
+use crate::{cache::Cache, utils::find_oracle_keys};
 
 pub trait OracleWrapperTrait {
-    fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self>
+    fn build(cache: &Cache, clock: &Clock, bank_address: &Pubkey) -> Result<Self>
     where
         Self: Sized;
     fn get_price_of_type(
@@ -43,7 +43,7 @@ impl OracleWrapperTrait for OracleWrapper {
         *self.addresses.first().unwrap_or(&Pubkey::default())
     }
 
-    fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self> {
+    fn build(cache: &Cache, clock: &Clock, bank_address: &Pubkey) -> Result<Self> {
         let bank_wrapper = cache.banks.try_get_bank(bank_address)?;
         let oracle_addresses = find_oracle_keys(&bank_wrapper.bank.config);
 
@@ -65,7 +65,7 @@ impl OracleWrapperTrait for OracleWrapper {
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
                     &[bank_oracle_account_info],
-                    &clock_manager::get_clock(&cache.clock)?,
+                    clock,
                 )?;
 
                 let oracle_wrapper = Self {
@@ -105,7 +105,7 @@ impl OracleWrapperTrait for OracleWrapper {
                         mint_oracle_account_info,
                         sol_pool_account_info,
                     ],
-                    &clock_manager::get_clock(&cache.clock)?,
+                    clock,
                 )?;
                 let oracle_wrapper = Self {
                     addresses: vec![
@@ -118,11 +118,8 @@ impl OracleWrapperTrait for OracleWrapper {
                 result = Some(oracle_wrapper);
             }
             OracleSetup::Fixed => {
-                let price_adapter = OraclePriceFeedAdapter::try_from_bank(
-                    &bank_wrapper.bank,
-                    &[],
-                    &clock_manager::get_clock(&cache.clock)?,
-                )?;
+                let price_adapter =
+                    OraclePriceFeedAdapter::try_from_bank(&bank_wrapper.bank, &[], clock)?;
 
                 let oracle_wrapper = Self {
                     addresses: vec![],
@@ -152,13 +149,12 @@ impl OracleWrapperTrait for OracleWrapper {
                 let mut integration_oracle =
                     cache.oracles.try_get_account(&integration_oracle_address)?;
 
-                let clock = clock_manager::get_clock(&cache.clock)?;
                 let integration_oracle_account_info =
                     (&integration_oracle_address, &mut integration_oracle).into_account_info();
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
                     &[bank_oracle_account_info, integration_oracle_account_info],
-                    &clock,
+                    clock,
                 )?;
 
                 let oracle_wrapper = Self {
@@ -184,7 +180,7 @@ impl OracleWrapperTrait for OracleWrapper {
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
                     &[integration_oracle_account_info],
-                    &clock_manager::get_clock(&cache.clock)?,
+                    clock,
                 )?;
 
                 let oracle_wrapper = Self {
