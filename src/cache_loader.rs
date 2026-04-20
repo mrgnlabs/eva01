@@ -23,13 +23,10 @@ use solana_sdk::{
 };
 
 use crate::{
-    cache::{Cache, DriftSpotMarket, KaminoReserve},
+    cache::Cache,
     drift,
     geyser::AccountType,
-    juplend_earn, kamino_lending,
-    utils::{
-        batch_get_multiple_accounts, kamino::derive_lending_market_authority, BatchLoadingConfig,
-    },
+    utils::{batch_get_multiple_accounts, BatchLoadingConfig},
     wrappers::marginfi_account::MarginfiAccountWrapper,
 };
 use anchor_client::Program;
@@ -71,10 +68,7 @@ impl CacheLoader {
         self.load_mints(cache)?;
         self.load_oracles(cache)?;
         self.load_tokens(cache)?;
-        self.load_kamino_reserves(cache)?;
-        self.load_drift_spot_markets(cache)?;
         self.load_drift_users(cache)?;
-        self.load_juplend_lending_states(cache)?;
 
         Ok(())
     }
@@ -125,23 +119,24 @@ impl CacheLoader {
                 max_concurrent_calls: 32,
             },
         )?;
+        let marginfi_accounts_length = marginfi_accounts.len();
 
         for (address, account_opt) in marginfi_accounts_pubkeys
-            .iter()
-            .zip(marginfi_accounts.iter())
+            .into_iter()
+            .zip(marginfi_accounts.into_iter())
         {
             if let Some(account) = account_opt {
                 let marginfi_account = bytemuck::from_bytes::<MarginfiAccount>(&account.data[8..]);
-                let maw = MarginfiAccountWrapper::new(*address, marginfi_account);
+                let maw = MarginfiAccountWrapper::new(address, *marginfi_account);
                 cache.marginfi_accounts.try_insert(maw)?;
             } else {
-                warn!("Couldn't load Marginfi account for key: {}", *address);
+                warn!("Couldn't load Marginfi account for key: {}", address);
             }
         }
 
         info!(
             "Loaded {} marginfi accounts in {:?}",
-            marginfi_accounts.len(),
+            marginfi_accounts_length,
             start.elapsed()
         );
 
@@ -203,14 +198,33 @@ impl CacheLoader {
         let program: Program<Arc<Keypair>> = anchor_client.program(cache.marginfi_program_id)?;
 
         info!("Loading banks...");
-        for (bank_address, bank) in program
-            .accounts::<Bank>(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
-                BANK_GROUP_PK_OFFSET,
-                cache.marginfi_group_address.as_ref(),
-            ))])?
-            .iter()
-        {
-            cache.banks.insert(*bank_address, *bank);
+        let bank_accounts = program.rpc().get_program_accounts_with_config(
+            &cache.marginfi_program_id,
+            RpcProgramAccountsConfig {
+                account_config: RpcAccountInfoConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    ..Default::default()
+                },
+                filters: Some(vec![
+                    RpcFilterType::Memcmp(Memcmp::new(
+                        0,
+                        MemcmpEncodedBytes::Base58(bs58::encode(Bank::DISCRIMINATOR).into_string()),
+                    )),
+                    RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
+                        BANK_GROUP_PK_OFFSET,
+                        cache.marginfi_group_address.as_ref(),
+                    )),
+                ]),
+                with_context: Some(false),
+                sort_results: None,
+            },
+        )?;
+
+        for (bank_address, bank_account) in bank_accounts.into_iter() {
+            let mut data = bank_account.data.as_slice();
+            let bank = Bank::try_deserialize(&mut data)
+                .map_err(|e| anyhow!("Failed to deserialize Bank {}: {:?}", bank_address, e))?;
+            cache.banks.insert(bank_address, bank, bank_account);
             debug!("Loaded the Bank {:?}.", bank_address);
         }
 
@@ -396,82 +410,6 @@ impl CacheLoader {
         Ok(())
     }
 
-    fn load_kamino_reserves(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        info!("Loading Kamino Reserves...");
-
-        let reserve_addresses = cache
-            .banks
-            .get_kamino_reserves()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let reserve_accounts = batch_get_multiple_accounts(
-            &self.rpc_client,
-            &reserve_addresses,
-            BatchLoadingConfig::DEFAULT,
-        )?;
-
-        for (&address, account) in reserve_addresses.iter().zip(reserve_accounts.iter()) {
-            if let Some(account) = account {
-                debug!("Loaded the Kamino Reserve: {:?}", address);
-                let mut data: &[u8] = &account.data;
-                let reserve = kamino_lending::accounts::Reserve::try_deserialize(&mut data)?;
-                let lending_market_authority =
-                    derive_lending_market_authority(&reserve.lending_market);
-
-                cache.kamino_reserves.insert(
-                    address,
-                    KaminoReserve {
-                        address,
-                        reserve,
-                        lending_market_authority,
-                    },
-                );
-            } else {
-                error!("Reserve account {:?} not found.", address);
-            }
-        }
-
-        info!("Loaded {} Kamino Reserves.", cache.kamino_reserves.len());
-
-        Ok(())
-    }
-
-    fn load_drift_spot_markets(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        info!("Loading Drift Spot Markets...");
-
-        let spot_market_addresses = cache
-            .banks
-            .get_drift_spot_markets()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let spot_market_accounts = batch_get_multiple_accounts(
-            &self.rpc_client,
-            &spot_market_addresses,
-            BatchLoadingConfig::DEFAULT,
-        )?;
-
-        for (&address, account) in spot_market_addresses
-            .iter()
-            .zip(spot_market_accounts.iter())
-        {
-            if let Some(account) = account {
-                debug!("Loaded the Drift Spot Market: {:?}", address);
-                let mut data: &[u8] = &account.data;
-                let market = drift::accounts::SpotMarket::try_deserialize(&mut data)?;
-
-                cache
-                    .drift_markets
-                    .insert(address, DriftSpotMarket { address, market });
-            } else {
-                error!("Spot Market account {:?} not found.", address);
-            }
-        }
-
-        info!("Loaded {} Drift Spot Markets.", cache.drift_markets.len());
-
-        Ok(())
-    }
-
     fn load_drift_users(&self, cache: &mut Cache) -> anyhow::Result<()> {
         info!("Loading Drift Users...");
 
@@ -499,40 +437,6 @@ impl CacheLoader {
         }
 
         info!("Loaded {} Drift Users.", cache.drift_users.len());
-
-        Ok(())
-    }
-
-    fn load_juplend_lending_states(&self, cache: &mut Cache) -> anyhow::Result<()> {
-        info!("Loading Juplend Lending States...");
-
-        let state_addresses = cache
-            .banks
-            .get_juplend_lending_states()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let lending_states = batch_get_multiple_accounts(
-            &self.rpc_client,
-            &state_addresses,
-            BatchLoadingConfig::DEFAULT,
-        )?;
-
-        for (&address, account) in state_addresses.iter().zip(lending_states.iter()) {
-            if let Some(account) = account {
-                debug!("Loaded Juplend Lending State: {:?}", address);
-                let mut data: &[u8] = &account.data;
-                let state = juplend_earn::accounts::Lending::try_deserialize(&mut data)?;
-
-                cache.juplend_lending_states.insert(address, state);
-            } else {
-                error!("Lending State account {:?} not found.", address);
-            }
-        }
-
-        info!(
-            "Loaded {} Juplend Lending States.",
-            cache.juplend_lending_states.len()
-        );
 
         Ok(())
     }

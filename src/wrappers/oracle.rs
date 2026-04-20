@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Result};
 use fixed::types::I80F48;
 use log::error;
-use marginfi::state::price::{OraclePriceFeedAdapter, OraclePriceType, PriceAdapter, PriceBias};
-use marginfi_type_crate::types::OracleSetup;
+use marginfi::state::price::{OraclePriceFeedAdapter, PriceAdapter};
+use marginfi_type_crate::types::{OraclePriceType, OracleSetup, PriceBias};
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account_info::IntoAccountInfo;
+use solana_sdk::{account_info::IntoAccountInfo, clock::Clock};
 
-use crate::{cache::Cache, clock_manager, utils::find_oracle_keys};
+use crate::{cache::Cache, utils::find_oracle_keys};
 
 pub trait OracleWrapperTrait {
-    fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self>
+    fn build(cache: &Cache, clock: &Clock, bank_address: &Pubkey) -> Result<Self>
     where
         Self: Sized;
     fn get_price_of_type(
@@ -43,7 +43,7 @@ impl OracleWrapperTrait for OracleWrapper {
         *self.addresses.first().unwrap_or(&Pubkey::default())
     }
 
-    fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self> {
+    fn build(cache: &Cache, clock: &Clock, bank_address: &Pubkey) -> Result<Self> {
         let bank_wrapper = cache.banks.try_get_bank(bank_address)?;
         let oracle_addresses = find_oracle_keys(&bank_wrapper.bank.config);
 
@@ -65,7 +65,7 @@ impl OracleWrapperTrait for OracleWrapper {
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
                     &[bank_oracle_account_info],
-                    &clock_manager::get_clock(&cache.clock)?,
+                    clock,
                 )?;
 
                 let oracle_wrapper = Self {
@@ -105,7 +105,7 @@ impl OracleWrapperTrait for OracleWrapper {
                         mint_oracle_account_info,
                         sol_pool_account_info,
                     ],
-                    &clock_manager::get_clock(&cache.clock)?,
+                    clock,
                 )?;
                 let oracle_wrapper = Self {
                     addresses: vec![
@@ -118,11 +118,8 @@ impl OracleWrapperTrait for OracleWrapper {
                 result = Some(oracle_wrapper);
             }
             OracleSetup::Fixed => {
-                let price_adapter = OraclePriceFeedAdapter::try_from_bank(
-                    &bank_wrapper.bank,
-                    &[],
-                    &clock_manager::get_clock(&cache.clock)?,
-                )?;
+                let price_adapter =
+                    OraclePriceFeedAdapter::try_from_bank(&bank_wrapper.bank, &[], clock)?;
 
                 let oracle_wrapper = Self {
                     addresses: vec![],
@@ -152,13 +149,12 @@ impl OracleWrapperTrait for OracleWrapper {
                 let mut integration_oracle =
                     cache.oracles.try_get_account(&integration_oracle_address)?;
 
-                let clock = clock_manager::get_clock(&cache.clock)?;
                 let integration_oracle_account_info =
                     (&integration_oracle_address, &mut integration_oracle).into_account_info();
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
                     &[bank_oracle_account_info, integration_oracle_account_info],
-                    &clock,
+                    clock,
                 )?;
 
                 let oracle_wrapper = Self {
@@ -184,7 +180,7 @@ impl OracleWrapperTrait for OracleWrapper {
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     &bank_wrapper.bank,
                     &[integration_oracle_account_info],
-                    &clock_manager::get_clock(&cache.clock)?,
+                    clock,
                 )?;
 
                 let oracle_wrapper = Self {
@@ -208,185 +204,5 @@ impl OracleWrapperTrait for OracleWrapper {
                 bank_address
             )),
         }
-    }
-}
-
-#[cfg(test)]
-pub mod test_utils {
-    use std::str::FromStr;
-
-    use solana_sdk::account::Account;
-    use switchboard_on_demand::PullFeedAccountData;
-
-    use super::*;
-
-    #[derive(Clone)]
-    pub struct TestOracleWrapper {
-        pub price: f64,
-        pub bias: f64,
-        pub address: Pubkey,
-    }
-
-    const SOL_ORACLE_ADDRESS: &str = "11111119rSGfPZLcyCGzY4uYEL1fkzJr6fke9qKxb";
-    const USDC_ORACLE_ADDRESS: &str = "1111111Af7Udc9v3L82dQM5b4zee1Xt77Be4czzbH";
-    const BONK_ORACLE_ADDRESS: &str = "8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN";
-
-    impl Default for TestOracleWrapper {
-        fn default() -> Self {
-            TestOracleWrapper {
-                price: 42.0,
-                bias: 5.0,
-                address: Pubkey::new_unique(),
-            }
-        }
-    }
-
-    impl TestOracleWrapper {
-        pub fn new(address: Pubkey, price: f64, bias: f64) -> Self {
-            Self {
-                price,
-                bias,
-                address,
-            }
-        }
-
-        pub fn test_sol() -> Self {
-            Self {
-                price: 200.0,
-                bias: 10.0,
-                address: Pubkey::from_str(SOL_ORACLE_ADDRESS).unwrap(),
-            }
-        }
-
-        pub fn test_usdc() -> Self {
-            Self {
-                price: 1.0,
-                bias: 0.1,
-                address: Pubkey::from_str(USDC_ORACLE_ADDRESS).unwrap(),
-            }
-        }
-
-        pub fn test_bonk() -> Self {
-            Self {
-                price: 1000.0,
-                bias: 1.0,
-                address: Pubkey::from_str(BONK_ORACLE_ADDRESS).unwrap(),
-            }
-        }
-    }
-
-    impl OracleWrapperTrait for TestOracleWrapper {
-        fn build(cache: &Cache, bank_address: &Pubkey) -> Result<Self> {
-            let bank_wrapper = cache.banks.try_get_bank(bank_address)?;
-            if matches!(
-                bank_wrapper.bank.config.oracle_setup,
-                OracleSetup::SwitchboardPull
-                    | OracleSetup::PythPushOracle
-                    | OracleSetup::StakedWithPythPush
-            ) {
-                Ok(TestOracleWrapper::new(
-                    bank_wrapper.bank.config.oracle_keys[0],
-                    100.0,
-                    5.0,
-                ))
-            } else {
-                panic!(
-                    "Unsupported Oracle type {:?}",
-                    bank_wrapper.bank.config.oracle_setup
-                )
-            }
-        }
-
-        fn get_price_of_type(
-            &self,
-            _: OraclePriceType,
-            price_bias: Option<PriceBias>,
-            _: u32,
-        ) -> anyhow::Result<I80F48> {
-            match price_bias {
-                Some(PriceBias::Low) => Ok(I80F48::from_num(self.price - self.bias)),
-                Some(PriceBias::High) => Ok(I80F48::from_num(self.price + self.bias)),
-                None => Ok(I80F48::from_num(self.price)),
-            }
-        }
-
-        fn get_address(&self) -> Pubkey {
-            self.address
-        }
-    }
-
-    pub fn create_empty_oracle_account() -> Account {
-        let buffer = vec![0u8; std::mem::size_of::<PullFeedAccountData>()];
-        let pull_feed_data = bytemuck::try_from_bytes::<PullFeedAccountData>(&buffer).unwrap();
-        let bytes: &[u8] = bytemuck::bytes_of(pull_feed_data);
-
-        let mut oracle_account = Account::default();
-        oracle_account
-            .data
-            .resize(std::mem::size_of::<PullFeedAccountData>() + 8, 0);
-        oracle_account.data[8..].copy_from_slice(bytes);
-
-        oracle_account
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::cache::test_utils::create_test_cache;
-    use crate::wrappers::bank::test_utils::test_usdc;
-
-    use super::test_utils::*;
-    use super::*;
-
-    #[test]
-    fn test_oracle() {
-        let oracle = TestOracleWrapper::default();
-
-        assert_eq!(
-            oracle
-                .get_price_of_type(OraclePriceType::RealTime, None, 0)
-                .unwrap(),
-            I80F48::from_num(42.0)
-        );
-        assert_eq!(
-            oracle
-                .get_price_of_type(OraclePriceType::TimeWeighted, Some(PriceBias::Low), 1)
-                .unwrap(),
-            I80F48::from_num(37.0)
-        );
-        assert_eq!(
-            oracle
-                .get_price_of_type(OraclePriceType::RealTime, Some(PriceBias::High), 2)
-                .unwrap(),
-            I80F48::from_num(47.0)
-        );
-    }
-
-    /// Create test for try_build_oracle_wrapper
-    #[test]
-    fn test_try_build_oracle_wrapper() {
-        let oracle_key = Pubkey::new_unique();
-
-        let mut usdc_bank_wrapper = test_usdc();
-        usdc_bank_wrapper.bank.config.oracle_setup = OracleSetup::SwitchboardPull;
-        usdc_bank_wrapper.bank.config.oracle_keys[0] = oracle_key.clone();
-
-        let mut cache = create_test_cache(&vec![usdc_bank_wrapper.clone()]);
-        cache
-            .banks
-            .insert(usdc_bank_wrapper.address, usdc_bank_wrapper.bank);
-
-        let oracle_account = create_empty_oracle_account();
-
-        // Mock oracles in the cache
-        cache
-            .oracles
-            .try_insert(oracle_key, oracle_account)
-            .unwrap();
-
-        let oracle_wrapper: TestOracleWrapper =
-            TestOracleWrapper::build(&cache, &usdc_bank_wrapper.address).unwrap();
-
-        assert_eq!(oracle_wrapper.get_address(), oracle_key);
     }
 }

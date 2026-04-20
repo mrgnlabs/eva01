@@ -124,7 +124,7 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
             LIQUIDATION_ATTEMPTS.get(),
             FAILED_LIQUIDATIONS.get()
         );
-        thread::sleep(std::time::Duration::from_secs(5));
+        thread::sleep(std::time::Duration::from_secs(30));
     }
     info!("The Main loop stopped.");
 

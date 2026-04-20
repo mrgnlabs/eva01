@@ -18,7 +18,10 @@ use solana_dex_superagg::{
 };
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account::ReadableAccount, commitment_config::CommitmentLevel};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::runtime::{Builder, Runtime};
 
 const SLIPPAGE_MULTIPLIER: I80F48 = I80F48!(1.05);
@@ -34,6 +37,7 @@ pub struct Rebalancer {
     default_token_max_threshold: I80F48,
     token_thresholds: HashMap<Pubkey, TokenThresholds>,
     dex_client: Arc<DexSuperAggClient>,
+    empty_stake_banks: HashSet<Pubkey>,
 }
 
 impl Rebalancer {
@@ -96,24 +100,30 @@ impl Rebalancer {
             default_token_max_threshold,
             token_thresholds,
             dex_client,
+            empty_stake_banks: HashSet::new(),
         })
     }
 
     pub fn run(&mut self, missing_tokens: HashMap<Pubkey, I80F48>) -> anyhow::Result<()> {
         info!("Running the Rebalancing process...");
 
-        // TODO: expand directly in this function?
-        if let Err(e) = self.handle_token_accounts(missing_tokens) {
+        let swap_token_address = self.cache.tokens.try_get_token_for_mint(&self.swap_mint)?;
+        let swap_wrapper = self
+            .cache
+            .try_get_token_wrapper::<OracleWrapper>(&self.swap_mint, &swap_token_address)?;
+
+        if let Err(e) = self.handle_token_accounts(missing_tokens, &swap_wrapper) {
             error!("Failed to handle the Liquidator's tokens: {}", e);
             // Note: Stale oracle errors from withdraw operations are now handled
             // inside handle_token_accounts where we have access to the bank context
         }
 
-        if let Err(error) = self.deposit_preferred_token() {
+        if let Err(error) = self.deposit_preferred_token(&swap_wrapper) {
             error!("Failed to deposit preferred token: {}", error);
             // Check if this is a stale oracle error and record it in metrics
             if let Some(client_err) = error.downcast_ref::<ClientError>() {
                 if is_stale_swb_price_error(client_err) {
+                    error!("MUST NEVER HAPPEN");
                     record_liquidation_failure(FAILURE_REASON_STALE_ORACLES, None, None);
                 }
             }
@@ -127,14 +137,11 @@ impl Rebalancer {
     fn handle_token_accounts(
         &mut self,
         missing_tokens: HashMap<Pubkey, I80F48>,
+        swap_wrapper: &TokenAccountWrapper<OracleWrapper>,
     ) -> anyhow::Result<()> {
         let (necessary_swap_value, missing_mint_to_value) =
             self.sell_excessive_tokens_and_calculate_necessary_swap_value(missing_tokens)?;
 
-        let swap_token_address = self.cache.tokens.try_get_token_for_mint(&self.swap_mint)?;
-        let swap_wrapper = self
-            .cache
-            .try_get_token_wrapper::<OracleWrapper>(&self.swap_mint, &swap_token_address)?;
         let existing_swap_value = swap_wrapper.get_value()?;
 
         if necessary_swap_value > existing_swap_value {
@@ -178,7 +185,7 @@ impl Rebalancer {
         let mut necessary_swap_value = I80F48::ZERO;
         for mint in self.cache.mints.get_mints() {
             debug!("Processing token {}...", mint);
-            if mint == self.swap_mint {
+            if mint == self.swap_mint || self.empty_stake_banks.contains(&mint) {
                 continue;
             }
 
@@ -188,7 +195,9 @@ impl Rebalancer {
                 .try_get_token_wrapper::<OracleWrapper>(&mint, &token);
             if let Err(e) = wrapper {
                 // Ignore empty stake banks
-                if !e.to_string().contains("Stake pool supply is zero") {
+                if e.to_string().contains("Stake pool supply is zero") {
+                    self.empty_stake_banks.insert(mint);
+                } else {
                     warn!("Skipping the token {} in rebalancing: {}", mint, e);
                 }
                 continue;
@@ -198,11 +207,15 @@ impl Rebalancer {
 
             if let Some(&amount) = bank_to_amount.get(&wrapper.bank_wrapper.address) {
                 let value_to_swap = wrapper.get_value_for_amount(amount)?;
-                mint_to_value.insert(
-                    mint,
-                    value_to_swap.checked_mul(SLIPPAGE_MULTIPLIER).unwrap(),
-                );
-                necessary_swap_value += value_to_swap;
+                let missing_value = if value_to_swap < I80F48::from_num(1) {
+                    I80F48::from_num(1)
+                } else {
+                    value_to_swap
+                        .checked_mul(SLIPPAGE_MULTIPLIER)
+                        .ok_or_else(|| anyhow::anyhow!("Failed to calculate missing token value"))?
+                };
+                mint_to_value.insert(mint, missing_value);
+                necessary_swap_value += missing_value;
                 continue;
             }
 
@@ -240,7 +253,7 @@ impl Rebalancer {
 
     fn buy_missing_tokens(
         &mut self,
-        swap_token_wrapper: TokenAccountWrapper<OracleWrapper>,
+        swap_token_wrapper: &TokenAccountWrapper<OracleWrapper>,
         mint_to_value: HashMap<Pubkey, I80F48>,
     ) -> anyhow::Result<()> {
         for mint in self.cache.mints.get_mints() {
@@ -258,16 +271,13 @@ impl Rebalancer {
         Ok(())
     }
 
-    fn deposit_preferred_token(&self) -> anyhow::Result<()> {
+    fn deposit_preferred_token(
+        &self,
+        swap_wrapper: &TokenAccountWrapper<OracleWrapper>,
+    ) -> anyhow::Result<()> {
         let amount = self
             .get_token_balance_for_mint(&self.swap_mint)
             .unwrap_or_default();
-
-        // TODO: move on the higher level
-        let swap_token_address = self.cache.tokens.try_get_token_for_mint(&self.swap_mint)?;
-        let swap_wrapper = self
-            .cache
-            .try_get_token_wrapper::<OracleWrapper>(&self.swap_mint, &swap_token_address)?;
 
         let max_value = self
             .token_thresholds
@@ -325,6 +335,10 @@ impl Rebalancer {
             "Swapping {} tokens of mint {} to mint {} ...",
             amount, input_mint, output_mint
         );
+
+        if output_mint == Pubkey::from_str_const("So11111111111111111111111111111111111111112") {
+            return Err(anyhow::anyhow!("FIX WSOL SWAPS!"));
+        }
 
         let result = self.tokio_rt.block_on(self.dex_client.swap(
             &input_mint.to_string(),

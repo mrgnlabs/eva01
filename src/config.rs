@@ -23,6 +23,7 @@ pub struct Eva01Config {
     pub healthcheck_port: u16,
     pub metrics_bind_addr: String,
     pub metrics_port: u16,
+    pub swb_program_id: Pubkey,
     pub crossbar_api_url: Option<String>,
     pub jup_swap_api_url: String,
     pub swap_mint: Pubkey,
@@ -87,6 +88,12 @@ impl Eva01Config {
             .parse()
             .expect("Invalid METRICS_PORT number");
 
+        let swb_program_id = Pubkey::from_str(
+            &std::env::var("SWB_PROGRAM_ID")
+                .unwrap_or_else(|_| "A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w".to_string()),
+        )
+        .expect("Invalid SWB_PROGRAM_ID Pubkey");
+
         let crossbar_api_url = std::env::var("CROSSBAR_API_URL").ok();
 
         let jup_swap_api_url = std::env::var("JUP_SWAP_API_URL")
@@ -139,6 +146,7 @@ impl Eva01Config {
             healthcheck_port,
             metrics_bind_addr,
             metrics_port,
+            swb_program_id,
             crossbar_api_url,
             jup_swap_api_url,
             swap_mint,

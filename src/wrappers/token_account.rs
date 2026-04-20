@@ -2,7 +2,7 @@ use crate::wrappers::oracle::OracleWrapperTrait;
 
 use super::bank::BankWrapper;
 use fixed::types::I80F48;
-use marginfi_type_crate::constants::EXP_10_I80F48;
+use marginfi_type_crate::{constants::EXP_10_I80F48, types::OraclePriceType};
 
 #[derive(Clone)]
 pub struct TokenAccountWrapper<T: OracleWrapperTrait> {
@@ -26,7 +26,7 @@ impl<T: OracleWrapperTrait> TokenAccountWrapper<T> {
         };
 
         let price = self.oracle_wrapper.get_price_of_type(
-            marginfi::state::price::OraclePriceType::RealTime,
+            OraclePriceType::RealTime,
             None,
             self.bank_wrapper.bank.config.oracle_max_confidence,
         )?;
@@ -36,7 +36,7 @@ impl<T: OracleWrapperTrait> TokenAccountWrapper<T> {
 
     pub fn get_amount_from_value(&self, value: I80F48) -> anyhow::Result<I80F48> {
         let price = self.oracle_wrapper.get_price_of_type(
-            marginfi::state::price::OraclePriceType::RealTime,
+            OraclePriceType::RealTime,
             None,
             self.bank_wrapper.bank.config.oracle_max_confidence,
         )?;
@@ -48,50 +48,5 @@ impl<T: OracleWrapperTrait> TokenAccountWrapper<T> {
         let decimal_scale = EXP_10_I80F48[self.bank_wrapper.bank.mint_decimals as usize];
 
         Ok(amount * decimal_scale)
-    }
-}
-
-#[cfg(test)]
-pub mod test_utils {
-    use crate::wrappers::{
-        bank::test_utils::{test_sol, test_usdc},
-        oracle::test_utils::TestOracleWrapper,
-    };
-
-    use super::*;
-
-    pub type TestTokenAccountWrapper = TokenAccountWrapper<TestOracleWrapper>;
-
-    impl TestTokenAccountWrapper {
-        pub fn test_sol() -> Self {
-            Self {
-                balance: 10000000,
-                bank_wrapper: test_sol(),
-                oracle_wrapper: TestOracleWrapper::test_sol(),
-            }
-        }
-
-        pub fn test_usdc() -> Self {
-            Self {
-                balance: 100000,
-                bank_wrapper: test_usdc(),
-                oracle_wrapper: TestOracleWrapper::test_usdc(),
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::test_utils::*;
-    use super::*;
-
-    #[test]
-    fn test_token_account() {
-        let sol_acc = TestTokenAccountWrapper::test_sol();
-        assert_eq!(sol_acc.get_value().unwrap(), I80F48::from_num(2000.0));
-
-        let usdc_acc: TestTokenAccountWrapper = TestTokenAccountWrapper::test_usdc();
-        assert_eq!(usdc_acc.get_value().unwrap(), I80F48::from_num(1000.0));
     }
 }

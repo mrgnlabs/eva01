@@ -8,7 +8,6 @@ use std::time::Duration;
 
 const REFRESH_INTERVAL_SEC: u64 = 10;
 
-// TODO: merge into Cache
 pub struct ClockManager {
     rpc_client: RpcClient,
     clock: Arc<Mutex<Clock>>,
@@ -20,7 +19,6 @@ impl ClockManager {
         info!("Initializing ClockManager with RPC URL: {}", rpc_url);
 
         let rpc_client = RpcClient::new(rpc_url);
-        //        let clock = Arc::new(Mutex::new(fetch_clock(&rpc_client)?));
         let refresh_interval = Duration::from_secs(REFRESH_INTERVAL_SEC);
 
         Ok(Self {

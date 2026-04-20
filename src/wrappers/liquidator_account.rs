@@ -1,6 +1,10 @@
-use super::{bank::BankWrapper, marginfi_account::MarginfiAccountWrapper};
+use super::{
+    bank::BankWrapper,
+    marginfi_account::{MarginfiAccountWrapper, ObservationAccounts},
+};
 use crate::{
     cache::{Cache, DriftSpotMarket},
+    clock_manager,
     config::Eva01Config,
     drift_ixs::make_refresh_spot_market_ix,
     juplend_ixs::make_update_lending_rate_ix,
@@ -12,7 +16,7 @@ use crate::{
     },
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
-        self, check_asset_tags_matching, drift::derive_spot_market, marginfi_account_by_authority,
+        self, marginfi_account_by_authority, simulation_cache::decode_and_apply_simulated_accounts,
         swb_cranker::is_stale_swb_price_error,
     },
     wrappers::oracle::OracleWrapper,
@@ -24,12 +28,17 @@ use marginfi_type_crate::{
     constants::{
         ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
     },
-    types::{BalanceSide, Bank},
+    pdas::derive_drift_spot_market,
+    types::{validate_asset_tags, Bank},
 };
+use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
-    rpc_config::RpcSendTransactionConfig,
+    rpc_config::{
+        RpcSendTransactionConfig, RpcSimulateTransactionAccountsConfig,
+        RpcSimulateTransactionConfig,
+    },
     rpc_request::RpcError,
 };
 
@@ -45,11 +54,17 @@ use solana_sdk::{
     signature::{Keypair, Signature},
     signer::{Signer, SignerError},
     system_instruction::transfer,
-    transaction::VersionedTransaction,
+    transaction::{TransactionError, VersionedTransaction},
 };
-use std::{collections::HashSet, sync::Arc, thread, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
 
 pub const PROFIT_SHARE: f64 = 0.085;
+const DEFAULT_INTEGRATION_REFRESH_BATCH_HINT: usize = 12;
 
 #[derive(Debug)]
 pub enum LiquidationError {
@@ -78,6 +93,7 @@ impl LiquidationError {
 
 pub struct PreparedLiquidatableAccount {
     pub liquidatee_account: MarginfiAccountWrapper,
+    pub observation_accounts: ObservationAccounts,
     pub asset_bank: Pubkey,
     pub liab_bank: Pubkey,
     pub asset_amount: I80F48,
@@ -95,6 +111,20 @@ pub struct LiquidatorAccount {
     rpc_client: RpcClient,
     cu_limit_ix: Instruction,
     pub cache: Arc<Cache>,
+    integration_refresh_batch_hint: Mutex<usize>,
+}
+
+#[derive(Clone, Debug)]
+struct IntegrationRefreshEntry {
+    kind: &'static str,
+    address: Pubkey,
+    instruction: Instruction,
+}
+
+enum RefreshBatchError {
+    TooLarge(anyhow::Error),
+    TooManyAccountLocks(anyhow::Error),
+    Other(anyhow::Error),
 }
 
 impl LiquidatorAccount {
@@ -154,26 +184,8 @@ impl LiquidatorAccount {
             rpc_client,
             cu_limit_ix: ComputeBudgetInstruction::set_compute_unit_limit(1400000),
             cache,
+            integration_refresh_batch_hint: Mutex::new(DEFAULT_INTEGRATION_REFRESH_BATCH_HINT),
         })
-    }
-
-    pub fn has_funds(&self) -> Result<bool> {
-        let account = self
-            .cache
-            .marginfi_accounts
-            .try_get_account(&self.liquidator_address)?;
-
-        let preferred_mint_bank = self.cache.banks.try_get_bank(&self.preferred_mint_bank)?;
-
-        let validation_result =
-            account
-                .get_balance_for_bank(&preferred_mint_bank)
-                .map(|(balance, side)| match side {
-                    BalanceSide::Assets => balance > 0,
-                    _ => true,
-                });
-
-        Ok(validation_result.unwrap_or(false))
     }
 
     pub fn init_liq_record(&self, liquidatee_account: &MarginfiAccountWrapper) -> Result<Pubkey> {
@@ -229,12 +241,13 @@ impl LiquidatorAccount {
 
     pub fn liquidate(
         &self,
-        account: &PreparedLiquidatableAccount,
+        account: PreparedLiquidatableAccount,
         stale_swb_oracles: &HashSet<Pubkey>,
         tokens_in_shortage: &mut HashSet<Pubkey>,
     ) -> Result<(), LiquidationError> {
         let PreparedLiquidatableAccount {
             liquidatee_account,
+            observation_accounts,
             asset_bank,
             liab_bank,
             asset_amount,
@@ -250,13 +263,13 @@ impl LiquidatorAccount {
         let asset_bank_wrapper = self
             .cache
             .banks
-            .try_get_bank(asset_bank)
+            .try_get_bank(&asset_bank)
             .map_err(LiquidationError::from_anyhow)?;
 
         let liab_bank_wrapper = self
             .cache
             .banks
-            .try_get_bank(liab_bank)
+            .try_get_bank(&liab_bank)
             .map_err(LiquidationError::from_anyhow)?;
 
         let signer_pk = self.signer.pubkey();
@@ -276,9 +289,8 @@ impl LiquidatorAccount {
             .try_get_account(&self.liquidator_address)
             .map_err(LiquidationError::from_anyhow)?;
 
-        let lending_account = &liquidator_account.lending_account;
         for bank_to_validate_against in [&asset_bank_wrapper, &liab_bank_wrapper] {
-            if !check_asset_tags_matching(&bank_to_validate_against.bank, lending_account) {
+            if !validate_asset_tags(&bank_to_validate_against.bank, &liquidator_account.account) {
                 // This is a precaution to not attempt to liquidate staked collateral positions when liquidator has non-SOL positions open.
                 // Expected to happen quite often for now. Later on, we can add a more sophisticated filtering logic on the higher level.
                 debug!("Bank {:?} does not match the asset tags of the lending account -> skipping liquidation attempt", bank_to_validate_against.address);
@@ -289,48 +301,40 @@ impl LiquidatorAccount {
         let liab_token_balance =
             I80F48::from_num(self.get_token_balance_for_mint(&liab_mint).unwrap());
 
-        if liab_token_balance < *dust_liab_threshold {
+        if liab_token_balance < dust_liab_threshold {
             tokens_in_shortage.insert(liab_mint);
             info!("No tokens: {}", liab_mint);
             return Err(LiquidationError::NotEnoughFunds);
         }
 
-        let (asset_amount, liab_amount) = if liab_token_balance < *liab_amount {
+        let (asset_amount, liab_amount) = if liab_token_balance < liab_amount {
             tokens_in_shortage.insert(liab_mint);
             info!(
                 "Not enough {} tokens: liquidating for: {} (of {})",
                 liab_mint, liab_token_balance, liab_amount
             );
-            let proportion = liab_token_balance.checked_div(*liab_amount).unwrap();
+            let proportion = liab_token_balance.checked_div(liab_amount).unwrap();
             (
                 asset_amount.checked_mul(proportion).unwrap(),
                 liab_token_balance,
             )
         } else {
             (
-                *asset_amount,
+                asset_amount,
                 liab_amount
                     .checked_mul(I80F48::from_num(1.0 - PROFIT_SHARE))
                     .unwrap(),
             )
         };
 
-        let banks_to_include: Vec<Pubkey> = vec![];
-        let banks_to_exclude: Vec<Pubkey> = vec![];
-        let (
-            liquidatee_observation_accounts,
-            liquidatee_swb_oracles,
-            liquidatee_banks,
+        let ObservationAccounts {
+            observation_accounts: liquidatee_observation_accounts,
+            swb_oracles: liquidatee_swb_oracles,
+            bank_pks: liquidatee_banks,
             kamino_reserves,
             drift_spot_markets,
             juplend_states,
-        ) = MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
-            &liquidatee_account.lending_account,
-            &banks_to_include,
-            &banks_to_exclude,
-            self.cache.clone(),
-        )
-        .map_err(LiquidationError::from_anyhow)?;
+        } = observation_accounts;
 
         // Note: liquidatee_observation_accounts include Kamino reserves, Drift spot markets and all of the banks and oracles.
         participating_accounts.extend(liquidatee_observation_accounts.iter());
@@ -344,20 +348,23 @@ impl LiquidatorAccount {
             return Ok(());
         }
 
-        let liquidation_record = if liquidatee_account.liquidation_record == Pubkey::default() {
-            // warn!("IGNORING UNINITIALIZED LIQ RECORD");
-            // return Ok(());
-            self.init_liq_record(liquidatee_account)
-                .map_err(LiquidationError::from_anyhow)?
-        } else {
-            liquidatee_account.liquidation_record
-        };
+        let liquidation_record =
+            if liquidatee_account.account.liquidation_record == Pubkey::default() {
+                // warn!("IGNORING UNINITIALIZED LIQ RECORD");
+                // return Ok(());
+                self.init_liq_record(&liquidatee_account)
+                    .map_err(LiquidationError::from_anyhow)?
+            } else {
+                liquidatee_account.account.liquidation_record
+            };
         participating_accounts.insert(liquidation_record);
 
         let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
         let mut ixs = Vec::new();
 
         ixs.push(self.cu_limit_ix.clone());
+
+        // TODO: think about posting an swb_crank ix here
 
         let start_ix = make_start_liquidate_ix(
             self.program_id,
@@ -372,12 +379,7 @@ impl LiquidatorAccount {
         for kamino_reserve_address in kamino_reserves {
             let kamino_reserve = self
                 .cache
-                .kamino_reserves
-                .get(&kamino_reserve_address)
-                .context(format!(
-                    "Couldn't find the data for Kamino reserve: {}",
-                    kamino_reserve_address
-                ))
+                .try_get_kamino_reserve(&kamino_reserve_address)
                 .map_err(LiquidationError::from_anyhow)?;
 
             debug!(
@@ -387,7 +389,7 @@ impl LiquidatorAccount {
 
             let refresh_reserve_ix = make_refresh_reserve_ix(
                 kamino_reserve_address,
-                kamino_reserve,
+                &kamino_reserve,
                 &mut participating_accounts,
             );
             ixs.push(refresh_reserve_ix);
@@ -396,12 +398,7 @@ impl LiquidatorAccount {
         for spot_market_address in drift_spot_markets {
             let spot_market = self
                 .cache
-                .drift_markets
-                .get(&spot_market_address)
-                .context(format!(
-                    "Couldn't find the data for Drift spot market: {}",
-                    spot_market_address
-                ))
+                .try_get_drift_market(&spot_market_address)
                 .map_err(LiquidationError::from_anyhow)?;
 
             let refresh_spot_market_ix = make_refresh_spot_market_ix(
@@ -416,17 +413,12 @@ impl LiquidatorAccount {
         for lending_state_address in juplend_states {
             let lending_state = self
                 .cache
-                .juplend_lending_states
-                .get(&lending_state_address)
-                .context(format!(
-                    "Couldn't find the data for Juplend lending state: {}",
-                    lending_state_address
-                ))
+                .try_get_juplend_lending_state(&lending_state_address)
                 .map_err(LiquidationError::from_anyhow)?;
 
             let update_lending_rate_ix = make_update_lending_rate_ix(
                 lending_state_address,
-                lending_state,
+                &lending_state,
                 &mut participating_accounts,
             );
             ixs.push(update_lending_rate_ix);
@@ -454,12 +446,7 @@ impl LiquidatorAccount {
             ASSET_TAG_KAMINO => {
                 let kamino_reserve = self
                     .cache
-                    .kamino_reserves
-                    .get(&asset_bank_wrapper.bank.integration_acc_1)
-                    .context(format!(
-                        "Couldn't find the data for Kamino reserve: {}",
-                        asset_bank_wrapper.bank.integration_acc_1
-                    ))
+                    .try_get_kamino_reserve(&asset_bank_wrapper.bank.integration_acc_1)
                     .map_err(LiquidationError::from_anyhow)?;
 
                 let refresh_obligation_ix = make_refresh_obligation_ix(
@@ -478,7 +465,7 @@ impl LiquidatorAccount {
                     &asset_bank_wrapper,
                     &asset_mint_wrapper,
                     asset_bank_wrapper.bank.integration_acc_2,
-                    kamino_reserve,
+                    &kamino_reserve,
                     liquidatee_observation_accounts.as_ref(),
                     asset_amount.to_num(),
                     false,
@@ -497,9 +484,9 @@ impl LiquidatorAccount {
                     signer_pk,
                     &asset_bank_wrapper,
                     &asset_mint_wrapper,
-                    drift_spot_market,
-                    reward_spot_market,
-                    reward_spot_market_2,
+                    &drift_spot_market,
+                    reward_spot_market.as_ref(),
+                    reward_spot_market_2.as_ref(),
                     liquidatee_observation_accounts.as_ref(),
                     asset_amount.to_num(),
                     false,
@@ -509,12 +496,7 @@ impl LiquidatorAccount {
             ASSET_TAG_JUPLEND => {
                 let lending_state = self
                     .cache
-                    .juplend_lending_states
-                    .get(&asset_bank_wrapper.bank.integration_acc_1)
-                    .context(format!(
-                        "Couldn't find the data for Juplend lending state: {}",
-                        asset_bank_wrapper.bank.integration_acc_1
-                    ))
+                    .try_get_juplend_lending_state(&asset_bank_wrapper.bank.integration_acc_1)
                     .map_err(LiquidationError::from_anyhow)?;
 
                 make_juplend_withdraw_ix(
@@ -524,7 +506,7 @@ impl LiquidatorAccount {
                     signer_pk,
                     &asset_bank_wrapper,
                     &asset_mint_wrapper,
-                    lending_state,
+                    &lending_state,
                     liquidatee_observation_accounts.as_ref(),
                     asset_amount.to_num(),
                     false,
@@ -628,7 +610,6 @@ impl LiquidatorAccount {
                                 .downcast_ref::<ClientError>()
                                 .is_some_and(is_stale_swb_price_error)
                             {
-                                // TODO: Should we just crank always?? Also refresh Kamino reserves?
                                 Err(LiquidationError::StaleOracles(liquidatee_swb_oracles))
                             } else {
                                 Err(LiquidationError::Anyhow(err))
@@ -636,7 +617,6 @@ impl LiquidatorAccount {
                         }
                     }
                 } else if is_stale_swb_price_error(&err) {
-                    // TODO: Should we just crank always?? Also refresh Kamino reserves?
                     Err(LiquidationError::StaleOracles(liquidatee_swb_oracles))
                 } else {
                     Err(LiquidationError::from_client(err))
@@ -688,19 +668,24 @@ impl LiquidatorAccount {
             vec![]
         };
 
+        let clock = clock_manager::get_clock(&self.cache.clock)?;
+
         debug!("Collecting observation accounts for the account: {:?} with banks_to_include {:?} and banks_to_exclude {:?}", 
         &self.liquidator_address, &banks_to_include, &banks_to_exclude);
-        let (observation_accounts, _, _, _, _, _) =
+        let observation_accounts =
             MarginfiAccountWrapper::get_observation_accounts::<OracleWrapper>(
                 &self
                     .cache
                     .marginfi_accounts
                     .try_get_account(&self.liquidator_address)?
+                    .account
                     .lending_account,
                 &banks_to_include,
                 &banks_to_exclude,
-                self.cache.clone(),
-            )?;
+                &self.cache,
+                &clock,
+            )?
+            .observation_accounts;
 
         let mint_wrapper = self.cache.mints.try_get_account(&bank.bank.mint)?;
         let withdraw_ix = make_withdraw_ix(
@@ -833,18 +818,11 @@ impl LiquidatorAccount {
         &self,
         bank: &Bank,
     ) -> Result<(
-        &DriftSpotMarket,
-        Option<&DriftSpotMarket>,
-        Option<&DriftSpotMarket>,
+        DriftSpotMarket,
+        Option<DriftSpotMarket>,
+        Option<DriftSpotMarket>,
     )> {
-        let drift_spot_market = self
-            .cache
-            .drift_markets
-            .get(&bank.integration_acc_1)
-            .context(format!(
-                "Couldn't find the data for Drift spot market: {}",
-                bank.integration_acc_1
-            ))?;
+        let drift_spot_market = self.cache.try_get_drift_market(&bank.integration_acc_1)?;
 
         let drift_user = self
             .cache
@@ -859,29 +837,19 @@ impl LiquidatorAccount {
         let (reward_spot_market, reward_spot_market_2) =
             if drift_user.spot_positions[2].scaled_balance > 0 {
                 let reward_spot_market_address =
-                    derive_spot_market(drift_user.spot_positions[2].market_index);
+                    derive_drift_spot_market(drift_user.spot_positions[2].market_index).0;
 
                 let reward_spot_market = self
                     .cache
-                    .drift_markets
-                    .get(&reward_spot_market_address)
-                    .context(format!(
-                        "Couldn't find the data for Drift spot market: {}",
-                        reward_spot_market_address
-                    ))?;
+                    .try_get_drift_market(&reward_spot_market_address)?;
 
                 if drift_user.spot_positions[3].scaled_balance > 0 {
                     let reward_spot_market_2_address =
-                        derive_spot_market(drift_user.spot_positions[3].market_index);
+                        derive_drift_spot_market(drift_user.spot_positions[3].market_index).0;
 
                     let reward_spot_market_2 = self
                         .cache
-                        .drift_markets
-                        .get(&reward_spot_market_2_address)
-                        .context(format!(
-                            "Couldn't find the data for Drift spot market: {}",
-                            reward_spot_market_2_address
-                        ))?;
+                        .try_get_drift_market(&reward_spot_market_2_address)?;
 
                     (Some(reward_spot_market), Some(reward_spot_market_2))
                 } else {
@@ -894,87 +862,340 @@ impl LiquidatorAccount {
         Ok((drift_spot_market, reward_spot_market, reward_spot_market_2))
     }
 
-    pub fn refresh_integrations(&self) -> Result<()> {
-        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
-        let mut ixs = Vec::new();
+    fn build_refresh_integrations_entries(&self) -> Result<Vec<IntegrationRefreshEntry>> {
+        let mut entries = Vec::new();
         let mut participating_accounts: HashSet<Pubkey> = HashSet::new();
 
-        ixs.push(self.cu_limit_ix.clone());
-
-        self.cache
-            .kamino_reserves
-            .iter()
-            .for_each(|(address, reserve)| {
-                let refresh_reserve_ix =
-                    make_refresh_reserve_ix(*address, reserve, &mut participating_accounts);
-                debug!(
-                    "Refreshing: reserve {}, mint {}",
-                    address, reserve.reserve.collateral.mint_pubkey
-                );
-
-                ixs.push(refresh_reserve_ix);
+        for (address, reserve) in self.cache.try_get_kamino_reserves()? {
+            let instruction =
+                make_refresh_reserve_ix(address, &reserve, &mut participating_accounts);
+            debug!(
+                "Refreshing: reserve {}, mint {}",
+                address, reserve.reserve.collateral.mint_pubkey
+            );
+            entries.push(IntegrationRefreshEntry {
+                kind: "kamino",
+                address,
+                instruction,
             });
-
-        self.cache
-            .drift_markets
-            .iter()
-            .for_each(|(address, spot_market)| {
-                debug!(
-                    "Refreshing: market {}, mint {}, oracle {}",
-                    address, spot_market.market.mint, spot_market.market.oracle
-                );
-
-                let refresh_spot_market_ix = make_refresh_spot_market_ix(
-                    *address,
-                    spot_market.market.vault,
-                    spot_market.market.oracle,
-                    &mut participating_accounts,
-                );
-
-                ixs.push(refresh_spot_market_ix);
-            });
-
-        self.cache
-            .juplend_lending_states
-            .iter()
-            .for_each(|(address, lending_state)| {
-                debug!("Refreshing: state {}, mint {}", address, lending_state.mint);
-
-                let update_lending_rate_ix = make_update_lending_rate_ix(
-                    *address,
-                    lending_state,
-                    &mut participating_accounts,
-                );
-                ixs.push(update_lending_rate_ix);
-            });
-
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
-
-        let signer_pk = self.signer.pubkey();
-        let msg = Message::try_compile(&signer_pk, &ixs, &luts, recent_blockhash)?;
-
-        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])?;
-
-        if let Err(err) = self
-            .rpc_client
-            .send_and_confirm_transaction_with_spinner_and_config(
-                &tx,
-                CommitmentConfig::confirmed(),
-                RpcSendTransactionConfig {
-                    skip_preflight: false,
-                    preflight_commitment: Some(CommitmentLevel::Processed),
-                    ..Default::default()
-                },
-            )
-        {
-            if is_tx_too_large_client(&err) {
-                warn!("The refresh tx was too large: adding the observation accounts to a LUT and retrying");
-                self.retry_with_new_luts(ixs, participating_accounts)?;
-            }
-            return Err(anyhow!(err.to_string()));
         }
+
+        // TODO: bring back Drift here if it's ever resurrected
+
+        for (address, lending_state) in self.cache.try_get_juplend_lending_states()? {
+            debug!("Refreshing: state {}, mint {}", address, lending_state.mint);
+            let instruction =
+                make_update_lending_rate_ix(address, &lending_state, &mut participating_accounts);
+            entries.push(IntegrationRefreshEntry {
+                kind: "juplend",
+                address,
+                instruction,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    pub fn simulate_refresh_integrations(&self) -> Result<()> {
+        let luts: Vec<AddressLookupTableAccount> = self.cache.luts.lock().unwrap().clone();
+        let entries = self.build_refresh_integrations_entries()?;
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut skipped_entries: Vec<IntegrationRefreshEntry> = vec![];
+        let mut refreshed_batches = 0usize;
+        let mut offset = 0usize;
+        let stored_batch_hint = *self.integration_refresh_batch_hint.lock().unwrap();
+        let mut preferred_batch_size = stored_batch_hint.min(entries.len()).max(1);
+        let mut resized_down = false;
+
+        while offset < entries.len() {
+            let remaining = entries.len() - offset;
+            let mut batch_size = preferred_batch_size.min(remaining).max(1);
+
+            loop {
+                let batch_entries = entries[offset..offset + batch_size].to_vec();
+                match self.simulate_refresh_integrations_batch(
+                    &luts,
+                    batch_entries,
+                    &mut skipped_entries,
+                ) {
+                    Ok(batch_refreshed_any) => {
+                        if batch_refreshed_any {
+                            refreshed_batches += 1;
+                        }
+                        offset += batch_size;
+                        break;
+                    }
+                    Err(RefreshBatchError::TooLarge(_err)) if batch_size > 1 => {
+                        let new_batch_size = (batch_size / 2).max(1);
+                        debug!(
+                            "Integrations refresh simulation tx too large with {} instructions; retrying with {} instructions",
+                            batch_size, new_batch_size
+                        );
+                        batch_size = new_batch_size;
+                        preferred_batch_size = new_batch_size;
+                        resized_down = true;
+                    }
+                    Err(RefreshBatchError::TooManyAccountLocks(_err)) if batch_size > 1 => {
+                        let new_batch_size = (batch_size / 2).max(1);
+                        debug!(
+                            "Integrations refresh simulation hit TooManyAccountLocks with {} instructions; retrying with {} instructions",
+                            batch_size, new_batch_size
+                        );
+                        batch_size = new_batch_size;
+                        preferred_batch_size = new_batch_size;
+                        resized_down = true;
+                    }
+                    Err(RefreshBatchError::TooLarge(err)) => {
+                        let failed_entry = entries[offset].clone();
+                        warn!(
+                            "Skipping integration refresh instruction {} for {} because tx is too large even as a single instruction: {}",
+                            failed_entry.kind,
+                            failed_entry.address,
+                            err
+                        );
+                        skipped_entries.push(failed_entry);
+                        offset += 1;
+                        break;
+                    }
+                    Err(RefreshBatchError::TooManyAccountLocks(err)) => {
+                        let failed_entry = entries[offset].clone();
+                        warn!(
+                            "Skipping integration refresh instruction {} for {} because TooManyAccountLocks persisted even as a single instruction: {}",
+                            failed_entry.kind,
+                            failed_entry.address,
+                            err
+                        );
+                        skipped_entries.push(failed_entry);
+                        offset += 1;
+                        break;
+                    }
+                    Err(RefreshBatchError::Other(err)) => {
+                        let batch_summary =
+                            format_integration_entries(&entries[offset..offset + batch_size], 10);
+                        return Err(err).with_context(|| {
+                            format!(
+                                "Integrations refresh simulation failed for batch [{}..{}) (size {}, entries: {})",
+                                offset,
+                                offset + batch_size,
+                                batch_size,
+                                batch_summary,
+                            )
+                        });
+                    }
+                }
+            }
+        }
+
+        if refreshed_batches == 0 {
+            return Err(anyhow!(
+                "Integrations refresh simulation failed for all integrations; skipped entries: {}",
+                format_skipped_integration_entries(&skipped_entries)
+            ));
+        }
+
+        if !skipped_entries.is_empty() {
+            warn!(
+                "Integrations refresh simulation completed while skipping {} failing integrations: {}",
+                skipped_entries.len(),
+                format_skipped_integration_entries(&skipped_entries)
+            );
+        }
+
+        if resized_down {
+            let mut batch_hint = self.integration_refresh_batch_hint.lock().unwrap();
+            if preferred_batch_size < *batch_hint {
+                info!(
+                    "Reduced integrations refresh batch-size hint from {} to {} after simulation backoff",
+                    *batch_hint, preferred_batch_size
+                );
+                *batch_hint = preferred_batch_size;
+            }
+        }
+
         Ok(())
     }
+
+    fn simulate_refresh_integrations_batch(
+        &self,
+        luts: &[AddressLookupTableAccount],
+        batch_entries: Vec<IntegrationRefreshEntry>,
+        skipped_entries: &mut Vec<IntegrationRefreshEntry>,
+    ) -> std::result::Result<bool, RefreshBatchError> {
+        let mut entries = batch_entries;
+
+        loop {
+            if entries.is_empty() {
+                return Ok(false);
+            }
+
+            let integration_addresses: Vec<Pubkey> =
+                entries.iter().map(|entry| entry.address).collect();
+            let entry_summary = format_integration_entries(&entries, 10);
+            let mut ixs: Vec<Instruction> = Vec::with_capacity(entries.len() + 1);
+            ixs.push(self.cu_limit_ix.clone());
+            ixs.extend(entries.iter().map(|entry| entry.instruction.clone()));
+
+            let recent_blockhash = self
+                .rpc_client
+                .get_latest_blockhash()
+                .map_err(|err| RefreshBatchError::Other(err.into()))?;
+            let signer_pk = self.signer.pubkey();
+            let msg = Message::try_compile(&signer_pk, &ixs, luts, recent_blockhash)
+                .map_err(|err| RefreshBatchError::Other(err.into()))?;
+            let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
+                .map_err(|err| RefreshBatchError::Other(err.into()))?;
+
+            let simulation = self
+                .rpc_client
+                .simulate_transaction_with_config(
+                    &tx,
+                    RpcSimulateTransactionConfig {
+                        sig_verify: false,
+                        replace_recent_blockhash: true,
+                        commitment: Some(CommitmentConfig::confirmed()),
+                        accounts: Some(RpcSimulateTransactionAccountsConfig {
+                            encoding: Some(UiAccountEncoding::Base64),
+                            addresses: integration_addresses
+                                .iter()
+                                .map(|pk| pk.to_string())
+                                .collect(),
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .map_err(|err| {
+                    if is_tx_too_large_client(&err) {
+                        RefreshBatchError::TooLarge(err.into())
+                    } else if is_tx_too_many_account_locks_client(&err) {
+                        RefreshBatchError::TooManyAccountLocks(err.into())
+                    } else {
+                        RefreshBatchError::Other(err.into())
+                    }
+                })?;
+
+            if let Some(err) = simulation.value.err.clone() {
+                if matches!(err, TransactionError::TooManyAccountLocks) {
+                    let logs = format_simulation_logs(simulation.value.logs.as_deref(), 40, 8_000);
+                    return Err(RefreshBatchError::TooManyAccountLocks(anyhow!(
+                        "Integrations refresh simulation hit TooManyAccountLocks for batch of {} entries [{}]; logs={}",
+                        entries.len(),
+                        entry_summary,
+                        logs
+                    )));
+                }
+
+                if let TransactionError::InstructionError(ix_index, instruction_error) = &err {
+                    let ix_index = usize::from(*ix_index);
+                    if ix_index > 0 && ix_index <= entries.len() {
+                        let failed_entry = entries.remove(ix_index - 1);
+                        warn!(
+                            "Skipping failing integration refresh instruction {} for {} (tx instruction index {}, error {:?})",
+                            failed_entry.kind,
+                            failed_entry.address,
+                            ix_index,
+                            instruction_error
+                        );
+                        skipped_entries.push(failed_entry);
+                        continue;
+                    }
+                }
+
+                let logs = format_simulation_logs(simulation.value.logs.as_deref(), 40, 8_000);
+                return Err(RefreshBatchError::Other(anyhow!(
+                    "Integrations refresh simulation failed with transaction error: {:?}; batch_size={}; entries=[{}]; logs={}",
+                    err,
+                    entries.len(),
+                    entry_summary,
+                    logs
+                )));
+            }
+
+            let simulated_accounts = simulation.value.accounts.ok_or_else(|| {
+                RefreshBatchError::Other(anyhow!(
+                    "Integrations refresh simulation did not return post-simulation accounts"
+                ))
+            })?;
+
+            if simulated_accounts.len() != integration_addresses.len() {
+                return Err(RefreshBatchError::Other(anyhow!(
+                    "Integrations refresh simulation returned {} accounts, expected {}",
+                    simulated_accounts.len(),
+                    integration_addresses.len()
+                )));
+            }
+
+            decode_and_apply_simulated_accounts(
+                &integration_addresses,
+                &simulated_accounts,
+                "simulateTransaction integrations refresh",
+                |address, account| self.cache.oracles.try_update(address, account),
+            )
+            .map_err(RefreshBatchError::Other)?;
+
+            return Ok(true);
+        }
+    }
+}
+
+fn format_skipped_integration_entries(entries: &[IntegrationRefreshEntry]) -> String {
+    if entries.is_empty() {
+        return "none".to_string();
+    }
+
+    entries
+        .iter()
+        .map(|entry| format!("{}:{}", entry.kind, entry.address))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_integration_entries(entries: &[IntegrationRefreshEntry], max_entries: usize) -> String {
+    if entries.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut out = entries
+        .iter()
+        .take(max_entries)
+        .map(|entry| format!("{}:{}", entry.kind, entry.address))
+        .collect::<Vec<_>>();
+
+    if entries.len() > max_entries {
+        out.push(format!(
+            "...<{} additional entries>",
+            entries.len() - max_entries
+        ));
+    }
+
+    out.join(", ")
+}
+
+fn format_simulation_logs(logs: Option<&[String]>, max_lines: usize, max_chars: usize) -> String {
+    let Some(logs) = logs else {
+        return "none".to_string();
+    };
+    if logs.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut lines: Vec<String> = logs.iter().take(max_lines).cloned().collect();
+    if logs.len() > max_lines {
+        lines.push(format!(
+            "...<{} additional log lines truncated>",
+            logs.len() - max_lines
+        ));
+    }
+
+    let mut joined = lines.join(" | ");
+    if joined.len() > max_chars {
+        joined.truncate(max_chars);
+        joined.push_str("...<truncated>");
+    }
+
+    joined
 }
 
 fn contains_stale_oracles(stale_oracles: &HashSet<Pubkey>, account_oracles: &[Pubkey]) -> bool {
@@ -1053,6 +1274,25 @@ pub fn is_tx_too_large_client(err: &ClientError) -> bool {
             RpcError::RpcRequestError(msg) | RpcError::ForUser(msg) => {
                 // Some nodes may proxy this as a plain string
                 msg.contains("too large")
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn is_tx_too_many_account_locks_client(err: &ClientError) -> bool {
+    match err.kind() {
+        ClientErrorKind::RpcError(rpc) => match rpc {
+            RpcError::RpcResponseError { message, .. } => {
+                message.contains("TooManyAccountLocks")
+                    || message
+                        .to_ascii_lowercase()
+                        .contains("too many account locks")
+            }
+            RpcError::RpcRequestError(msg) | RpcError::ForUser(msg) => {
+                msg.contains("TooManyAccountLocks")
+                    || msg.to_ascii_lowercase().contains("too many account locks")
             }
             _ => false,
         },

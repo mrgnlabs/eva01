@@ -10,10 +10,13 @@ use std::{
 };
 
 use accounts::MarginfiAccountsCache;
-use anyhow::Result;
+use anchor_lang::AccountDeserialize;
+use anyhow::{anyhow, Result};
 use banks::BanksCache;
 use log::info;
-use marginfi_type_crate::constants::FEE_STATE_SEED;
+use marginfi_type_crate::{
+    constants::FEE_STATE_SEED, pdas::derive_kamino_lending_market_authority,
+};
 use mints::MintsCache;
 use oracles::OraclesCache;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
@@ -28,6 +31,7 @@ use solana_sdk::{
 use tokens::TokensCache;
 
 use crate::{
+    clock_manager,
     drift::accounts::{SpotMarket, User as DriftUser},
     juplend_earn::accounts::Lending,
     kamino_lending::accounts::Reserve,
@@ -51,18 +55,17 @@ pub struct Cache {
     pub luts: Arc<Mutex<Vec<AddressLookupTableAccount>>>,
     pub global_fee_state_key: Pubkey,
     pub global_fee_wallet: Pubkey,
-    pub kamino_reserves: HashMap<Pubkey, KaminoReserve>,
-    pub drift_markets: HashMap<Pubkey, DriftSpotMarket>,
     pub drift_users: HashMap<Pubkey, DriftUser>,
-    pub juplend_lending_states: HashMap<Pubkey, Lending>,
 }
 
+#[derive(Clone)]
 pub struct KaminoReserve {
     pub address: Pubkey,
     pub reserve: Reserve,
     pub lending_market_authority: Pubkey,
 }
 
+#[derive(Clone)]
 pub struct DriftSpotMarket {
     pub address: Pubkey,
     pub market: SpotMarket,
@@ -91,11 +94,87 @@ impl Cache {
             luts,
             global_fee_state_key,
             global_fee_wallet: Pubkey::default(),
-            kamino_reserves: HashMap::new(),
-            drift_markets: HashMap::new(),
             drift_users: HashMap::new(),
-            juplend_lending_states: HashMap::new(),
         }
+    }
+
+    fn build_kamino_reserve(address: Pubkey, reserve: Reserve) -> KaminoReserve {
+        let lending_market_authority =
+            derive_kamino_lending_market_authority(&reserve.lending_market).0;
+        KaminoReserve {
+            address,
+            reserve,
+            lending_market_authority,
+        }
+    }
+
+    pub fn try_get_kamino_reserve(&self, address: &Pubkey) -> Result<KaminoReserve> {
+        let account = self.oracles.try_get_account(address)?;
+        let mut data: &[u8] = &account.data;
+        let reserve = Reserve::try_deserialize(&mut data).map_err(|e| {
+            anyhow!(
+                "Failed to deserialize Kamino reserve {} from OracleCache: {}",
+                address,
+                e
+            )
+        })?;
+
+        Ok(Self::build_kamino_reserve(*address, reserve))
+    }
+
+    pub fn try_get_kamino_reserves(&self) -> Result<Vec<(Pubkey, KaminoReserve)>> {
+        self.try_get_kamino_reserve_addresses()?
+            .into_iter()
+            .map(|address| Ok((address, self.try_get_kamino_reserve(&address)?)))
+            .collect()
+    }
+
+    pub fn try_get_kamino_reserve_addresses(&self) -> Result<Vec<Pubkey>> {
+        Ok(self.banks.get_kamino_reserves().into_iter().collect())
+    }
+
+    pub fn try_get_drift_market(&self, address: &Pubkey) -> Result<DriftSpotMarket> {
+        let account = self.oracles.try_get_account(address)?;
+        let mut data: &[u8] = &account.data;
+        let market = SpotMarket::try_deserialize(&mut data).map_err(|e| {
+            anyhow!(
+                "Failed to deserialize Drift spot market {} from OracleCache: {}",
+                address,
+                e
+            )
+        })?;
+
+        Ok(DriftSpotMarket {
+            address: *address,
+            market,
+        })
+    }
+
+    pub fn try_get_juplend_lending_state(&self, address: &Pubkey) -> Result<Lending> {
+        let account = self.oracles.try_get_account(address)?;
+        let mut data: &[u8] = &account.data;
+        Lending::try_deserialize(&mut data).map_err(|e| {
+            anyhow!(
+                "Failed to deserialize Juplend lending state {} from OracleCache: {}",
+                address,
+                e
+            )
+        })
+    }
+
+    pub fn try_get_juplend_lending_states(&self) -> Result<Vec<(Pubkey, Lending)>> {
+        self.try_get_juplend_lending_state_addresses()?
+            .into_iter()
+            .map(|address| Ok((address, self.try_get_juplend_lending_state(&address)?)))
+            .collect()
+    }
+
+    pub fn try_get_juplend_lending_state_addresses(&self) -> Result<Vec<Pubkey>> {
+        Ok(self
+            .banks
+            .get_juplend_lending_states()
+            .into_iter()
+            .collect())
     }
 
     pub fn add_lut(&mut self, lut: AddressLookupTableAccount) {
@@ -110,7 +189,8 @@ impl Cache {
         let token_account = self.tokens.try_get_account(token_address)?;
         let bank_address = self.banks.try_get_account_for_mint(mint_address)?;
         let bank_wrapper = self.banks.try_get_bank(&bank_address)?;
-        let oracle_wrapper = T::build(self, &bank_address)?;
+        let clock = clock_manager::get_clock(&self.clock)?;
+        let oracle_wrapper = T::build(self, &clock, &bank_address)?;
 
         Ok(TokenAccountWrapper {
             balance: accessor::amount(&token_account.data)?,
@@ -119,7 +199,6 @@ impl Cache {
         })
     }
 
-    // TODO: think of a better place for this
     pub fn add_addresses_to_lut(
         &self,
         rpc_client: &RpcClient,
@@ -232,94 +311,4 @@ fn extend_lut(
     let lut = AddressLookupTable::deserialize(&lut_account.data).unwrap();
 
     Ok(lut.addresses.to_vec())
-}
-
-#[cfg(test)]
-pub mod test_utils {
-    use std::sync::{Arc, Mutex};
-
-    use solana_sdk::{account::Account, clock::Clock, pubkey::Pubkey};
-
-    use crate::wrappers::{bank::BankWrapper, oracle::test_utils::create_empty_oracle_account};
-
-    use super::Cache;
-
-    pub fn create_test_cache(bank_wrappers: &Vec<BankWrapper>) -> Cache {
-        let mut cache = Cache::new(
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            Arc::new(Mutex::new(Clock::default())),
-        );
-
-        for bank_wrapper in bank_wrappers {
-            let token_address = Pubkey::new_unique();
-            let mut token_account = Account::default();
-            token_account.data.resize(128, 0);
-            cache
-                .mints
-                .insert(bank_wrapper.bank.mint, Account::default(), token_address);
-            cache
-                .tokens
-                .try_insert(token_address, token_account, bank_wrapper.bank.mint)
-                .unwrap();
-            cache.banks.insert(bank_wrapper.address, bank_wrapper.bank);
-
-            let oracle_account = create_empty_oracle_account();
-            cache
-                .oracles
-                .try_insert(bank_wrapper.bank.config.oracle_keys[0], oracle_account)
-                .unwrap();
-        }
-
-        cache
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-    use solana_sdk::pubkey::Pubkey;
-
-    #[test]
-    fn test_cache() {
-        let signer_pk = Pubkey::new_unique();
-        let marginfi_program_id = Pubkey::new_unique();
-        let marginfi_group_address = Pubkey::new_unique();
-        let cache = Cache::new(
-            signer_pk,
-            marginfi_program_id,
-            marginfi_group_address,
-            Arc::new(Mutex::new(Clock::default())),
-        );
-        assert_eq!(cache.signer_pk, signer_pk);
-        assert_eq!(cache.marginfi_program_id, marginfi_program_id);
-        assert_eq!(cache.marginfi_group_address, marginfi_group_address);
-    }
-
-    #[test]
-    fn test_add_lut() {
-        let signer_pk = Pubkey::new_unique();
-        let marginfi_program_id = Pubkey::new_unique();
-        let marginfi_group_address = Pubkey::new_unique();
-        let mut cache = Cache::new(
-            signer_pk,
-            marginfi_program_id,
-            marginfi_group_address,
-            Arc::new(Mutex::new(Clock::default())),
-        );
-        let lut = AddressLookupTableAccount {
-            key: Pubkey::new_unique(),
-            addresses: vec![Pubkey::new_unique()],
-        };
-
-        assert_eq!(cache.luts.lock().unwrap().len(), 0);
-        cache.add_lut(lut.clone());
-
-        let luts = cache.luts.lock().unwrap();
-        assert_eq!(luts.len(), 1);
-        assert_eq!(luts[0].key, lut.key);
-    }
 }
