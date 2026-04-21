@@ -67,10 +67,12 @@ impl HealthCheckServer {
                 let response = match request.url() {
                     "/healthz" => {
                         debug!("Received the '/healthz' request");
-                        self.state_to_http_response()
+                        // Liveness endpoint: return OK as long as the process is up.
+                        Response::from_string("OK").with_status_code(HTTP_STATUS_OK)
                     }
                     "/readyz" => {
                         debug!("Received the '/readyz' request");
+                        // Readiness endpoint: only ready when initialization is complete.
                         self.state_to_http_response()
                     }
                     _ => Response::from_string("Not Found").with_status_code(HTTP_STATUS_NOT_FOUND),
