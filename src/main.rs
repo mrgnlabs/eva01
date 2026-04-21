@@ -12,6 +12,12 @@ use std::{
 #[cfg(not(feature = "pretty_logs"))]
 use {env_logger::Target, log::Level, std::io::Write as _};
 
+#[cfg(all(feature = "network-mainnet", feature = "network-staging"))]
+compile_error!("Enable only one network feature: network-mainnet or network-staging");
+
+#[cfg(not(any(feature = "network-mainnet", feature = "network-staging")))]
+compile_error!("Missing network feature. Enable network-mainnet or network-staging");
+
 mod cache;
 mod cache_loader;
 mod cli;

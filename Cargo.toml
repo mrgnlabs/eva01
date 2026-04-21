@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+default = ["network-mainnet"]
 pretty_logs = []
+network-mainnet = ["marginfi/mainnet-beta", "marginfi_type_crate/mainnet-beta"]
+network-staging = ["marginfi/staging", "marginfi_type_crate/staging"]
 
 [dependencies]
 solana-account-decoder = "=2.1.20"
@@ -57,19 +60,15 @@ git = "https://github.com/mrgnlabs/marginfi-v2"
 # tag = "mrgn-0.1.8-rc3"
 rev = "4ce8a15e70b4108059b74e1aedbfde1e3e564ace"
 package = "marginfi-type-crate"
-#STAGE
-#default-features = false
-#features = ["staging", "client"]
+default-features = false
+features = ["client"]
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"
 # tag = "mrgn-0.1.8-rc3"
 rev = "4ce8a15e70b4108059b74e1aedbfde1e3e564ace"
-#PROD
-features = ["mainnet-beta", "client", "no-entrypoint"]
-#STAGE
-#default-features = false
-#features = ["staging", "client", "no-entrypoint"]
+default-features = false
+features = ["client", "no-entrypoint", "custom-heap"]
 
 [dependencies.jupiter-swap-api-client]
 git = "https://github.com/IliaZyrin/jupiter-swap-api-client"
