@@ -93,16 +93,15 @@ fn init_logging() {
         .format(|buf, record| {
             use serde_json::json;
 
-            let sev = match record.level() {
-                Level::Error => "ERROR",
-                Level::Warn => "WARNING",
-                Level::Info => "INFO",
-                Level::Debug => "DEBUG",
-                Level::Trace => "DEBUG",
+            let level = match record.level() {
+                Level::Error => "error",
+                Level::Warn => "warn",
+                Level::Info => "info",
+                Level::Debug | Level::Trace => "debug",
             };
 
             let line = json!({
-                "logging.googleapis.com/severity": sev,
+                "level": level,
                 "message": record.args().to_string(),
                 "target": record.target(),
             });
