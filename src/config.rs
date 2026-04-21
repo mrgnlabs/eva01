@@ -76,10 +76,10 @@ impl Eva01Config {
             .parse()
             .expect("Invalid MIN_PROFIT number");
 
-        let healthcheck_port: u16 = std::env::var("HEALTHCHECK_PORT")
+        let healthcheck_port: u16 = std::env::var("PORT")
             .unwrap_or("3000".to_string())
             .parse()
-            .expect("Invalid HEALTHCHECK_PORT number");
+            .expect("Invalid PORT number");
 
         let metrics_bind_addr =
             std::env::var("METRICS_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
@@ -248,7 +248,7 @@ mod tests {
         jail.set_env("MARGINFI_GROUP_KEY", &marginfi_group_key);
         jail.set_env("ADDRESS_LOOKUP_TABLES", &address_lookup_tables);
         jail.set_env("MIN_PROFIT", min_profit);
-        jail.set_env("HEALTHCHECK_PORT", healthcheck_port);
+        jail.set_env("PORT", healthcheck_port);
         jail.set_env("METRICS_BIND_ADDR", "127.0.0.1");
         jail.set_env("METRICS_PORT", metrics_port);
         jail.set_env("DEFAULT_TOKEN_MAX_THRESHOLD", default_token_max_threshold);
