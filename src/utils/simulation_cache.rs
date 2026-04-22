@@ -77,6 +77,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn simulate_instruction_batches<F>(
     rpc_client: &RpcClient,
     signer: &Keypair,
@@ -206,6 +207,7 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn simulate_instruction_batch<F>(
     rpc_client: &RpcClient,
     signer: &Keypair,
