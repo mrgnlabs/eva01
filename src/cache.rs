@@ -44,7 +44,6 @@ const NEW_ADDRESSES_MAX: usize = 20usize;
 
 pub struct Cache {
     pub signer_pk: Pubkey,
-    pub marginfi_program_id: Pubkey,
     pub marginfi_group_address: Pubkey,
     pub marginfi_accounts: MarginfiAccountsCache,
     pub banks: BanksCache,
@@ -74,16 +73,14 @@ pub struct DriftSpotMarket {
 impl Cache {
     pub fn new(
         signer_pk: Pubkey,
-        marginfi_program_id: Pubkey,
         marginfi_group_address: Pubkey,
         clock: Arc<Mutex<Clock>>,
     ) -> Self {
         let (global_fee_state_key, _) =
-            Pubkey::find_program_address(&[FEE_STATE_SEED.as_bytes()], &marginfi_program_id);
+            Pubkey::find_program_address(&[FEE_STATE_SEED.as_bytes()], &marginfi_type_crate::ID);
         let luts = Arc::new(Mutex::new(vec![]));
         Self {
             signer_pk,
-            marginfi_program_id,
             marginfi_group_address,
             marginfi_accounts: MarginfiAccountsCache::default(),
             banks: BanksCache::default(),

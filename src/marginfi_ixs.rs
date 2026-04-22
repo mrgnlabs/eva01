@@ -33,7 +33,6 @@ use crate::{
 };
 
 pub fn make_init_liquidation_record_ix(
-    marginfi_program_id: Pubkey,
     liquidatee_account: Pubkey,
     fee_payer: Pubkey,
 ) -> (Instruction, Pubkey) {
@@ -42,7 +41,7 @@ pub fn make_init_liquidation_record_ix(
             LIQUIDATION_RECORD_SEED.as_bytes(),
             liquidatee_account.as_ref(),
         ],
-        &marginfi_program_id,
+        &marginfi_type_crate::ID,
     );
     let mut accounts = marginfi::accounts::InitLiquidationRecord {
         marginfi_account: liquidatee_account,
@@ -55,7 +54,7 @@ pub fn make_init_liquidation_record_ix(
 
     (
         Instruction {
-            program_id: marginfi_program_id,
+            program_id: marginfi_type_crate::ID,
             accounts,
             data: marginfi::instruction::MarginfiAccountInitLiqRecord.data(),
         },
@@ -64,7 +63,6 @@ pub fn make_init_liquidation_record_ix(
 }
 
 pub fn make_start_liquidate_ix(
-    marginfi_program_id: Pubkey,
     liquidatee_account: Pubkey,
     liquidator_account: Pubkey,
     liquidation_record: Pubkey,
@@ -92,14 +90,13 @@ pub fn make_start_liquidate_ix(
     participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts,
         data: marginfi::instruction::StartLiquidation.data(),
     }
 }
 
 pub fn make_deposit_ix(
-    marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     signer: Pubkey,
@@ -122,7 +119,7 @@ pub fn make_deposit_ix(
     mark_signer(&mut accounts, signer);
 
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts,
         data: marginfi::instruction::LendingAccountDeposit {
             amount,
@@ -134,7 +131,6 @@ pub fn make_deposit_ix(
 
 #[allow(clippy::too_many_arguments)]
 pub fn make_repay_ix(
-    marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     signer: Pubkey,
@@ -160,7 +156,7 @@ pub fn make_repay_ix(
     participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts,
         data: marginfi::instruction::LendingAccountRepay {
             amount,
@@ -172,7 +168,6 @@ pub fn make_repay_ix(
 
 #[allow(clippy::too_many_arguments)]
 pub fn make_withdraw_ix(
-    marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     signer: Pubkey,
@@ -191,7 +186,7 @@ pub fn make_withdraw_ix(
         authority: signer,
         bank_liquidity_vault_authority: find_bank_liquidity_vault_authority(
             &bank.address,
-            &marginfi_program_id,
+            &marginfi_type_crate::ID,
         ),
         bank: bank.address,
         group: marginfi_group,
@@ -216,7 +211,7 @@ pub fn make_withdraw_ix(
     }
 
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts,
         data: marginfi::instruction::LendingAccountWithdraw {
             amount,
@@ -227,7 +222,6 @@ pub fn make_withdraw_ix(
 }
 
 pub fn make_end_liquidate_ix(
-    marginfi_program_id: Pubkey,
     liquidatee_account: Pubkey,
     liquidator_account: Pubkey,
     liquidation_record: Pubkey,
@@ -252,7 +246,7 @@ pub fn make_end_liquidate_ix(
     participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts,
         data: marginfi::instruction::EndLiquidation.data(),
     }
@@ -266,13 +260,12 @@ fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_prog
 }
 
 pub fn make_create_ix(
-    marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     marginfi_account: Pubkey,
     signer: Pubkey,
 ) -> Instruction {
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts: marginfi::accounts::MarginfiAccountInitialize {
             marginfi_group,
             marginfi_account,
@@ -296,14 +289,12 @@ fn mark_signer(
 
 pub fn initialize_marginfi_account(
     rpc_client: &RpcClient,
-    marginfi_program_id: Pubkey,
     marginfi_group: Pubkey,
     signer_keypair: &Keypair,
 ) -> anyhow::Result<Pubkey> {
     let marginfi_account_key = Keypair::new();
 
     let ix = make_create_ix(
-        marginfi_program_id,
         marginfi_group,
         marginfi_account_key.pubkey(),
         signer_keypair.pubkey(),
@@ -336,7 +327,6 @@ pub fn initialize_marginfi_account(
 
 #[allow(clippy::too_many_arguments)]
 pub fn make_kamino_withdraw_ix(
-    marginfi_program_id: Pubkey,
     group: Pubkey,
     marginfi_account: Pubkey,
     authority: Pubkey,
@@ -351,7 +341,7 @@ pub fn make_kamino_withdraw_ix(
 ) -> Instruction {
     let (reserve_farm_state, obligation_farm_user_state) =
         if kamino_reserve.reserve.farm_collateral == Pubkey::default() {
-            (Some(marginfi_program_id), Some(marginfi_program_id))
+            (Some(marginfi_type_crate::ID), Some(marginfi_type_crate::ID))
         } else {
             (
                 Some(kamino_reserve.reserve.farm_collateral),
@@ -374,7 +364,7 @@ pub fn make_kamino_withdraw_ix(
         destination_token_account: mint_wrapper.token,
         liquidity_vault_authority: find_bank_liquidity_vault_authority(
             &bank.address,
-            &marginfi_program_id,
+            &marginfi_type_crate::ID,
         ),
         liquidity_vault: bank.bank.liquidity_vault,
         integration_acc_2: kamino_obligation,
@@ -404,7 +394,7 @@ pub fn make_kamino_withdraw_ix(
     participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts,
         data: marginfi::instruction::KaminoWithdraw {
             amount,
@@ -416,7 +406,6 @@ pub fn make_kamino_withdraw_ix(
 
 #[allow(clippy::too_many_arguments)]
 pub fn make_drift_withdraw_ix(
-    marginfi_program_id: Pubkey,
     group: Pubkey,
     marginfi_account: Pubkey,
     authority: Pubkey,
@@ -433,7 +422,7 @@ pub fn make_drift_withdraw_ix(
     let drift_oracle = if bank.bank.mint
         == Pubkey::from_str_const("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
     {
-        Some(marginfi_program_id)
+        Some(marginfi_type_crate::ID)
     } else {
         Some(drift_spot_market.market.oracle)
     };
@@ -446,7 +435,7 @@ pub fn make_drift_withdraw_ix(
         drift_oracle,
         liquidity_vault_authority: find_bank_liquidity_vault_authority(
             &bank.address,
-            &marginfi_program_id,
+            &marginfi_type_crate::ID,
         ),
         liquidity_vault: bank.bank.liquidity_vault,
         destination_token_account: mint_wrapper.token,
@@ -457,22 +446,22 @@ pub fn make_drift_withdraw_ix(
         drift_spot_market_vault: drift_spot_market.market.vault,
         drift_reward_oracle: reward_spot_market
             .map(|m| m.market.oracle)
-            .or(Some(marginfi_program_id)),
+            .or(Some(marginfi_type_crate::ID)),
         drift_reward_spot_market: reward_spot_market
             .map(|m| m.address)
-            .or(Some(marginfi_program_id)),
+            .or(Some(marginfi_type_crate::ID)),
         drift_reward_mint: reward_spot_market
             .map(|m| m.market.mint)
-            .or(Some(marginfi_program_id)),
+            .or(Some(marginfi_type_crate::ID)),
         drift_reward_oracle_2: reward_spot_market_2
             .map(|m| m.market.oracle)
-            .or(Some(marginfi_program_id)),
+            .or(Some(marginfi_type_crate::ID)),
         drift_reward_spot_market_2: reward_spot_market_2
             .map(|m| m.address)
-            .or(Some(marginfi_program_id)),
+            .or(Some(marginfi_type_crate::ID)),
         drift_reward_mint_2: reward_spot_market_2
             .map(|m| m.market.mint)
-            .or(Some(marginfi_program_id)),
+            .or(Some(marginfi_type_crate::ID)),
         drift_signer: derive_drift_signer().0,
         mint: bank.bank.mint,
         drift_program: Drift::id(),
@@ -492,7 +481,7 @@ pub fn make_drift_withdraw_ix(
     participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts,
         data: marginfi::instruction::DriftWithdraw {
             amount,
@@ -504,7 +493,6 @@ pub fn make_drift_withdraw_ix(
 
 #[allow(clippy::too_many_arguments)]
 pub fn make_juplend_withdraw_ix(
-    marginfi_program_id: Pubkey,
     group: Pubkey,
     marginfi_account: Pubkey,
     authority: Pubkey,
@@ -524,7 +512,7 @@ pub fn make_juplend_withdraw_ix(
         destination_token_account: mint_wrapper.token,
         liquidity_vault_authority: find_bank_liquidity_vault_authority(
             &bank.address,
-            &marginfi_program_id,
+            &marginfi_type_crate::ID,
         ),
         mint: bank.bank.mint,
         f_token_mint: lending_state.f_token_mint,
@@ -557,7 +545,7 @@ pub fn make_juplend_withdraw_ix(
     participating_accounts.extend(accounts.iter().map(|a| a.pubkey));
 
     Instruction {
-        program_id: marginfi_program_id,
+        program_id: marginfi_type_crate::ID,
         accounts,
         data: marginfi::instruction::JuplendWithdraw {
             amount,

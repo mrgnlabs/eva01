@@ -105,10 +105,8 @@ impl CacheLoader {
     fn load_marginfi_accounts(&self, cache: &mut Cache) -> anyhow::Result<()> {
         info!("Loading marginfi accounts, this may take a few minutes, please be patient!");
         let start = std::time::Instant::now();
-        let marginfi_accounts_pubkeys = self.load_marginfi_account_addresses(
-            &cache.marginfi_program_id,
-            &cache.marginfi_group_address,
-        )?;
+        let marginfi_accounts_pubkeys =
+            self.load_marginfi_account_addresses(&cache.marginfi_group_address)?;
 
         info!("Loading marginfi accounts...");
         let marginfi_accounts = batch_get_multiple_accounts(
@@ -145,12 +143,11 @@ impl CacheLoader {
 
     fn load_marginfi_account_addresses(
         &self,
-        marginfi_program_id: &Pubkey,
         marginfi_group_address: &Pubkey,
     ) -> anyhow::Result<Vec<Pubkey>> {
         info!("Loading marginfi account addresses...");
         let marginfi_account_addresses = &self.rpc_client.get_program_accounts_with_config(
-            marginfi_program_id,
+            &marginfi_type_crate::ID,
             RpcProgramAccountsConfig {
                 account_config: RpcAccountInfoConfig {
                     encoding: Some(UiAccountEncoding::Base64),
@@ -195,11 +192,11 @@ impl CacheLoader {
             Arc::new(Keypair::new()),
         );
 
-        let program: Program<Arc<Keypair>> = anchor_client.program(cache.marginfi_program_id)?;
+        let program: Program<Arc<Keypair>> = anchor_client.program(marginfi_type_crate::ID)?;
 
         info!("Loading banks...");
         let bank_accounts = program.rpc().get_program_accounts_with_config(
-            &cache.marginfi_program_id,
+            &marginfi_type_crate::ID,
             RpcProgramAccountsConfig {
                 account_config: RpcAccountInfoConfig {
                     encoding: Some(UiAccountEncoding::Base64),

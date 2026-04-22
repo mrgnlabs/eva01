@@ -104,7 +104,6 @@ pub struct PreparedLiquidatableAccount {
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
     pub signer: Keypair,
-    program_id: Pubkey,
     group: Pubkey,
     preferred_mint_bank: Pubkey,
     rpc_client: RpcClient,
@@ -126,12 +125,8 @@ impl LiquidatorAccount {
         let rpc_client =
             RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
 
-        let accounts = marginfi_account_by_authority(
-            signer.pubkey(),
-            &rpc_client,
-            config.marginfi_program_id,
-            marginfi_group_id,
-        )?;
+        let accounts =
+            marginfi_account_by_authority(signer.pubkey(), &rpc_client, marginfi_group_id)?;
         info!(
             "Found {} MarginFi accounts for the provided signer: {:?}",
             accounts.len(),
@@ -140,12 +135,8 @@ impl LiquidatorAccount {
 
         let liquidator_address = if accounts.is_empty() {
             info!("No MarginFi account found for the provided signer. Creating it...");
-            let liquidator_marginfi_account = initialize_marginfi_account(
-                &rpc_client,
-                config.marginfi_program_id,
-                marginfi_group_id,
-                &signer,
-            )?;
+            let liquidator_marginfi_account =
+                initialize_marginfi_account(&rpc_client, marginfi_group_id, &signer)?;
 
             while cache
                 .marginfi_accounts
@@ -166,7 +157,6 @@ impl LiquidatorAccount {
         Ok(Self {
             liquidator_address,
             signer,
-            program_id: config.marginfi_program_id,
             group: marginfi_group_id,
             preferred_mint_bank,
             rpc_client,
@@ -184,7 +174,7 @@ impl LiquidatorAccount {
 
         let signer_pk = self.signer.pubkey();
         let (init_ix, liquidation_record) =
-            make_init_liquidation_record_ix(self.program_id, liquidatee_account.address, signer_pk);
+            make_init_liquidation_record_ix(liquidatee_account.address, signer_pk);
 
         let recent_blockhash = self
             .rpc_client
@@ -356,7 +346,6 @@ impl LiquidatorAccount {
         // TODO: think about posting an swb_crank ix here
 
         let start_ix = make_start_liquidate_ix(
-            self.program_id,
             liquidatee_account_address,
             signer_pk,
             liquidation_record,
@@ -421,7 +410,6 @@ impl LiquidatorAccount {
 
         let withdraw_ix = match asset_bank_wrapper.bank.config.asset_tag {
             ASSET_TAG_DEFAULT | ASSET_TAG_SOL => make_withdraw_ix(
-                self.program_id,
                 self.group,
                 liquidatee_account_address,
                 signer_pk,
@@ -447,7 +435,6 @@ impl LiquidatorAccount {
                 ixs.push(refresh_obligation_ix);
 
                 make_kamino_withdraw_ix(
-                    self.program_id,
                     self.group,
                     liquidatee_account_address,
                     signer_pk,
@@ -467,7 +454,6 @@ impl LiquidatorAccount {
                     .map_err(LiquidationError::from_anyhow)?;
 
                 make_drift_withdraw_ix(
-                    self.program_id,
                     self.group,
                     liquidatee_account_address,
                     signer_pk,
@@ -489,7 +475,6 @@ impl LiquidatorAccount {
                     .map_err(LiquidationError::from_anyhow)?;
 
                 make_juplend_withdraw_ix(
-                    self.program_id,
                     self.group,
                     liquidatee_account_address,
                     signer_pk,
@@ -518,7 +503,6 @@ impl LiquidatorAccount {
             .try_get_account(&liab_mint)
             .map_err(LiquidationError::from_anyhow)?;
         let repay_ix = make_repay_ix(
-            self.program_id,
             self.group,
             liquidatee_account_address,
             signer_pk,
@@ -531,7 +515,6 @@ impl LiquidatorAccount {
         ixs.push(repay_ix);
 
         let end_ix = make_end_liquidate_ix(
-            self.program_id,
             liquidatee_account_address,
             signer_pk,
             liquidation_record,
@@ -678,7 +661,6 @@ impl LiquidatorAccount {
 
         let mint_wrapper = self.cache.mints.try_get_account(&bank.bank.mint)?;
         let withdraw_ix = make_withdraw_ix(
-            self.program_id,
             self.group,
             marginfi_account,
             signer_pk,
@@ -732,7 +714,6 @@ impl LiquidatorAccount {
         let mint = bank.bank.mint;
         let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let deposit_ix = make_deposit_ix(
-            self.program_id,
             self.group,
             marginfi_account,
             signer_pk,

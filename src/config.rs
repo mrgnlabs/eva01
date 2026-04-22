@@ -16,7 +16,6 @@ pub struct Eva01Config {
     pub yellowstone_x_token: Option<String>,
     pub wallet_keypair: Vec<u8>,
     pub compute_unit_price_micro_lamports: u64,
-    pub marginfi_program_id: Pubkey,
     pub marginfi_group_key: Pubkey,
     pub address_lookup_tables: Vec<Pubkey>,
     pub min_profit: f64,
@@ -55,8 +54,6 @@ impl Eva01Config {
                 .expect("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS environment variable is not set")
                 .parse()
                 .expect("Invalid COMPUTE_UNIT_PRICE_MICRO_LAMPORTS number");
-
-        let marginfi_program_id = Pubkey::new_from_array(marginfi_type_crate::ID.to_bytes());
 
         let marginfi_group_key = Pubkey::from_str(
             &std::env::var("MARGINFI_GROUP_KEY")
@@ -135,7 +132,6 @@ impl Eva01Config {
             yellowstone_x_token,
             wallet_keypair,
             compute_unit_price_micro_lamports,
-            marginfi_program_id,
             marginfi_group_key,
             address_lookup_tables,
             min_profit,
@@ -159,7 +155,10 @@ impl Eva01Config {
 
 fn derive_rpc_url(yellowstone_endpoint: &str, yellowstone_x_token: Option<&str>) -> String {
     let endpoint = yellowstone_endpoint.trim_end_matches('/');
-    match yellowstone_x_token.map(str::trim).filter(|token| !token.is_empty()) {
+    match yellowstone_x_token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
         Some(token) => format!("{endpoint}/{token}"),
         None => endpoint.to_string(),
     }
@@ -314,21 +313,6 @@ mod tests {
             setup_rebalancer_env(&mut jail);
             let config = Eva01Config::new();
             assert!(config.is_ok());
-            Ok(())
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn test_eva01_config_new_uses_default_marginfi_program_id() {
-        Jail::expect_with(|mut jail| {
-            setup_general_env(&mut jail);
-            setup_rebalancer_env(&mut jail);
-            let config = Eva01Config::new().unwrap();
-            assert_eq!(
-                config.marginfi_program_id,
-                Pubkey::new_from_array(marginfi_type_crate::ID.to_bytes())
-            );
             Ok(())
         });
     }

@@ -133,7 +133,6 @@ pub struct GeyserService {
     endpoint: String,
     x_token: Option<String>,
     tracked_accounts: HashMap<Pubkey, AccountType>,
-    marginfi_program_id: Pubkey,
     marginfi_group_pk: Pubkey,
     geyser_tx: Sender<GeyserUpdate>,
     tokio_rt: Runtime,
@@ -160,7 +159,6 @@ impl GeyserService {
             endpoint: config.yellowstone_endpoint,
             x_token: config.yellowstone_x_token,
             tracked_accounts,
-            marginfi_program_id: config.marginfi_program_id,
             marginfi_group_pk: config.marginfi_group_key,
             geyser_tx,
             tokio_rt,
@@ -178,10 +176,7 @@ impl GeyserService {
 
         while !self.stop.load(Ordering::Relaxed) {
             info!("Connecting to Geyser...");
-            let sub_req = Self::build_geyser_subscribe_request(
-                &tracked_accounts_vec,
-                &self.marginfi_program_id,
-            );
+            let sub_req = Self::build_geyser_subscribe_request(&tracked_accounts_vec);
             let mut client = self.tokio_rt.block_on(
                 GeyserGrpcClient::build_from_shared(self.endpoint.clone())?
                     .x_token(self.x_token.clone())?
@@ -215,7 +210,7 @@ impl GeyserService {
                                 continue
                             );
 
-                            if account.owner == self.marginfi_program_id
+                            if account.owner == marginfi_type_crate::ID
                                 && account_update.data.len() == MARGIN_ACCOUNT_SIZE
                             {
                                 let marginfi_account = ward!(
@@ -276,10 +271,7 @@ impl GeyserService {
     }
 
     /// Builds a geyser subscription request payload
-    fn build_geyser_subscribe_request(
-        tracked_accounts: &[Pubkey],
-        marginfi_program_id: &Pubkey,
-    ) -> SubscribeRequest {
+    fn build_geyser_subscribe_request(tracked_accounts: &[Pubkey]) -> SubscribeRequest {
         let mut request = SubscribeRequest {
             ..Default::default()
         };
@@ -290,7 +282,7 @@ impl GeyserService {
         };
 
         let marginfi_account_subscription = SubscribeRequestFilterAccounts {
-            owner: vec![marginfi_program_id.to_string()],
+            owner: vec![marginfi_type_crate::ID.to_string()],
             ..Default::default()
         };
 
