@@ -11,6 +11,7 @@ use crate::{
     rebalancer::Rebalancer,
     utils::{
         format_error_chain,
+        simulation_cache::is_transient_rpc_anyhow_error,
         swb_cranker::{SwbCranker, SWB_STALE_HANDLED_ERROR, SWB_STALE_PRICE_ERROR_CODE_NUMBER},
     },
     wrappers::{
@@ -45,6 +46,7 @@ use std::{
 use std::{sync::atomic::Ordering, thread};
 
 const DECLARED_VALUE_RANGE: f64 = 0.2;
+const ACCOUNT_SCAN_BATCH_SIZE: usize = 4_096;
 
 pub struct Liquidator {
     liquidator_account: Arc<LiquidatorAccount>,
@@ -108,9 +110,9 @@ impl Liquidator {
     }
 
     pub fn start(&mut self) -> Result<()> {
-        if let Err(err) = self.simulate_oracles_and_integrations() {
+        if let Err(err) = self.simulate_oracles_and_integrations(false) {
             warn!(
-                "Failed pre-rebalancing simulation round: {}",
+                "Failed startup pre-rebalancing simulation round: {}",
                 format_error_chain(&err)
             );
         }
@@ -127,9 +129,9 @@ impl Liquidator {
             info!("Running the Liquidation process...");
             self.run_liquidation.store(false, Ordering::Relaxed);
 
-            if let Err(err) = self.simulate_oracles_and_integrations() {
+            if let Err(err) = self.simulate_oracles_and_integrations(true) {
                 error!(
-                    "Failed pre-liquidation simulation round: {}",
+                    "Failed pre-liquidation simulation: {}",
                     format_error_chain(&err)
                 );
                 continue;
@@ -137,7 +139,10 @@ impl Liquidator {
 
             let mut missing_tokens: HashMap<Pubkey, I80F48> = HashMap::new();
             let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
-            if let Ok(mut accounts) = self.evaluate_all_accounts(&mut stale_swb_oracles) {
+            let evaluated_accounts = self.evaluate_all_accounts(&mut stale_swb_oracles);
+            let mut cranked_stale_oracles = false;
+
+            if let Ok(mut accounts) = evaluated_accounts {
                 // Accounts are sorted from the highest profit to the lowest
                 accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                 accounts.reverse();
@@ -202,6 +207,7 @@ impl Liquidator {
                 }
                 if !stale_swb_oracles.is_empty() {
                     info!("Cranking Swb Oracles {:#?}", stale_swb_oracles);
+                    cranked_stale_oracles = true;
                     if let Err(err) = self
                         .swb_cranker
                         .crank_oracles(stale_swb_oracles.into_iter().collect())
@@ -210,16 +216,26 @@ impl Liquidator {
                     }
                     info!("Completed cranking Swb Oracles.");
                 };
+            } else if let Err(err) = evaluated_accounts {
+                error!("Failed to evaluate accounts in liquidation: {}", err);
+                ERROR_COUNT.inc();
             }
 
             info!("The Liquidation process is complete.");
 
-            if let Err(err) = self.simulate_oracles_and_integrations() {
-                warn!(
-                    "Failed pre-rebalancing simulation round: {}",
-                    format_error_chain(&err)
+            if cranked_stale_oracles {
+                if let Err(err) = self.simulate_oracles_and_integrations(false) {
+                    warn!(
+                        "Failed pre-rebalancing simulation: {}",
+                        format_error_chain(&err)
+                    );
+                }
+            } else {
+                debug!(
+                    "Skipping pre-rebalancing oracle simulation because no stale oracles were cranked"
                 );
             }
+
             if let Err(error) = self.rebalancer.run(missing_tokens) {
                 error!("Rebalancing failed: {:?}", error);
                 ERROR_COUNT.inc();
@@ -230,17 +246,26 @@ impl Liquidator {
         Ok(())
     }
 
-    fn simulate_oracles_and_integrations(&self) -> Result<()> {
-        self.liquidator_account
-            .simulate_refresh_integrations()
-            .context("simulate_refresh_integrations failed")?;
+    fn simulate_oracles_and_integrations(&self, refresh_integrations: bool) -> Result<()> {
+        if refresh_integrations {
+            if let Err(err) = self.liquidator_account.simulate_refresh_integrations() {
+                if is_transient_rpc_anyhow_error(&err) {
+                    warn!(
+                        "Transient RPC failure while simulating integrations refresh; proceeding with cached integration state: {}",
+                        format_error_chain(&err)
+                    );
+                } else {
+                    return Err(err).context("simulate_refresh_integrations failed");
+                }
+            }
+        }
         let swb_oracle_count = self.cache.banks.get_swb_oracles().len();
         self.swb_cranker
             .simulate_oracles(self.cache.as_ref())
             .with_context(|| {
                 format!(
-                    "simulate_oracles failed (switchboard feed count: {})",
-                    swb_oracle_count
+                    "simulate_oracles failed (switchboard feed count: {}, refresh_integrations: {})",
+                    swb_oracle_count, refresh_integrations
                 )
             })
     }
@@ -256,42 +281,40 @@ impl Liquidator {
         let clock = clock_manager::get_clock(&self.cache.clock)?;
 
         let evaluation_result = {
-            let mut index: usize = 0;
+            let mut next_index: usize = 0;
             let mut result: Vec<PreparedLiquidatableAccount> = vec![];
-            while index < self.cache.marginfi_accounts.len()? {
-                total_scanned += 1;
-                match self.cache.marginfi_accounts.try_get_account_by_index(index) {
-                    Ok(account) => {
-                        if account.address == self.liquidator_account.liquidator_address {
-                            index += 1;
-                            continue;
-                        }
-                        match self.process_account(&account, clock.clone(), stale_swb_oracles) {
-                            Ok(acc_opt) => {
-                                if let Some(acc) = acc_opt {
-                                    result.push(acc);
-                                }
-                            }
-                            Err(err) => {
-                                if !err.to_string().contains(SWB_STALE_HANDLED_ERROR) {
-                                    debug!(
-                                        "Failed to process account {:?}: {:?}",
-                                        account.address, err
-                                    );
-                                    ERROR_COUNT.inc();
-                                }
-                            }
-                        }
+            loop {
+                let accounts_batch = self
+                    .cache
+                    .marginfi_accounts
+                    .try_get_account_batch(next_index, ACCOUNT_SCAN_BATCH_SIZE)?;
+                if accounts_batch.is_empty() {
+                    break;
+                }
+                next_index += accounts_batch.len();
+
+                for account in accounts_batch {
+                    total_scanned += 1;
+                    if account.address == self.liquidator_account.liquidator_address {
+                        continue;
                     }
-                    Err(err) => {
-                        error!(
-                            "Failed to get Marginfi account by index {}: {:?}",
-                            index, err
-                        );
-                        ERROR_COUNT.inc();
+                    match self.process_account(&account, clock.clone(), stale_swb_oracles) {
+                        Ok(acc_opt) => {
+                            if let Some(acc) = acc_opt {
+                                result.push(acc);
+                            }
+                        }
+                        Err(err) => {
+                            if !err.to_string().contains(SWB_STALE_HANDLED_ERROR) {
+                                debug!(
+                                    "Failed to process account {:?}: {:?}",
+                                    account.address, err
+                                );
+                                ERROR_COUNT.inc();
+                            }
+                        }
                     }
                 }
-                index += 1;
             }
 
             Ok(result)

@@ -50,9 +50,6 @@ use drift_idl::*;
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
-    //FIX MINTING TO WSOL !!!!
-    //FIX MINTING TO WSOL !!!!
-    //FIX MINTING TO WSOL !!!!
 
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("Panic occurred: {:#?}", panic_info);

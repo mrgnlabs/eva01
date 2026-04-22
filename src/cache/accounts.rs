@@ -34,33 +34,34 @@ impl MarginfiAccountsCache {
             .cloned()
     }
 
-    pub fn try_get_account_by_index(&self, index: usize) -> Result<MarginfiAccountWrapper> {
-        self.accounts
-            .read()
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to lock the Marginfi accounts map for for search by index: {}",
-                    e
-                )
-            })?
-            .get_index(index)
-            .map(|(_, account)| account.clone())
-            .ok_or(anyhow!(
-                "Failed to find the Marginfi account with index: {}",
-                index
-            ))
-    }
+    pub fn try_get_account_batch(
+        &self,
+        start_index: usize,
+        batch_size: usize,
+    ) -> Result<Vec<MarginfiAccountWrapper>> {
+        if batch_size == 0 {
+            return Ok(Vec::new());
+        }
 
-    pub fn len(&self) -> Result<usize> {
-        Ok(self
-            .accounts
-            .read()
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to lock the marginfi accounts  map for getting it's size: {}",
-                    e
-                )
-            })?
-            .len())
+        let accounts = self.accounts.read().map_err(|e| {
+            anyhow!(
+                "Failed to lock the marginfi accounts map for batch snapshot: {}",
+                e
+            )
+        })?;
+
+        if start_index >= accounts.len() {
+            return Ok(Vec::new());
+        }
+
+        let end_index = (start_index + batch_size).min(accounts.len());
+        let mut out = Vec::with_capacity(end_index - start_index);
+        for index in start_index..end_index {
+            if let Some((_, account)) = accounts.get_index(index) {
+                out.push(account.clone());
+            }
+        }
+
+        Ok(out)
     }
 }

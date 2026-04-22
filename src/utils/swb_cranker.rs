@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use base64::{prelude::BASE64_STANDARD, Engine};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use log::warn;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -23,6 +24,11 @@ use solana_sdk::{
     signer::Signer,
     transaction::VersionedTransaction,
 };
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use switchboard_on_demand_client::{
     CrossbarClient, FetchUpdateManyParams, Gateway, PullFeed, QueueAccountData, SbContext,
 };
@@ -39,6 +45,9 @@ const JITO_SIMULATE_BUNDLE_METHOD: &str = "simulateBundle";
 const RAW_SIMULATE_BUNDLE_RESPONSE_LOG_LIMIT: usize = 8_000;
 const SIMULATION_LOG_LINE_LIMIT: usize = 30;
 const SIMULATION_LOG_CHAR_LIMIT: usize = 8_000;
+const SIM_BUILD_TX_CONCURRENCY: usize = 4;
+const SIM_TX_FALLBACK_CONCURRENCY: usize = 16;
+const ORACLE_QUARANTINE_DURATION: Duration = Duration::from_secs(60 * 60);
 
 struct SimulateBundleTx {
     encoded_tx: String,
@@ -69,6 +78,7 @@ pub struct SwbCranker {
     crossbar: Option<CrossbarClient>,
     payer: Keypair,
     all_swb_oracles: Vec<Pubkey>,
+    oracle_quarantine: Mutex<HashMap<Pubkey, Instant>>,
 }
 
 impl SwbCranker {
@@ -78,7 +88,7 @@ impl SwbCranker {
 
         let tokio_rt = Builder::new_multi_thread()
             .thread_name("SwbCranker")
-            .worker_threads(2)
+            .worker_threads(4)
             .enable_all()
             .build()?;
 
@@ -115,10 +125,16 @@ impl SwbCranker {
             crossbar,
             payer,
             all_swb_oracles,
+            oracle_quarantine: Mutex::new(HashMap::new()),
         })
     }
 
     pub fn crank_oracles(&self, swb_oracles: Vec<Pubkey>) -> Result<()> {
+        let swb_oracles = self.filter_quarantined_oracles(&swb_oracles, "crank");
+        if swb_oracles.is_empty() {
+            return Ok(());
+        }
+
         // Run simulations to get more details on potential failures, if crossbar is available.
         if let Some(crossbar) = self.crossbar.as_ref() {
             let result = self
@@ -129,8 +145,47 @@ impl SwbCranker {
             }
         }
 
-        for chunk in swb_oracles.chunks(CHUNK_SIZE) {
-            self.crank_oracles_internal(chunk.to_vec())?;
+        for (chunk_index, chunk) in swb_oracles.chunks(CHUNK_SIZE).enumerate() {
+            let chunk_oracles = chunk.to_vec();
+            if let Err(err) = self.crank_oracles_internal(chunk_oracles.clone()) {
+                warn!(
+                    "SWB crank failed for chunk {} ({} feeds): {}. Retrying feeds individually.",
+                    chunk_index,
+                    chunk_oracles.len(),
+                    err
+                );
+
+                let mut recovered_count = 0usize;
+                let mut failed_individual: Vec<(Pubkey, anyhow::Error)> = Vec::new();
+                for oracle in chunk_oracles {
+                    match self.crank_oracles_internal(vec![oracle]) {
+                        Ok(()) => recovered_count += 1,
+                        Err(single_err) => failed_individual.push((oracle, single_err)),
+                    }
+                }
+
+                if failed_individual.is_empty() {
+                    continue;
+                }
+
+                if recovered_count > 0 {
+                    let failed_oracles: Vec<Pubkey> = failed_individual
+                        .iter()
+                        .map(|(oracle, _)| *oracle)
+                        .collect();
+                    self.quarantine_oracles(
+                        &failed_oracles,
+                        "crank",
+                        "individual crank failures after partial recovery",
+                    );
+                } else {
+                    warn!(
+                        "SWB crank chunk {} failed for all feeds even individually ({} feeds). Skipping this chunk without quarantine.",
+                        chunk_index,
+                        failed_individual.len()
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -140,30 +195,60 @@ impl SwbCranker {
             return Ok(());
         }
 
-        let bundle_txs: Vec<SimulateBundleTx> = self
-            .all_swb_oracles
+        let active_oracles = self.filter_quarantined_oracles(&self.all_swb_oracles, "simulation");
+        if active_oracles.is_empty() {
+            warn!("All SWB oracles are currently quarantined; skipping simulation.");
+            return Ok(());
+        }
+
+        let chunked_oracles: Vec<Vec<Pubkey>> = active_oracles
             .chunks(CHUNK_SIZE)
-            .enumerate()
-            .map(|(chunk_index, chunk)| {
-                let chunk_oracles = chunk.to_vec();
-                let tx = self
-                    .build_crank_transaction(chunk_oracles.clone())
-                    .with_context(|| {
-                        format!(
-                            "failed to build SWB simulation transaction for chunk {} ({} feeds): {:?}",
-                            chunk_index,
-                            chunk_oracles.len(),
-                            chunk_oracles
-                        )
-                    })?;
-                let encoded_tx = BASE64_STANDARD.encode(bincode::serialize(&tx)?);
-                Ok(SimulateBundleTx {
-                    encoded_tx,
-                    oracle_addresses: chunk_oracles,
-                    transaction: tx,
+            .map(|chunk| chunk.to_vec())
+            .collect();
+
+        let mut build_outcomes = self.tokio_rt.block_on(async {
+            stream::iter(chunked_oracles.into_iter().enumerate())
+                .map(|(chunk_index, chunk_oracles)| async move {
+                    let tx_result = self
+                        .build_crank_transaction_async(chunk_oracles.clone())
+                        .await;
+                    (chunk_index, chunk_oracles, tx_result)
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
+                .buffer_unordered(SIM_BUILD_TX_CONCURRENCY)
+                .collect::<Vec<_>>()
+                .await
+        });
+        build_outcomes.sort_by_key(|(chunk_index, _, _)| *chunk_index);
+
+        let mut bundle_txs: Vec<SimulateBundleTx> = Vec::new();
+        for (chunk_index, chunk_oracles, tx_result) in build_outcomes {
+            match tx_result {
+                Ok(tx) => {
+                    let encoded_tx =
+                        BASE64_STANDARD.encode(bincode::serialize(&tx).with_context(|| {
+                            format!(
+                                "failed to serialize SWB simulation transaction for chunk {}",
+                                chunk_index
+                            )
+                        })?);
+                    bundle_txs.push(SimulateBundleTx {
+                        encoded_tx,
+                        oracle_addresses: chunk_oracles,
+                        transaction: tx,
+                    });
+                }
+                Err(err) => {
+                    let recovered_txs =
+                        self.recover_failed_simulation_chunk(chunk_index, chunk_oracles, &err)?;
+                    bundle_txs.extend(recovered_txs);
+                }
+            }
+        }
+
+        if bundle_txs.is_empty() {
+            warn!("No buildable SWB simulation transactions for this round; skipping oracle simulation.");
+            return Ok(());
+        }
 
         let (simulation_result, raw_response) = self.simulate_bundle(&bundle_txs)?;
 
@@ -225,17 +310,19 @@ impl SwbCranker {
             }
         }
 
-        // Keep bundle simulation as the authoritative bundle-level check, but capture account
-        // states via simulateTransaction because some RPCs omit bundle pre/post account payloads.
+        // Keep bundle simulation as the authoritative bundle-level check and
+        // capture post-execution accounts via simulateTransaction.
         let tx_accounts = self
-            .simulate_transactions_for_accounts(&bundle_txs)
+            .tokio_rt
+            .block_on(self.simulate_transactions_for_accounts(&bundle_txs))
             .context("failed to capture simulated accounts via simulateTransaction")?;
+        let account_source = "simulateTransaction";
 
         for (bundle_tx, post_execution_accounts) in bundle_txs.iter().zip(tx_accounts.iter()) {
             decode_and_apply_simulated_accounts(
                 &bundle_tx.oracle_addresses,
                 post_execution_accounts,
-                "simulateTransaction",
+                account_source,
                 |oracle_address, account| cache.oracles.try_update(oracle_address, account),
             )?;
         }
@@ -261,7 +348,15 @@ impl SwbCranker {
     }
 
     fn build_crank_transaction(&self, swb_oracles: Vec<Pubkey>) -> Result<VersionedTransaction> {
-        let (crank_ix, crank_lut) = self.tokio_rt.block_on(PullFeed::fetch_update_consensus_ix(
+        self.tokio_rt
+            .block_on(self.build_crank_transaction_async(swb_oracles))
+    }
+
+    async fn build_crank_transaction_async(
+        &self,
+        swb_oracles: Vec<Pubkey>,
+    ) -> Result<VersionedTransaction> {
+        let (crank_ix, crank_lut) = PullFeed::fetch_update_consensus_ix(
             SbContext::new(),
             &self.non_blocking_rpc_client,
             FetchUpdateManyParams {
@@ -272,11 +367,13 @@ impl SwbCranker {
                 num_signatures: Some(1),
                 ..Default::default()
             },
-        ))?;
+        )
+        .await?;
 
         let blockhash = self
-            .rpc_client
-            .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?
+            .non_blocking_rpc_client
+            .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+            .await?
             .0;
 
         let tx = VersionedTransaction::try_new(
@@ -292,26 +389,147 @@ impl SwbCranker {
         Ok(tx)
     }
 
+    fn filter_quarantined_oracles(&self, oracles: &[Pubkey], context: &str) -> Vec<Pubkey> {
+        let now = Instant::now();
+        let mut quarantine_guard = match self.oracle_quarantine.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!(
+                    "SWB oracle quarantine lock poisoned while filtering for {}. Continuing with recovered state.",
+                    context
+                );
+                poisoned.into_inner()
+            }
+        };
+
+        quarantine_guard.retain(|_, until| *until > now);
+
+        let mut active_oracles: Vec<Pubkey> = Vec::with_capacity(oracles.len());
+        let mut skipped_count = 0usize;
+        for oracle in oracles {
+            if quarantine_guard.contains_key(oracle) {
+                skipped_count += 1;
+            } else {
+                active_oracles.push(*oracle);
+            }
+        }
+
+        if skipped_count > 0 {
+            warn!(
+                "Skipping {} quarantined SWB feeds for {} (cooldown {}s).",
+                skipped_count,
+                context,
+                ORACLE_QUARANTINE_DURATION.as_secs()
+            );
+        }
+
+        active_oracles
+    }
+
+    fn quarantine_oracles(&self, oracles: &[Pubkey], context: &str, reason: &str) {
+        if oracles.is_empty() {
+            return;
+        }
+        let until = Instant::now() + ORACLE_QUARANTINE_DURATION;
+
+        let mut quarantine_guard = match self.oracle_quarantine.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!(
+                    "SWB oracle quarantine lock poisoned while quarantining for {}. Continuing with recovered state.",
+                    context
+                );
+                poisoned.into_inner()
+            }
+        };
+
+        for oracle in oracles {
+            quarantine_guard.insert(*oracle, until);
+        }
+
+        warn!(
+            "Quarantined {} SWB feeds for {} ({}s cooldown): {:?}",
+            oracles.len(),
+            context,
+            ORACLE_QUARANTINE_DURATION.as_secs(),
+            oracles
+        );
+        warn!("SWB quarantine reason for {}: {}", context, reason);
+    }
+
+    fn recover_failed_simulation_chunk(
+        &self,
+        chunk_index: usize,
+        chunk_oracles: Vec<Pubkey>,
+        batch_error: &anyhow::Error,
+    ) -> Result<Vec<SimulateBundleTx>> {
+        warn!(
+            "SWB simulation build failed for chunk {} ({} feeds). Trying individual feeds. Batch error: {}",
+            chunk_index,
+            chunk_oracles.len(),
+            batch_error
+        );
+
+        let mut recovered_txs: Vec<SimulateBundleTx> = Vec::new();
+        let mut failed_oracles: Vec<(Pubkey, String)> = Vec::new();
+
+        for oracle in chunk_oracles {
+            match self.build_crank_transaction(vec![oracle]) {
+                Ok(tx) => {
+                    let encoded_tx =
+                        BASE64_STANDARD.encode(bincode::serialize(&tx).with_context(|| {
+                            format!("failed to serialize recovered tx for {}", oracle)
+                        })?);
+                    recovered_txs.push(SimulateBundleTx {
+                        encoded_tx,
+                        oracle_addresses: vec![oracle],
+                        transaction: tx,
+                    });
+                }
+                Err(err) => {
+                    failed_oracles.push((oracle, err.to_string()));
+                }
+            }
+        }
+
+        if failed_oracles.is_empty() {
+            return Ok(recovered_txs);
+        }
+
+        if recovered_txs.is_empty() {
+            warn!(
+                "SWB simulation chunk {} could not recover any feed individually ({} feeds). Skipping this chunk this round without quarantine.",
+                chunk_index,
+                failed_oracles.len()
+            );
+            return Ok(Vec::new());
+        }
+
+        let failed_feed_keys: Vec<Pubkey> =
+            failed_oracles.iter().map(|(oracle, _)| *oracle).collect();
+        let first_error = failed_oracles
+            .first()
+            .map(|(_, err)| err.as_str())
+            .unwrap_or("unknown");
+        self.quarantine_oracles(
+            &failed_feed_keys,
+            "simulation",
+            &format!(
+                "chunk {} partial recovery: {} failed feeds; first error: {}",
+                chunk_index,
+                failed_feed_keys.len(),
+                first_error
+            ),
+        );
+
+        Ok(recovered_txs)
+    }
+
     fn simulate_bundle(
         &self,
         bundle_txs: &[SimulateBundleTx],
     ) -> Result<(RpcSimulateBundleResult, Value)> {
         let encoded_txs: Vec<String> = bundle_txs.iter().map(|tx| tx.encoded_tx.clone()).collect();
-        let pre_execution_accounts_configs: Vec<Value> =
-            (0..bundle_txs.len()).map(|_| Value::Null).collect();
-        let post_execution_accounts_configs: Vec<Value> = bundle_txs
-            .iter()
-            .map(|tx| {
-                json!({
-                    "encoding": "base64",
-                    "addresses": tx
-                        .oracle_addresses
-                        .iter()
-                        .map(|pk| pk.to_string())
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
 
         let request = RpcRequest::Custom {
             method: JITO_SIMULATE_BUNDLE_METHOD,
@@ -321,8 +539,6 @@ impl SwbCranker {
             {
                 "encodedTransactions": encoded_txs,
                 "config": {
-                    "preExecutionAccountsConfigs": pre_execution_accounts_configs,
-                    "postExecutionAccountsConfigs": post_execution_accounts_configs,
                     "transactionEncoding": "base64",
                     "skipSigVerify": true,
                     "replaceRecentBlockhash": true
@@ -355,14 +571,12 @@ impl SwbCranker {
         Ok((parsed, raw_result))
     }
 
-    fn simulate_transactions_for_accounts(
+    async fn simulate_transactions_for_accounts(
         &self,
         bundle_txs: &[SimulateBundleTx],
     ) -> Result<Vec<Vec<Option<UiAccount>>>> {
-        bundle_txs
-            .iter()
-            .enumerate()
-            .map(|(chunk_index, bundle_tx)| {
+        let mut indexed = stream::iter(bundle_txs.iter().enumerate())
+            .map(|(chunk_index, bundle_tx)| async move {
                 let accounts_config = RpcSimulateTransactionAccountsConfig {
                     encoding: Some(UiAccountEncoding::Base64),
                     addresses: bundle_tx
@@ -381,8 +595,9 @@ impl SwbCranker {
                 };
 
                 let response = self
-                    .rpc_client
+                    .non_blocking_rpc_client
                     .simulate_transaction_with_config(&bundle_tx.transaction, config)
+                    .await
                     .with_context(|| {
                         format!(
                             "simulateTransaction RPC failed for chunk {} ({} feeds): {:?}",
@@ -429,9 +644,14 @@ impl SwbCranker {
                     ));
                 }
 
-                Ok(accounts)
+                Ok((chunk_index, accounts))
             })
-            .collect()
+            .buffer_unordered(SIM_TX_FALLBACK_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        indexed.sort_by_key(|(chunk_index, _)| *chunk_index);
+        Ok(indexed.into_iter().map(|(_, accounts)| accounts).collect())
     }
 }
 
