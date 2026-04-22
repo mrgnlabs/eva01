@@ -16,7 +16,6 @@ pub struct Eva01Config {
     pub yellowstone_x_token: Option<String>,
     pub wallet_keypair: Vec<u8>,
     pub compute_unit_price_micro_lamports: u64,
-    pub marginfi_program_id: Pubkey,
     pub marginfi_group_key: Pubkey,
     pub address_lookup_tables: Vec<Pubkey>,
     pub min_profit: f64,
@@ -39,11 +38,11 @@ pub struct Eva01Config {
 impl Eva01Config {
     pub fn new() -> anyhow::Result<Self> {
         //General configuration
-        let rpc_url = std::env::var("RPC_URL").expect("RPC_URL environment variable is not set");
-
         let yellowstone_endpoint = std::env::var("YELLOWSTONE_ENDPOINT")
             .expect("YELLOWSTONE_ENDPOINT environment variable is not set");
         let yellowstone_x_token = std::env::var("YELLOWSTONE_X_TOKEN").ok();
+        let derived_rpc_url = derive_rpc_url(&yellowstone_endpoint, yellowstone_x_token.as_deref());
+        let rpc_url = std::env::var("RPC_URL").unwrap_or(derived_rpc_url);
 
         let wallet_keypair_env = std::env::var("WALLET_KEYPAIR")
             .expect("WALLET_KEYPAIR environment variable is not set");
@@ -55,12 +54,6 @@ impl Eva01Config {
                 .expect("COMPUTE_UNIT_PRICE_MICRO_LAMPORTS environment variable is not set")
                 .parse()
                 .expect("Invalid COMPUTE_UNIT_PRICE_MICRO_LAMPORTS number");
-
-        let marginfi_program_id = Pubkey::from_str(
-            &std::env::var("MARGINFI_PROGRAM_ID")
-                .expect("MARGINFI_PROGRAM_ID environment variable is not set"),
-        )
-        .expect("Invalid MARGINFI_PROGRAM_ID Pubkey");
 
         let marginfi_group_key = Pubkey::from_str(
             &std::env::var("MARGINFI_GROUP_KEY")
@@ -76,10 +69,10 @@ impl Eva01Config {
             .parse()
             .expect("Invalid MIN_PROFIT number");
 
-        let healthcheck_port: u16 = std::env::var("HEALTHCHECK_PORT")
+        let healthcheck_port: u16 = std::env::var("PORT")
             .unwrap_or("3000".to_string())
             .parse()
-            .expect("Invalid HEALTHCHECK_PORT number");
+            .expect("Invalid PORT number");
 
         let metrics_bind_addr =
             std::env::var("METRICS_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
@@ -139,7 +132,6 @@ impl Eva01Config {
             yellowstone_x_token,
             wallet_keypair,
             compute_unit_price_micro_lamports,
-            marginfi_program_id,
             marginfi_group_key,
             address_lookup_tables,
             min_profit,
@@ -158,6 +150,17 @@ impl Eva01Config {
             titan_api_key,
             jupiter_api_key,
         })
+    }
+}
+
+fn derive_rpc_url(yellowstone_endpoint: &str, yellowstone_x_token: Option<&str>) -> String {
+    let endpoint = yellowstone_endpoint.trim_end_matches('/');
+    match yellowstone_x_token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        Some(token) => format!("{endpoint}/{token}"),
+        None => endpoint.to_string(),
     }
 }
 
@@ -223,11 +226,9 @@ mod tests {
     fn setup_general_env(jail: &mut Jail) {
         let keypair = serde_json::to_string(&Keypair::new().to_bytes().to_vec()).unwrap();
 
-        let rpc_url = "http://dummy:1234";
-        let yellowstone_endpoint = "http://dummy:1234";
+        let yellowstone_endpoint = "https://dummy";
         let yellowstone_x_token = "token";
         let compute_unit_price_micro_lamports = "1000";
-        let marginfi_program_id = Pubkey::new_unique().to_string();
         let marginfi_group_key = Pubkey::new_unique().to_string();
         let address_lookup_tables = Pubkey::new_unique().to_string();
         let min_profit = "0.01";
@@ -236,7 +237,6 @@ mod tests {
         let metrics_port = "9898";
         let healthcheck_port = "3000";
 
-        jail.set_env("RPC_URL", rpc_url);
         jail.set_env("YELLOWSTONE_ENDPOINT", yellowstone_endpoint);
         jail.set_env("YELLOWSTONE_X_TOKEN", yellowstone_x_token);
         jail.set_env("WALLET_KEYPAIR", &keypair);
@@ -244,11 +244,10 @@ mod tests {
             "COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
             compute_unit_price_micro_lamports,
         );
-        jail.set_env("MARGINFI_PROGRAM_ID", &marginfi_program_id);
         jail.set_env("MARGINFI_GROUP_KEY", &marginfi_group_key);
         jail.set_env("ADDRESS_LOOKUP_TABLES", &address_lookup_tables);
         jail.set_env("MIN_PROFIT", min_profit);
-        jail.set_env("HEALTHCHECK_PORT", healthcheck_port);
+        jail.set_env("PORT", healthcheck_port);
         jail.set_env("METRICS_BIND_ADDR", "127.0.0.1");
         jail.set_env("METRICS_PORT", metrics_port);
         jail.set_env("DEFAULT_TOKEN_MAX_THRESHOLD", default_token_max_threshold);
@@ -320,24 +319,36 @@ mod tests {
 
     #[test]
     #[serial]
-    #[should_panic(expected = "RPC_URL environment variable is not set")]
-    fn test_eva01_config_new_missing_env() {
-        Jail::expect_with(|_jail| {
-            // RPC_URL is not set in the jail, so it should panic
-            let _result = Eva01Config::new();
+    fn test_eva01_config_new_derives_rpc_url_from_yellowstone() {
+        Jail::expect_with(|mut jail| {
+            setup_general_env(&mut jail);
+            setup_rebalancer_env(&mut jail);
+            let config = Eva01Config::new().unwrap();
+            assert_eq!(config.rpc_url, "https://dummy/token");
             Ok(())
         });
     }
 
     #[test]
     #[serial]
-    #[should_panic(expected = "Invalid MARGINFI_PROGRAM_ID Pubkey")]
-    fn test_eva01_config_new_invalid_pubkey_env() {
+    fn test_eva01_config_new_prefers_explicit_rpc_url_override() {
         Jail::expect_with(|mut jail| {
             setup_general_env(&mut jail);
             setup_rebalancer_env(&mut jail);
-            jail.set_env("MARGINFI_PROGRAM_ID", "not_a_pubkey");
-            Eva01Config::new().unwrap();
+            jail.set_env("RPC_URL", "https://explicit-rpc.example");
+            let config = Eva01Config::new().unwrap();
+            assert_eq!(config.rpc_url, "https://explicit-rpc.example");
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[serial]
+    #[should_panic(expected = "YELLOWSTONE_ENDPOINT environment variable is not set")]
+    fn test_eva01_config_new_missing_env() {
+        Jail::expect_with(|_jail| {
+            // YELLOWSTONE_ENDPOINT is not set in the jail, so it should panic
+            let _result = Eva01Config::new();
             Ok(())
         });
     }

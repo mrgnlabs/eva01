@@ -16,7 +16,11 @@ use crate::{
     },
     metrics::{LIQUIDATION_ATTEMPTS, LIQUIDATION_LATENCY_SECONDS, LIQUIDATION_SUCCESSES},
     utils::{
-        self, marginfi_account_by_authority, simulation_cache::decode_and_apply_simulated_accounts,
+        self, marginfi_account_by_authority,
+        simulation_cache::{
+            format_skipped_instruction_entries, is_tx_too_large_client,
+            simulate_instruction_batches, SimulatedInstructionEntry,
+        },
         swb_cranker::is_stale_swb_price_error,
     },
     wrappers::oracle::OracleWrapper,
@@ -31,15 +35,8 @@ use marginfi_type_crate::{
     pdas::derive_drift_spot_market,
     types::{validate_asset_tags, Bank},
 };
-use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
-    client_error::{ClientError, ClientErrorKind},
-    rpc_client::RpcClient,
-    rpc_config::{
-        RpcSendTransactionConfig, RpcSimulateTransactionAccountsConfig,
-        RpcSimulateTransactionConfig,
-    },
-    rpc_request::RpcError,
+    client_error::ClientError, rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig,
 };
 
 use solana_program::pubkey::Pubkey;
@@ -54,7 +51,7 @@ use solana_sdk::{
     signature::{Keypair, Signature},
     signer::{Signer, SignerError},
     system_instruction::transfer,
-    transaction::{TransactionError, VersionedTransaction},
+    transaction::VersionedTransaction,
 };
 use std::{
     collections::HashSet,
@@ -65,6 +62,8 @@ use std::{
 
 pub const PROFIT_SHARE: f64 = 0.085;
 const DEFAULT_INTEGRATION_REFRESH_BATCH_HINT: usize = 12;
+const INTEGRATION_REFRESH_RPC_MAX_RETRIES: usize = 3;
+const INTEGRATION_REFRESH_RPC_RETRY_BASE_DELAY_MS: u64 = 250;
 
 #[derive(Debug)]
 pub enum LiquidationError {
@@ -105,7 +104,6 @@ pub struct PreparedLiquidatableAccount {
 pub struct LiquidatorAccount {
     pub liquidator_address: Pubkey,
     pub signer: Keypair,
-    program_id: Pubkey,
     group: Pubkey,
     preferred_mint_bank: Pubkey,
     rpc_client: RpcClient,
@@ -114,18 +112,7 @@ pub struct LiquidatorAccount {
     integration_refresh_batch_hint: Mutex<usize>,
 }
 
-#[derive(Clone, Debug)]
-struct IntegrationRefreshEntry {
-    kind: &'static str,
-    address: Pubkey,
-    instruction: Instruction,
-}
-
-enum RefreshBatchError {
-    TooLarge(anyhow::Error),
-    TooManyAccountLocks(anyhow::Error),
-    Other(anyhow::Error),
-}
+type IntegrationRefreshEntry = SimulatedInstructionEntry;
 
 impl LiquidatorAccount {
     pub fn new(
@@ -138,12 +125,8 @@ impl LiquidatorAccount {
         let rpc_client =
             RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
 
-        let accounts = marginfi_account_by_authority(
-            signer.pubkey(),
-            &rpc_client,
-            config.marginfi_program_id,
-            marginfi_group_id,
-        )?;
+        let accounts =
+            marginfi_account_by_authority(signer.pubkey(), &rpc_client, marginfi_group_id)?;
         info!(
             "Found {} MarginFi accounts for the provided signer: {:?}",
             accounts.len(),
@@ -152,12 +135,8 @@ impl LiquidatorAccount {
 
         let liquidator_address = if accounts.is_empty() {
             info!("No MarginFi account found for the provided signer. Creating it...");
-            let liquidator_marginfi_account = initialize_marginfi_account(
-                &rpc_client,
-                config.marginfi_program_id,
-                marginfi_group_id,
-                &signer,
-            )?;
+            let liquidator_marginfi_account =
+                initialize_marginfi_account(&rpc_client, marginfi_group_id, &signer)?;
 
             while cache
                 .marginfi_accounts
@@ -178,7 +157,6 @@ impl LiquidatorAccount {
         Ok(Self {
             liquidator_address,
             signer,
-            program_id: config.marginfi_program_id,
             group: marginfi_group_id,
             preferred_mint_bank,
             rpc_client,
@@ -196,7 +174,7 @@ impl LiquidatorAccount {
 
         let signer_pk = self.signer.pubkey();
         let (init_ix, liquidation_record) =
-            make_init_liquidation_record_ix(self.program_id, liquidatee_account.address, signer_pk);
+            make_init_liquidation_record_ix(liquidatee_account.address, signer_pk);
 
         let recent_blockhash = self
             .rpc_client
@@ -302,8 +280,9 @@ impl LiquidatorAccount {
             I80F48::from_num(self.get_token_balance_for_mint(&liab_mint).unwrap());
 
         if liab_token_balance < dust_liab_threshold {
-            tokens_in_shortage.insert(liab_mint);
-            info!("No tokens: {}", liab_mint);
+            if tokens_in_shortage.insert(liab_mint) {
+                warn!("No tokens: {}", liab_mint);
+            }
             return Err(LiquidationError::NotEnoughFunds);
         }
 
@@ -367,7 +346,6 @@ impl LiquidatorAccount {
         // TODO: think about posting an swb_crank ix here
 
         let start_ix = make_start_liquidate_ix(
-            self.program_id,
             liquidatee_account_address,
             signer_pk,
             liquidation_record,
@@ -432,7 +410,6 @@ impl LiquidatorAccount {
 
         let withdraw_ix = match asset_bank_wrapper.bank.config.asset_tag {
             ASSET_TAG_DEFAULT | ASSET_TAG_SOL => make_withdraw_ix(
-                self.program_id,
                 self.group,
                 liquidatee_account_address,
                 signer_pk,
@@ -458,7 +435,6 @@ impl LiquidatorAccount {
                 ixs.push(refresh_obligation_ix);
 
                 make_kamino_withdraw_ix(
-                    self.program_id,
                     self.group,
                     liquidatee_account_address,
                     signer_pk,
@@ -478,7 +454,6 @@ impl LiquidatorAccount {
                     .map_err(LiquidationError::from_anyhow)?;
 
                 make_drift_withdraw_ix(
-                    self.program_id,
                     self.group,
                     liquidatee_account_address,
                     signer_pk,
@@ -500,7 +475,6 @@ impl LiquidatorAccount {
                     .map_err(LiquidationError::from_anyhow)?;
 
                 make_juplend_withdraw_ix(
-                    self.program_id,
                     self.group,
                     liquidatee_account_address,
                     signer_pk,
@@ -529,7 +503,6 @@ impl LiquidatorAccount {
             .try_get_account(&liab_mint)
             .map_err(LiquidationError::from_anyhow)?;
         let repay_ix = make_repay_ix(
-            self.program_id,
             self.group,
             liquidatee_account_address,
             signer_pk,
@@ -542,7 +515,6 @@ impl LiquidatorAccount {
         ixs.push(repay_ix);
 
         let end_ix = make_end_liquidate_ix(
-            self.program_id,
             liquidatee_account_address,
             signer_pk,
             liquidation_record,
@@ -689,7 +661,6 @@ impl LiquidatorAccount {
 
         let mint_wrapper = self.cache.mints.try_get_account(&bank.bank.mint)?;
         let withdraw_ix = make_withdraw_ix(
-            self.program_id,
             self.group,
             marginfi_account,
             signer_pk,
@@ -743,7 +714,6 @@ impl LiquidatorAccount {
         let mint = bank.bank.mint;
         let token_account = self.cache.tokens.try_get_token_for_mint(&mint)?;
         let deposit_ix = make_deposit_ix(
-            self.program_id,
             self.group,
             marginfi_account,
             signer_pk,
@@ -902,300 +872,47 @@ impl LiquidatorAccount {
         if entries.is_empty() {
             return Ok(());
         }
-
-        let mut skipped_entries: Vec<IntegrationRefreshEntry> = vec![];
-        let mut refreshed_batches = 0usize;
-        let mut offset = 0usize;
         let stored_batch_hint = *self.integration_refresh_batch_hint.lock().unwrap();
-        let mut preferred_batch_size = stored_batch_hint.min(entries.len()).max(1);
-        let mut resized_down = false;
+        let summary = simulate_instruction_batches(
+            &self.rpc_client,
+            &self.signer,
+            &luts,
+            &self.cu_limit_ix,
+            &entries,
+            stored_batch_hint,
+            INTEGRATION_REFRESH_RPC_MAX_RETRIES,
+            Duration::from_millis(INTEGRATION_REFRESH_RPC_RETRY_BASE_DELAY_MS),
+            |address, account| self.cache.oracles.try_update(address, account),
+        )
+        .context("simulate_instruction_batches for integrations refresh failed")?;
 
-        while offset < entries.len() {
-            let remaining = entries.len() - offset;
-            let mut batch_size = preferred_batch_size.min(remaining).max(1);
+        debug!(
+            "Integrations refresh simulation completed: refreshed_batches={}, skipped_entries={}",
+            summary.refreshed_batches,
+            summary.skipped_entries.len()
+        );
 
-            loop {
-                let batch_entries = entries[offset..offset + batch_size].to_vec();
-                match self.simulate_refresh_integrations_batch(
-                    &luts,
-                    batch_entries,
-                    &mut skipped_entries,
-                ) {
-                    Ok(batch_refreshed_any) => {
-                        if batch_refreshed_any {
-                            refreshed_batches += 1;
-                        }
-                        offset += batch_size;
-                        break;
-                    }
-                    Err(RefreshBatchError::TooLarge(_err)) if batch_size > 1 => {
-                        let new_batch_size = (batch_size / 2).max(1);
-                        debug!(
-                            "Integrations refresh simulation tx too large with {} instructions; retrying with {} instructions",
-                            batch_size, new_batch_size
-                        );
-                        batch_size = new_batch_size;
-                        preferred_batch_size = new_batch_size;
-                        resized_down = true;
-                    }
-                    Err(RefreshBatchError::TooManyAccountLocks(_err)) if batch_size > 1 => {
-                        let new_batch_size = (batch_size / 2).max(1);
-                        debug!(
-                            "Integrations refresh simulation hit TooManyAccountLocks with {} instructions; retrying with {} instructions",
-                            batch_size, new_batch_size
-                        );
-                        batch_size = new_batch_size;
-                        preferred_batch_size = new_batch_size;
-                        resized_down = true;
-                    }
-                    Err(RefreshBatchError::TooLarge(err)) => {
-                        let failed_entry = entries[offset].clone();
-                        warn!(
-                            "Skipping integration refresh instruction {} for {} because tx is too large even as a single instruction: {}",
-                            failed_entry.kind,
-                            failed_entry.address,
-                            err
-                        );
-                        skipped_entries.push(failed_entry);
-                        offset += 1;
-                        break;
-                    }
-                    Err(RefreshBatchError::TooManyAccountLocks(err)) => {
-                        let failed_entry = entries[offset].clone();
-                        warn!(
-                            "Skipping integration refresh instruction {} for {} because TooManyAccountLocks persisted even as a single instruction: {}",
-                            failed_entry.kind,
-                            failed_entry.address,
-                            err
-                        );
-                        skipped_entries.push(failed_entry);
-                        offset += 1;
-                        break;
-                    }
-                    Err(RefreshBatchError::Other(err)) => {
-                        let batch_summary =
-                            format_integration_entries(&entries[offset..offset + batch_size], 10);
-                        return Err(err).with_context(|| {
-                            format!(
-                                "Integrations refresh simulation failed for batch [{}..{}) (size {}, entries: {})",
-                                offset,
-                                offset + batch_size,
-                                batch_size,
-                                batch_summary,
-                            )
-                        });
-                    }
-                }
-            }
-        }
-
-        if refreshed_batches == 0 {
-            return Err(anyhow!(
-                "Integrations refresh simulation failed for all integrations; skipped entries: {}",
-                format_skipped_integration_entries(&skipped_entries)
-            ));
-        }
-
-        if !skipped_entries.is_empty() {
+        if !summary.skipped_entries.is_empty() {
             warn!(
                 "Integrations refresh simulation completed while skipping {} failing integrations: {}",
-                skipped_entries.len(),
-                format_skipped_integration_entries(&skipped_entries)
+                summary.skipped_entries.len(),
+                format_skipped_instruction_entries(&summary.skipped_entries)
             );
         }
 
-        if resized_down {
+        if summary.resized_down {
             let mut batch_hint = self.integration_refresh_batch_hint.lock().unwrap();
-            if preferred_batch_size < *batch_hint {
+            if summary.preferred_batch_size < *batch_hint {
                 info!(
                     "Reduced integrations refresh batch-size hint from {} to {} after simulation backoff",
-                    *batch_hint, preferred_batch_size
+                    *batch_hint, summary.preferred_batch_size
                 );
-                *batch_hint = preferred_batch_size;
+                *batch_hint = summary.preferred_batch_size;
             }
         }
 
         Ok(())
     }
-
-    fn simulate_refresh_integrations_batch(
-        &self,
-        luts: &[AddressLookupTableAccount],
-        batch_entries: Vec<IntegrationRefreshEntry>,
-        skipped_entries: &mut Vec<IntegrationRefreshEntry>,
-    ) -> std::result::Result<bool, RefreshBatchError> {
-        let mut entries = batch_entries;
-
-        loop {
-            if entries.is_empty() {
-                return Ok(false);
-            }
-
-            let integration_addresses: Vec<Pubkey> =
-                entries.iter().map(|entry| entry.address).collect();
-            let entry_summary = format_integration_entries(&entries, 10);
-            let mut ixs: Vec<Instruction> = Vec::with_capacity(entries.len() + 1);
-            ixs.push(self.cu_limit_ix.clone());
-            ixs.extend(entries.iter().map(|entry| entry.instruction.clone()));
-
-            let recent_blockhash = self
-                .rpc_client
-                .get_latest_blockhash()
-                .map_err(|err| RefreshBatchError::Other(err.into()))?;
-            let signer_pk = self.signer.pubkey();
-            let msg = Message::try_compile(&signer_pk, &ixs, luts, recent_blockhash)
-                .map_err(|err| RefreshBatchError::Other(err.into()))?;
-            let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&self.signer])
-                .map_err(|err| RefreshBatchError::Other(err.into()))?;
-
-            let simulation = self
-                .rpc_client
-                .simulate_transaction_with_config(
-                    &tx,
-                    RpcSimulateTransactionConfig {
-                        sig_verify: false,
-                        replace_recent_blockhash: true,
-                        commitment: Some(CommitmentConfig::confirmed()),
-                        accounts: Some(RpcSimulateTransactionAccountsConfig {
-                            encoding: Some(UiAccountEncoding::Base64),
-                            addresses: integration_addresses
-                                .iter()
-                                .map(|pk| pk.to_string())
-                                .collect(),
-                        }),
-                        ..Default::default()
-                    },
-                )
-                .map_err(|err| {
-                    if is_tx_too_large_client(&err) {
-                        RefreshBatchError::TooLarge(err.into())
-                    } else if is_tx_too_many_account_locks_client(&err) {
-                        RefreshBatchError::TooManyAccountLocks(err.into())
-                    } else {
-                        RefreshBatchError::Other(err.into())
-                    }
-                })?;
-
-            if let Some(err) = simulation.value.err.clone() {
-                if matches!(err, TransactionError::TooManyAccountLocks) {
-                    let logs = format_simulation_logs(simulation.value.logs.as_deref(), 40, 8_000);
-                    return Err(RefreshBatchError::TooManyAccountLocks(anyhow!(
-                        "Integrations refresh simulation hit TooManyAccountLocks for batch of {} entries [{}]; logs={}",
-                        entries.len(),
-                        entry_summary,
-                        logs
-                    )));
-                }
-
-                if let TransactionError::InstructionError(ix_index, instruction_error) = &err {
-                    let ix_index = usize::from(*ix_index);
-                    if ix_index > 0 && ix_index <= entries.len() {
-                        let failed_entry = entries.remove(ix_index - 1);
-                        warn!(
-                            "Skipping failing integration refresh instruction {} for {} (tx instruction index {}, error {:?})",
-                            failed_entry.kind,
-                            failed_entry.address,
-                            ix_index,
-                            instruction_error
-                        );
-                        skipped_entries.push(failed_entry);
-                        continue;
-                    }
-                }
-
-                let logs = format_simulation_logs(simulation.value.logs.as_deref(), 40, 8_000);
-                return Err(RefreshBatchError::Other(anyhow!(
-                    "Integrations refresh simulation failed with transaction error: {:?}; batch_size={}; entries=[{}]; logs={}",
-                    err,
-                    entries.len(),
-                    entry_summary,
-                    logs
-                )));
-            }
-
-            let simulated_accounts = simulation.value.accounts.ok_or_else(|| {
-                RefreshBatchError::Other(anyhow!(
-                    "Integrations refresh simulation did not return post-simulation accounts"
-                ))
-            })?;
-
-            if simulated_accounts.len() != integration_addresses.len() {
-                return Err(RefreshBatchError::Other(anyhow!(
-                    "Integrations refresh simulation returned {} accounts, expected {}",
-                    simulated_accounts.len(),
-                    integration_addresses.len()
-                )));
-            }
-
-            decode_and_apply_simulated_accounts(
-                &integration_addresses,
-                &simulated_accounts,
-                "simulateTransaction integrations refresh",
-                |address, account| self.cache.oracles.try_update(address, account),
-            )
-            .map_err(RefreshBatchError::Other)?;
-
-            return Ok(true);
-        }
-    }
-}
-
-fn format_skipped_integration_entries(entries: &[IntegrationRefreshEntry]) -> String {
-    if entries.is_empty() {
-        return "none".to_string();
-    }
-
-    entries
-        .iter()
-        .map(|entry| format!("{}:{}", entry.kind, entry.address))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn format_integration_entries(entries: &[IntegrationRefreshEntry], max_entries: usize) -> String {
-    if entries.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut out = entries
-        .iter()
-        .take(max_entries)
-        .map(|entry| format!("{}:{}", entry.kind, entry.address))
-        .collect::<Vec<_>>();
-
-    if entries.len() > max_entries {
-        out.push(format!(
-            "...<{} additional entries>",
-            entries.len() - max_entries
-        ));
-    }
-
-    out.join(", ")
-}
-
-fn format_simulation_logs(logs: Option<&[String]>, max_lines: usize, max_chars: usize) -> String {
-    let Some(logs) = logs else {
-        return "none".to_string();
-    };
-    if logs.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut lines: Vec<String> = logs.iter().take(max_lines).cloned().collect();
-    if logs.len() > max_lines {
-        lines.push(format!(
-            "...<{} additional log lines truncated>",
-            logs.len() - max_lines
-        ));
-    }
-
-    let mut joined = lines.join(" | ");
-    if joined.len() > max_chars {
-        joined.truncate(max_chars);
-        joined.push_str("...<truncated>");
-    }
-
-    joined
 }
 
 fn contains_stale_oracles(stale_oracles: &HashSet<Pubkey>, account_oracles: &[Pubkey]) -> bool {
@@ -1262,40 +979,5 @@ mod tests {
         let account_oracles = vec![stale2, Pubkey::new_unique()];
 
         assert!(contains_stale_oracles(&stale_oracles, &account_oracles));
-    }
-}
-
-pub fn is_tx_too_large_client(err: &ClientError) -> bool {
-    match err.kind() {
-        ClientErrorKind::RpcError(rpc) => match rpc {
-            RpcError::RpcResponseError { code, message, .. } => {
-                *code == -32602 && message.contains("too large")
-            }
-            RpcError::RpcRequestError(msg) | RpcError::ForUser(msg) => {
-                // Some nodes may proxy this as a plain string
-                msg.contains("too large")
-            }
-            _ => false,
-        },
-        _ => false,
-    }
-}
-
-fn is_tx_too_many_account_locks_client(err: &ClientError) -> bool {
-    match err.kind() {
-        ClientErrorKind::RpcError(rpc) => match rpc {
-            RpcError::RpcResponseError { message, .. } => {
-                message.contains("TooManyAccountLocks")
-                    || message
-                        .to_ascii_lowercase()
-                        .contains("too many account locks")
-            }
-            RpcError::RpcRequestError(msg) | RpcError::ForUser(msg) => {
-                msg.contains("TooManyAccountLocks")
-                    || msg.to_ascii_lowercase().contains("too many account locks")
-            }
-            _ => false,
-        },
-        _ => false,
     }
 }

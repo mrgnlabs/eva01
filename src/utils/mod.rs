@@ -252,11 +252,10 @@ pub fn format_error_chain(err: &Error) -> String {
 pub fn marginfi_account_by_authority(
     authority: Pubkey,
     rpc_client: &RpcClient,
-    marginfi_program_id: Pubkey,
     marginfi_group_id: Pubkey,
 ) -> anyhow::Result<Vec<Pubkey>> {
     let marginfi_account_address = rpc_client.get_program_accounts_with_config(
-        &marginfi_program_id,
+        &marginfi_type_crate::ID,
         RpcProgramAccountsConfig {
             account_config: RpcAccountInfoConfig {
                 encoding: Some(UiAccountEncoding::Base64),

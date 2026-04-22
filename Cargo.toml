@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+default = ["network-mainnet"]
 pretty_logs = []
+network-mainnet = ["marginfi/mainnet-beta", "marginfi_type_crate/mainnet-beta"]
+network-staging = ["marginfi/staging", "marginfi_type_crate/staging"]
 
 [dependencies]
 solana-account-decoder = "=2.1.20"
@@ -47,7 +50,6 @@ ctrlc = "3.5.2"
 
 yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" }
 yellowstone-grpc-proto = { git = "https://github.com/rpcpool/yellowstone-grpc", branch = "v2.1" }
-switchboard-on-demand = "0.11.3"
 # Includes a fix to the way results are parsed.
 switchboard-on-demand-client = { git = "https://github.com/abdulrabbani00/switchboard-sdk", rev = "99cf3f29143b81fd3ad17649725a3f994b253fbb" }
 solana-dex-superagg = { git = "https://github.com/0dotxyz/solana-dex-superagg", rev = "3ab0b4f4de424a0044e983576d113e3b349b3d94" }
@@ -57,19 +59,15 @@ git = "https://github.com/mrgnlabs/marginfi-v2"
 # tag = "mrgn-0.1.8-rc3"
 rev = "4ce8a15e70b4108059b74e1aedbfde1e3e564ace"
 package = "marginfi-type-crate"
-#STAGE
-#default-features = false
-#features = ["staging", "client"]
+default-features = false
+features = ["client"]
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"
 # tag = "mrgn-0.1.8-rc3"
 rev = "4ce8a15e70b4108059b74e1aedbfde1e3e564ace"
-#PROD
-features = ["mainnet-beta", "client", "no-entrypoint"]
-#STAGE
-#default-features = false
-#features = ["staging", "client", "no-entrypoint"]
+default-features = false
+features = ["client", "no-entrypoint", "custom-heap"]
 
 [dependencies.jupiter-swap-api-client]
 git = "https://github.com/IliaZyrin/jupiter-swap-api-client"

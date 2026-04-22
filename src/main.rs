@@ -12,6 +12,12 @@ use std::{
 #[cfg(not(feature = "pretty_logs"))]
 use {env_logger::Target, log::Level, std::io::Write as _};
 
+#[cfg(all(feature = "network-mainnet", feature = "network-staging"))]
+compile_error!("Enable only one network feature: network-mainnet or network-staging");
+
+#[cfg(not(any(feature = "network-mainnet", feature = "network-staging")))]
+compile_error!("Missing network feature. Enable network-mainnet or network-staging");
+
 mod cache;
 mod cache_loader;
 mod cli;
@@ -44,9 +50,6 @@ use drift_idl::*;
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
-    //FIX MINTING TO WSOL !!!!
-    //FIX MINTING TO WSOL !!!!
-    //FIX MINTING TO WSOL !!!!
 
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("Panic occurred: {:#?}", panic_info);
@@ -93,16 +96,15 @@ fn init_logging() {
         .format(|buf, record| {
             use serde_json::json;
 
-            let sev = match record.level() {
-                Level::Error => "ERROR",
-                Level::Warn => "WARNING",
-                Level::Info => "INFO",
-                Level::Debug => "DEBUG",
-                Level::Trace => "DEBUG",
+            let level = match record.level() {
+                Level::Error => "error",
+                Level::Warn => "warn",
+                Level::Info => "info",
+                Level::Debug | Level::Trace => "debug",
             };
 
             let line = json!({
-                "logging.googleapis.com/severity": sev,
+                "level": level,
                 "message": record.args().to_string(),
                 "target": record.target(),
             });
