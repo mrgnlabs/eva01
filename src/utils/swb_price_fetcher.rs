@@ -12,7 +12,7 @@ use anyhow::Result;
 use bytemuck::Zeroable;
 use fixed::types::I80F48;
 use log::{debug, info, warn};
-use marginfi_type_crate::types::OracleSetup;
+use crate::cache::is_switchboard_pull_setup;
 use reqwest::blocking::Client;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Deserializer};
@@ -192,13 +192,7 @@ impl SwbPriceFetcher {
             let price_rt = I80F48::from_num(raw.price);
             let conf_rt = I80F48::from_num(raw.confidence);
             if let Ok(bank) = self.cache.banks.try_get_bank(&bank_address) {
-                if matches!(
-                    bank.bank.config.oracle_setup,
-                    OracleSetup::SwitchboardPull
-                        | OracleSetup::KaminoSwitchboardPull
-                        | OracleSetup::DriftSwitchboardPull
-                        | OracleSetup::JuplendSwitchboardPull
-                ) {
+                if is_switchboard_pull_setup(bank.bank.config.oracle_setup) {
                     if let Some(&oracle_key) = bank.bank.config.oracle_keys.first() {
                         let synthetic = build_synthetic_swb_account(price_rt, conf_rt);
                         if let Err(e) = self.cache.oracles.try_update(&oracle_key, synthetic) {
