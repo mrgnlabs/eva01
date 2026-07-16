@@ -6,7 +6,10 @@ use marginfi_type_crate::types::{OraclePriceType, OracleSetup, PriceBias};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::{account_info::IntoAccountInfo, clock::Clock};
 
-use crate::{cache::Cache, utils::find_oracle_keys};
+use crate::{
+    cache::Cache,
+    utils::{find_oracle_keys, staked_onramp},
+};
 
 pub trait OracleWrapperTrait {
     fn build(cache: &Cache, clock: &Clock, bank_address: &Pubkey) -> Result<Self>
@@ -89,20 +92,36 @@ impl OracleWrapper {
                 }
 
                 let bank_oracle_address = *oracle_addresses.first().unwrap();
-                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
-                let bank_oracle_account_info =
-                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
-
                 let mint_oracle_address = *oracle_addresses.get(1).unwrap();
-                let mut mint_oracle = cache.oracles.try_get_account(&mint_oracle_address)?;
-                let mint_oracle_account_info =
-                    (&mint_oracle_address, &mut mint_oracle).into_account_info();
-
                 let sol_pool_oracle_address = *oracle_addresses.get(2).unwrap();
+
+                // marginfi ALWAYS requires exactly 4 oracle accounts for StakedWithPythPush (the
+                // `ais.len() == 4` check fires in every transition mode). `ais[3]` is the on-ramp:
+                // it's only key-checked and read in OnRampEnabled mode; in PreTransition it's ignored
+                // entirely. Use the derived on-ramp when available (correct once OnRampEnabled), else
+                // fall back to a duplicate of the sol_pool address purely to satisfy the count.
+                let onramp_address = staked_onramp(bank).unwrap_or(sol_pool_oracle_address);
+
+                // Fetch all account data up front. The derived on-ramp account only exists once the
+                // pool is OnRampEnabled; in PreTransition it may not exist on-chain, and marginfi
+                // doesn't read `ais[3]` then — so fall back to a copy of the sol_pool account purely
+                // to satisfy the count.
+                let mut bank_oracle = cache.oracles.try_get_account(&bank_oracle_address)?;
+                let mut mint_oracle = cache.oracles.try_get_account(&mint_oracle_address)?;
                 let mut sol_pool_oracle =
                     cache.oracles.try_get_account(&sol_pool_oracle_address)?;
+                let mut onramp = cache
+                    .oracles
+                    .try_get_account(&onramp_address)
+                    .unwrap_or_else(|_| sol_pool_oracle.clone());
+
+                let bank_oracle_account_info =
+                    (&bank_oracle_address, &mut bank_oracle).into_account_info();
+                let mint_oracle_account_info =
+                    (&mint_oracle_address, &mut mint_oracle).into_account_info();
                 let sol_pool_account_info =
                     (&sol_pool_oracle_address, &mut sol_pool_oracle).into_account_info();
+                let onramp_account_info = (&onramp_address, &mut onramp).into_account_info();
 
                 let price_adapter = OraclePriceFeedAdapter::try_from_bank(
                     bank,
@@ -110,6 +129,7 @@ impl OracleWrapper {
                         bank_oracle_account_info,
                         mint_oracle_account_info,
                         sol_pool_account_info,
+                        onramp_account_info,
                     ],
                     clock,
                 )?;
@@ -118,6 +138,7 @@ impl OracleWrapper {
                         bank_oracle_address,
                         mint_oracle_address,
                         sol_pool_oracle_address,
+                        onramp_address,
                     ],
                     source: price_adapter,
                 });

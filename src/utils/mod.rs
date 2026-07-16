@@ -190,6 +190,27 @@ pub fn find_oracle_keys(bank_config: &BankConfig) -> Vec<Pubkey> {
         .collect::<Vec<_>>()
 }
 
+/// The 4th ("staked on-ramp") oracle account marginfi 0.1.9 requires for a `StakedWithPythPush`
+/// bank, mirroring the program's `expected_staked_onramp`: `oracle_keys[3]` when set, otherwise
+/// the on-ramp PDA derived from the validator vote account (`integration_acc_1`). Returns `None`
+/// for non-staked banks (or a staked bank with no vote account). Adding this account is what makes
+/// the setup pass its `ais.len() == 4` check — without it the price load fails with 6051
+/// (`WrongNumberOfOracleAccounts`).
+pub fn staked_onramp(bank: &marginfi_type_crate::types::Bank) -> Option<Pubkey> {
+    if bank.config.oracle_setup != marginfi_type_crate::types::OracleSetup::StakedWithPythPush {
+        return None;
+    }
+    if bank.config.oracle_keys[3] != Pubkey::default() {
+        Some(bank.config.oracle_keys[3])
+    } else if bank.integration_acc_1 != Pubkey::default() {
+        Some(marginfi_type_crate::pdas::derive_staked_onramp_from_vote(
+            bank.integration_acc_1,
+        ))
+    } else {
+        None
+    }
+}
+
 #[macro_export]
 macro_rules! ward {
     ($res:expr) => {

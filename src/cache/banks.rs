@@ -1,4 +1,7 @@
-use crate::{utils::find_oracle_keys, wrappers::bank::BankWrapper};
+use crate::{
+    utils::{find_oracle_keys, staked_onramp},
+    wrappers::bank::BankWrapper,
+};
 use anyhow::{anyhow, Result};
 use marginfi_type_crate::{
     constants::{
@@ -76,7 +79,31 @@ impl BanksCache {
             .expect("banks cache lock poisoned")
             .banks
             .iter()
-            .flat_map(|(_, bank)| find_oracle_keys(&bank.bank.config))
+            .flat_map(|(_, bank)| {
+                let mut keys = find_oracle_keys(&bank.bank.config);
+                // StakedWithPythPush needs a 4th "on-ramp" account that isn't in oracle_keys when
+                // derived from the vote account — load it too, or pricing fails with 6051.
+                if let Some(onramp) = staked_onramp(&bank.bank) {
+                    keys.push(onramp);
+                }
+                keys
+            })
+            .collect()
+    }
+
+    /// Derived on-ramp accounts for every StakedWithPythPush bank.
+    ///
+    /// marginfi 0.1.9 consumes a 4th "on-ramp" account for staked pricing. In PreTransition mode
+    /// this account may not exist on-chain yet (the program doesn't read it then), so the loader
+    /// inserts an empty placeholder for any that are missing — keeping the 4-oracle count aligned
+    /// for both in-process pricing and the on-chain observation list.
+    pub fn get_staked_onramps(&self) -> HashSet<Pubkey> {
+        self.inner
+            .read()
+            .expect("banks cache lock poisoned")
+            .banks
+            .iter()
+            .filter_map(|(_, bank)| staked_onramp(&bank.bank))
             .collect()
     }
 
