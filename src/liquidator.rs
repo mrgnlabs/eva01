@@ -265,11 +265,17 @@ impl Liquidator {
             AccountType::Marginfi => {
                 let mut data = account.data.as_slice();
                 let marginfi_account = MarginfiAccount::try_deserialize(&mut data)?;
-                self.cache
+                let has_liabilities = self
+                    .cache
                     .marginfi_accounts
                     .try_insert(MarginfiAccountWrapper::new(address, marginfi_account))?;
 
-                account_addresses.insert(address);
+                // Only queue accounts that carry debt — a debt-free account can't be liquidated, so
+                // evaluating it is wasted work. It rejoins the queue the moment it borrows (that
+                // update will report liabilities).
+                if has_liabilities {
+                    account_addresses.insert(address);
+                }
             }
             AccountType::Bank => {
                 let mut data = account.data.as_slice();
