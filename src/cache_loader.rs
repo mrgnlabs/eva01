@@ -97,7 +97,6 @@ impl CacheLoader {
             group1,
             group2,
             group3,
-            targeted: None,
             deactivating: vec![],
         };
 

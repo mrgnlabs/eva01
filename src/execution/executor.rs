@@ -378,10 +378,12 @@ impl Executor {
             };
             let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
             cache.try_close_deactivated_luts(&rpc_client, &signer);
-            // The cache tracks a single targeted LUT (the one just created), so deactivate it once
-            // rather than per key; the signature reads the key from cache state.
-            if let Err(e) = cache.deactivate_targeted_lut(&rpc_client, &signer) {
-                warn!("Failed to deactivate temporary LUT(s) {temp_luts:?}: {e}");
+            // Deactivate exactly the LUT(s) this liquidation created — by key, no shared slot — so
+            // concurrent liquidations never step on each other's LUTs.
+            for lut_key in temp_luts {
+                if let Err(e) = cache.deactivate_lut(&rpc_client, &signer, lut_key) {
+                    warn!("Failed to deactivate temporary LUT {lut_key}: {e}");
+                }
             }
         });
     }
