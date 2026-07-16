@@ -8,11 +8,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::cache::is_switchboard_pull_setup;
 use anyhow::Result;
 use bytemuck::Zeroable;
 use fixed::types::I80F48;
 use log::{debug, info, warn};
-use crate::cache::is_switchboard_pull_setup;
 use reqwest::blocking::Client;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Deserializer};

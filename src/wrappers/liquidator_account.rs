@@ -58,6 +58,10 @@ pub struct LiquidatorAccount {
     group: Pubkey,
     rpc_client: RpcClient,
     cu_limit_ix: Instruction,
+    /// Priority-fee instruction (from `COMPUTE_UNIT_PRICE_MICRO_LAMPORTS`). Without it the heavy
+    /// liquidation tx carries a CU limit but no price, so it confirms slowly under load — the
+    /// sequential-send path especially needs this to land promptly.
+    cu_price_ix: Instruction,
     pub cache: Arc<Cache>,
 }
 
@@ -100,6 +104,9 @@ impl LiquidatorAccount {
             group: marginfi_group_id,
             rpc_client,
             cu_limit_ix: ComputeBudgetInstruction::set_compute_unit_limit(1400000),
+            cu_price_ix: ComputeBudgetInstruction::set_compute_unit_price(
+                config.compute_unit_price_micro_lamports,
+            ),
             cache,
         })
     }
@@ -210,6 +217,7 @@ impl LiquidatorAccount {
 
         let mut ixs = Vec::new();
         ixs.push(self.cu_limit_ix.clone());
+        ixs.push(self.cu_price_ix.clone());
 
         let start_ix = make_start_liquidate_ix(
             self.group,

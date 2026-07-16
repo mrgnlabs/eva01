@@ -21,7 +21,11 @@ use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
-use solana_sdk::{pubkey::Pubkey, signature::Keypair, transaction::VersionedTransaction};
+use solana_sdk::{
+    pubkey::Pubkey,
+    signature::{Keypair, Signature},
+    transaction::VersionedTransaction,
+};
 
 use crate::cache::Cache;
 use crate::utils::{
@@ -32,14 +36,25 @@ use crate::wrappers::liquidator_account::PreparedLiquidatableAccount;
 
 use super::{ExecutionPlan, LiquidationStrategy};
 
-/// Number of status polls before a bundle is considered not landed.
-const BUNDLE_CONFIRM_ATTEMPTS: usize = 10;
+/// Number of Jito status polls before checking the chain directly. Kept small: the public status
+/// endpoint is frequently rate-limited, so the RPC signature check below is the real confirmation
+/// and we want to reach the sequential fallback quickly (while the txs' blockhash is still fresh).
+const BUNDLE_CONFIRM_ATTEMPTS: usize = 3;
 
-/// Don't re-crank a feed cranked more recently than this (dedup across intents in a drain).
-const CRANK_DEDUP_COOLDOWN: Duration = Duration::from_secs(30);
+/// After Jito reports a bundle accepted-but-unconfirmed (or its status endpoint is rate-limited),
+/// poll the RPC for the liquidation tx itself this many times, this interval apart, before giving
+/// up. The on-chain signature is the authoritative "did it land" — independent of Jito's throttled
+/// `getBundleStatuses`.
+const SIGNATURE_CONFIRM_ATTEMPTS: usize = 10;
+const SIGNATURE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Re-check a liability mint that has no swap route only after this long (routes can appear).
 const NO_ROUTE_QUARANTINE_TTL: Duration = Duration::from_secs(3600);
+
+/// After a crank actually LANDS, treat its feeds as fresh for this long so the sim-unavailable
+/// path doesn't re-crank them unconditionally every attempt. Kept comfortably below the Switchboard
+/// pull-feed staleness window, so a feed that genuinely goes stale is still re-cranked in time.
+const CRANK_LANDED_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Base / cap for the per-target exponential backoff after a transient assemble failure
 /// (e.g. a Jupiter `429`): skip the target for `BASE * 2^(failures-1)`, capped at `MAX`.
@@ -91,7 +106,9 @@ pub struct Executor {
     /// Single key for both `sendBundle` (uuid) and `simulateBundle` (Bearer).
     bundle_api_key: Option<String>,
     tip_estimator: TipEstimator,
-    /// Feeds cranked recently, to avoid double-cranking across intents in the same drain.
+    /// SWB feeds whose crank actually LANDED, with when. Used only to avoid re-cranking still-fresh
+    /// feeds on the sim-unavailable path (where staleness can't be detected); the sim-stale path
+    /// always cranks regardless, since the sim proves the feed is stale on-chain.
     recently_cranked: Mutex<HashMap<Pubkey, Instant>>,
     /// Liability-mint no-route quarantines and per-liquidatee transient backoffs.
     backoffs: Mutex<HashMap<Pubkey, BackoffState>>,
@@ -182,6 +199,7 @@ impl Executor {
         //  - couldn't run (infra err) -> crank all feeds + sequential RPC send (no bundle)
         // Temp LUTs created during assembly are always cleaned up afterwards, whatever the path.
         let ExecutionPlan { mut txs, temp_luts } = plan;
+        let mut cranked = false;
         let result = match self.jito.simulate_bundle(
             &self.rpc_url,
             self.bundle_api_key.as_deref(),
@@ -190,9 +208,11 @@ impl Executor {
         ) {
             Ok(sim) if sim.succeeded => self.submit(&txs),
             Ok(sim) if sim.is_stale_price_failure() => {
-                if let Some(crank_tx) = self.build_crank_if_needed(intent) {
+                // Sim proves the feed is stale on-chain: always crank (force).
+                if let Some(crank_tx) = self.build_crank_if_needed(intent, true) {
                     info!("Prepending SWB crank to bundle for {}", liquidatee);
                     txs.insert(0, crank_tx);
+                    cranked = true;
                 }
                 // Re-simulate with the crank applied: a stale oracle made the first sim fail, so
                 // only submit if the cranked bundle now actually succeeds. Otherwise we'd pay to
@@ -237,12 +257,21 @@ impl Executor {
                     "simulateBundle unavailable for {} ({}); cranking all feeds and sending sequentially",
                     liquidatee, e
                 );
-                if let Some(crank_tx) = self.build_crank_if_needed(intent) {
+                // Staleness can't be detected here: crank defensively, but skip feeds we already
+                // landed a crank for recently (still fresh) instead of cranking unconditionally.
+                if let Some(crank_tx) = self.build_crank_if_needed(intent, false) {
                     txs.insert(0, crank_tx);
+                    cranked = true;
                 }
                 self.submit_sequential(&txs)
             }
         };
+
+        // Record the crank as landed only when the submission actually succeeded, so a stale feed
+        // is never wrongly treated as fresh by the sim-unavailable path above.
+        if cranked && result.is_ok() {
+            self.record_landed_cranks(&intent.observation_accounts.swb_oracles);
+        }
 
         self.deactivate_temp_luts(temp_luts);
         result
@@ -357,48 +386,64 @@ impl Executor {
         });
     }
 
-    /// Build a crank tx for the intent's stale feeds, unless they were all cranked very recently.
+    /// Build a crank tx for the intent's SWB feeds.
+    ///
+    /// `force` (sim reported the feed stale on-chain): always crank — the sim is authoritative, and
+    /// a prior *submitted-but-unlanded* crank must not suppress it or the account stays
+    /// un-liquidatable while its feed is still stale. Self-limiting: once the crank lands, the sim
+    /// stops reporting stale.
+    ///
+    /// `!force` (sim was unavailable, so staleness can't be detected — we'd otherwise crank
+    /// defensively every attempt): skip if we LANDED a crank for all these feeds recently, since
+    /// they're still fresh. Only landed cranks are recorded (see `record_landed_cranks`).
     fn build_crank_if_needed(
         &self,
         intent: &PreparedLiquidatableAccount,
+        force: bool,
     ) -> Option<VersionedTransaction> {
         let oracles = &intent.observation_accounts.swb_oracles;
         if oracles.is_empty() {
             return None;
         }
 
-        let now = Instant::now();
-        let mut guard = match self.recently_cranked.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                warn!("recently_cranked mutex poisoned");
-                return None;
+        if !force {
+            if let Ok(mut guard) = self.recently_cranked.lock() {
+                let now = Instant::now();
+                guard.retain(|_, t| now.duration_since(*t) < CRANK_LANDED_COOLDOWN);
+                if oracles.iter().all(|o| guard.contains_key(o)) {
+                    debug!(
+                        "Skipping crank for {}: all SWB feeds landed-cranked within cooldown",
+                        intent.liquidatee_account.address
+                    );
+                    return None;
+                }
             }
-        };
-        guard.retain(|_, t| now.duration_since(*t) < CRANK_DEDUP_COOLDOWN);
-
-        if oracles.iter().all(|o| guard.contains_key(o)) {
-            debug!(
-                "All SWB feeds for {} cranked within cooldown; skipping crank",
-                intent.liquidatee_account.address
-            );
-            return None;
         }
 
-        let crank_tx = match self.swb_cranker.build_crank_transaction(oracles.clone()) {
-            Ok(crank_tx) => crank_tx,
+        match self.swb_cranker.build_crank_transaction(oracles.clone()) {
+            Ok(crank_tx) => Some(crank_tx),
             Err(e) => {
                 warn!(
                     "Failed to build SWB crank tx for {}: {}",
                     intent.liquidatee_account.address, e
                 );
-                return None;
+                None
             }
-        };
-        for o in oracles {
-            guard.insert(*o, now);
         }
-        Some(crank_tx)
+    }
+
+    /// Mark these SWB feeds as freshly cranked, once their crank has actually landed. Only landed
+    /// cranks count, so an accepted-but-unconfirmed bundle never suppresses a later needed crank.
+    fn record_landed_cranks(&self, oracles: &[Pubkey]) {
+        if oracles.is_empty() {
+            return;
+        }
+        if let Ok(mut guard) = self.recently_cranked.lock() {
+            let now = Instant::now();
+            for oracle in oracles {
+                guard.insert(*oracle, now);
+            }
+        }
     }
 
     /// Land the ordered transactions as an atomic Jito bundle (with a tip). Only fall back to
@@ -409,17 +454,58 @@ impl Executor {
         if txs.is_empty() {
             return Err(anyhow!("Executor::submit called with no transactions"));
         }
+        // The liquidation tx is the last core tx (any crank/buy precede it); its signature is our
+        // authoritative "did it land" check when Jito's bundle status is unavailable/lagging.
+        let liquidation_sig = txs.last().and_then(|tx| tx.signatures.first()).copied();
         match self.try_bundle(txs) {
             Ok(BundleOutcome::Confirmed(bundle_id)) => {
                 info!("Bundle landed: {} ({} txs)", bundle_id, txs.len());
                 Ok(())
             }
             Ok(BundleOutcome::Unconfirmed(bundle_id)) => {
-                warn!(
-                    "Bundle {} accepted but unconfirmed; leaving in-flight (will retry next cycle if it didn't land)",
-                    bundle_id
-                );
-                Ok(())
+                // Jito's `getBundleStatuses` can lag or be rate-limited (`-32097`); confirm against
+                // the chain directly before deciding it didn't land.
+                match liquidation_sig {
+                    Some(sig) => match self.confirm_on_chain(&sig) {
+                        Ok(true) => {
+                            info!(
+                                "Bundle {} landed ({} txs), confirmed on-chain via {}",
+                                bundle_id,
+                                txs.len(),
+                                sig
+                            );
+                            Ok(())
+                        }
+                        Ok(false) => {
+                            // The bundle was accepted but never landed (common on the rate-limited
+                            // public block engine). Don't spin re-submitting bundles that won't
+                            // land — fall back to a direct RPC send, which is what actually lands.
+                            // Idempotent: the txs keep their signatures, so a late-landing bundle
+                            // just makes the resend a no-op ("already processed").
+                            warn!(
+                                "Bundle {} accepted but liquidation tx {} not on-chain; falling back to sequential send",
+                                bundle_id, sig
+                            );
+                            self.submit_sequential(txs)
+                        }
+                        Err(e) => {
+                            // Bundles are atomic: a reverted liquidation tx means nothing applied,
+                            // so the next cycle can safely retry.
+                            warn!(
+                                "Bundle {} did not land (liquidation tx {}: {}); next cycle retries",
+                                bundle_id, sig, e
+                            );
+                            Ok(())
+                        }
+                    },
+                    None => {
+                        warn!(
+                            "Bundle {} accepted but unconfirmed and no signature to verify; leaving in-flight",
+                            bundle_id
+                        );
+                        Ok(())
+                    }
+                }
             }
             Err(e) => {
                 warn!(
@@ -440,6 +526,30 @@ impl Executor {
         );
         self.jito
             .send_bundle_and_confirm(&bundle_txs, BUNDLE_CONFIRM_ATTEMPTS)
+    }
+
+    /// Authoritative confirmation: poll the RPC for the liquidation tx landing on-chain,
+    /// independent of Jito's throttled bundle status. Returns `Ok(true)` once it reaches
+    /// `confirmed`, `Ok(false)` if it never appears within the window (still possibly in-flight),
+    /// and `Err` if it landed with an on-chain error (atomic bundle reverted).
+    fn confirm_on_chain(&self, sig: &Signature) -> Result<bool> {
+        for _ in 0..SIGNATURE_CONFIRM_ATTEMPTS {
+            match self.rpc_client.get_signature_statuses(&[*sig]) {
+                Ok(resp) => {
+                    if let Some(Some(status)) = resp.value.into_iter().next() {
+                        if let Some(err) = &status.err {
+                            return Err(anyhow!("reverted on-chain: {:?}", err));
+                        }
+                        if status.satisfies_commitment(CommitmentConfig::confirmed()) {
+                            return Ok(true);
+                        }
+                    }
+                }
+                Err(e) => debug!("signature status poll for {} failed: {}", sig, e),
+            }
+            thread::sleep(SIGNATURE_POLL_INTERVAL);
+        }
+        Ok(false)
     }
 
     /// Send each transaction in order, confirming before moving on. Used when the bundle path is

@@ -234,7 +234,15 @@ impl Cache {
         rpc_client: &RpcClient,
         signer_keypair: &Keypair,
     ) -> anyhow::Result<()> {
-        let lut_key = self.luts.lock().unwrap().targeted.as_ref().unwrap().key;
+        // Peek the targeted LUT key WITHOUT removing it: if the deactivation tx below fails, the
+        // LUT must stay in `targeted` so it isn't lost (i.e. never deactivated, rent leaked). Return
+        // early when there's nothing to deactivate — never `unwrap()` a possibly-`None` slot (that
+        // was the panic that killed the whole process via the panic hook). Cleanup runs in a
+        // background thread spawned per liquidation, so two can race here.
+        let lut_key = match self.luts.lock().unwrap().targeted.as_ref() {
+            Some(lut) => lut.key,
+            None => return Ok(()),
+        };
 
         let ix = deactivate_lookup_table(lut_key, signer_keypair.pubkey());
         let recent_blockhash = rpc_client.get_latest_blockhash()?;
@@ -255,7 +263,12 @@ impl Cache {
 
         let slot = rpc_client.get_slot_with_commitment(CommitmentConfig::confirmed())?;
         let mut luts = self.luts.lock().unwrap();
-        luts.targeted.take().unwrap();
+        // Only remove the LUT we actually deactivated. A concurrent `get_targeted_lut` may have
+        // replaced the slot with a different (new) LUT in the meantime — leave that one alone.
+        // Guarded so we never unwrap a `None` slot.
+        if luts.targeted.as_ref().map(|lut| lut.key) == Some(lut_key) {
+            luts.targeted.take();
+        }
         luts.deactivating.push((lut_key, slot));
         Ok(())
     }
@@ -328,7 +341,12 @@ fn create_lut(
     signer_keypair: &Keypair,
     addresses: Vec<Pubkey>,
 ) -> anyhow::Result<AddressLookupTableAccount> {
-    let recent_slot = rpc_client.get_slot_with_commitment(CommitmentConfig::confirmed())?;
+    // Derive the LUT from a FINALIZED slot, not the latest confirmed one. `create_lookup_table`
+    // requires `recent_slot` to be present in the on-chain `SlotHashes` when the tx executes; the
+    // latest confirmed slot can be a slot or two ahead of the node that processes the create tx
+    // (its future) → `InstructionError::InvalidArgument` ("invalid program argument"). A finalized
+    // slot is firmly in the past for every node and still well inside the 512-slot SlotHashes window.
+    let recent_slot = rpc_client.get_slot_with_commitment(CommitmentConfig::finalized())?;
     let (create_ix, lut_address) = create_lookup_table(
         signer_keypair.pubkey(),
         signer_keypair.pubkey(),
