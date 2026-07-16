@@ -39,9 +39,15 @@ use std::sync::atomic::Ordering;
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, Mutex},
+    thread,
     time::Duration,
 };
+
+/// Max liquidations executed concurrently. Bounds in-flight RPC/sim/bundle load while still
+/// letting a burst of liquidatable accounts (e.g. a price crash) be worked in parallel rather
+/// than one-at-a-time.
+const MAX_CONCURRENT_LIQUIDATIONS: usize = 8;
 
 pub struct Liquidator {
     liquidator_account: Arc<LiquidatorAccount>,
@@ -144,28 +150,51 @@ impl Liquidator {
 
             match checked_accounts {
                 Ok(mut accounts) => {
-                    // Accounts are sorted from the highest profit to the lowest
+                    // Rank highest-profit first.
                     accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
                     accounts.reverse();
 
-                    // Hand each ranked account to the execution layer: it JIT-buys the liability
-                    // shortfall, simulate-first cranks stale oracles, and lands a Jito bundle (with
-                    // a sequential RPC fallback). Funding is handled inside, so no shortfall map.
-                    for acc in accounts {
-                        let liquidatee = acc.liquidatee_account.address;
-                        if (acc.profit as f64) < self.min_profit {
-                            info!(
-                                "Skipping {}: est profit ${} < min ${}",
-                                liquidatee, acc.profit, self.min_profit
-                            );
-                            continue;
-                        }
-                        if let Err(e) = self.executor.try_execute(&self.strategy, &acc) {
-                            error!(
-                                "Failed to execute liquidation for {:?}: {:?}",
-                                liquidatee, e
-                            );
-                        }
+                    // Drop below-min-profit intents up front so the parallel section only runs
+                    // real work.
+                    let intents: Vec<PreparedLiquidatableAccount> = accounts
+                        .into_iter()
+                        .filter(|acc| {
+                            let worth_it = (acc.profit as f64) >= self.min_profit;
+                            if !worth_it {
+                                info!(
+                                    "Skipping {}: est profit ${} < min ${}",
+                                    acc.liquidatee_account.address, acc.profit, self.min_profit
+                                );
+                            }
+                            worth_it
+                        })
+                        .collect();
+
+                    // Hand ranked intents to the execution layer concurrently, bounded to
+                    // MAX_CONCURRENT_LIQUIDATIONS in-flight. Each try_execute JIT-buys the liability
+                    // shortfall, simulate-first cranks stale oracles, and lands a Jito bundle (with a
+                    // sequential RPC fallback). Workers pull the next-highest-profit intent from the
+                    // shared queue, so a burst of liquidatable accounts is worked in parallel.
+                    if !intents.is_empty() {
+                        let worker_count = MAX_CONCURRENT_LIQUIDATIONS.min(intents.len());
+                        let queue = Mutex::new(intents.into_iter());
+                        let executor = &self.executor;
+                        let strategy = &self.strategy;
+                        thread::scope(|scope| {
+                            for _ in 0..worker_count {
+                                scope.spawn(|| loop {
+                                    let next = queue.lock().unwrap().next();
+                                    let Some(acc) = next else { break };
+                                    let liquidatee = acc.liquidatee_account.address;
+                                    if let Err(e) = executor.try_execute(strategy, &acc) {
+                                        error!(
+                                            "Failed to execute liquidation for {:?}: {:?}",
+                                            liquidatee, e
+                                        );
+                                    }
+                                });
+                            }
+                        });
                     }
                 }
                 Err(err) => {

@@ -53,8 +53,12 @@ impl InventoryStrategy {
         dex_client: Arc<DexSuperAggClient>,
         slippage_bps: u16,
     ) -> Result<Self> {
-        let tokio_rt = Builder::new_current_thread()
+        // Multi-threaded so concurrent liquidations can `block_on` DEX quotes at the same time —
+        // a current-thread runtime only supports one `block_on` at a time. A couple of worker
+        // threads is plenty for the HTTP-bound DEX calls; parallelism comes from the callers.
+        let tokio_rt = Builder::new_multi_thread()
             .thread_name("inventory-dex")
+            .worker_threads(2)
             .enable_all()
             .build()?;
 
