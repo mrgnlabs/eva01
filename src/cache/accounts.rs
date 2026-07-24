@@ -3,9 +3,7 @@ use std::{
     sync::RwLock,
 };
 
-use fixed::types::I80F48;
 use indexmap::IndexMap;
-use marginfi_type_crate::constants::ZERO_AMOUNT_THRESHOLD;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::wrappers::marginfi_account::MarginfiAccountWrapper;
@@ -24,7 +22,10 @@ pub struct MarginfiAccountsCache {
 }
 
 impl MarginfiAccountsCache {
-    pub fn try_insert(&self, account: MarginfiAccountWrapper) -> Result<()> {
+    /// Inserts (or replaces) an account and refreshes its bank / liability indexes. Returns whether
+    /// the account carries any liability, so callers can skip queuing debt-free accounts for the
+    /// liquidatability check (they can't be liquidated until they borrow).
+    pub fn try_insert(&self, account: MarginfiAccountWrapper) -> Result<bool> {
         let mut inner = self.inner.write().map_err(|e| {
             anyhow!(
                 "Failed to lock the marginfi accounts cache for insert! {}",
@@ -36,9 +37,10 @@ impl MarginfiAccountsCache {
             Self::remove_account_indexes(&mut inner, &existing_account);
         }
 
+        let has_liabilities = Self::has_liabilities(&account);
         Self::insert_account_indexes(&mut inner, &account);
         inner.accounts.insert(account.address, account);
-        Ok(())
+        Ok(has_liabilities)
     }
 
     pub fn try_get_account(&self, address: &Pubkey) -> Result<MarginfiAccountWrapper> {
@@ -121,15 +123,16 @@ impl MarginfiAccountsCache {
             .collect()
     }
 
+    /// Whether the account carries any liability (i.e. it can be liquidated). Reads marginfi's
+    /// balance-derived indexer flags rather than scanning balances: they're synced on every
+    /// balance-mutating instruction, so they're accurate the instant an account borrows or repays.
+    ///
+    /// `is_lending_only` is 1 only when the account has balances but none are liabilities;
+    /// `is_empty` is 1 when it has no balances at all — so it has a liability iff neither is set.
+    /// A borrower is never flagged lending-only (synced accounts → 0, and un-synced legacy accounts
+    /// default to 0), so this can never wrongly skip a liquidatable account.
     fn has_liabilities(account: &MarginfiAccountWrapper) -> bool {
-        account
-            .account
-            .lending_account
-            .balances
-            .iter()
-            .any(|balance| {
-                balance.is_active()
-                    && I80F48::from(balance.liability_shares) > ZERO_AMOUNT_THRESHOLD
-            })
+        let flags = &account.account.indexer_flags;
+        flags.is_lending_only == 0 && flags.is_empty == 0
     }
 }

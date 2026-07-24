@@ -1,4 +1,7 @@
-use crate::{utils::find_oracle_keys, wrappers::bank::BankWrapper};
+use crate::{
+    utils::{find_oracle_keys, staked_onramp},
+    wrappers::bank::BankWrapper,
+};
 use anyhow::{anyhow, Result};
 use marginfi_type_crate::{
     constants::{
@@ -12,6 +15,23 @@ use std::{
     collections::{HashMap, HashSet},
     sync::RwLock,
 };
+
+/// True for every Switchboard-Pull oracle setup (plain and integration variants).
+///
+/// These oracles are intentionally excluded from the Geyser subscription (see
+/// `get_accounts_to_track`) and kept fresh solely by `SwbPriceFetcher`'s synthetic
+/// price injection. The set here MUST match the set the fetcher writes for, otherwise
+/// an excluded-but-unfetched oracle stays frozen at its stale startup value and every
+/// account touching it is wrongly deemed non-liquidatable.
+pub fn is_switchboard_pull_setup(setup: OracleSetup) -> bool {
+    matches!(
+        setup,
+        OracleSetup::SwitchboardPull
+            | OracleSetup::KaminoSwitchboardPull
+            | OracleSetup::DriftSwitchboardPull
+            | OracleSetup::JuplendSwitchboardPull
+    )
+}
 
 #[derive(Default)]
 struct BanksCacheInner {
@@ -59,7 +79,31 @@ impl BanksCache {
             .expect("banks cache lock poisoned")
             .banks
             .iter()
-            .flat_map(|(_, bank)| find_oracle_keys(&bank.bank.config))
+            .flat_map(|(_, bank)| {
+                let mut keys = find_oracle_keys(&bank.bank.config);
+                // StakedWithPythPush needs a 4th "on-ramp" account that isn't in oracle_keys when
+                // derived from the vote account — load it too, or pricing fails with 6051.
+                if let Some(onramp) = staked_onramp(&bank.bank) {
+                    keys.push(onramp);
+                }
+                keys
+            })
+            .collect()
+    }
+
+    /// Derived on-ramp accounts for every StakedWithPythPush bank.
+    ///
+    /// marginfi 0.1.9 consumes a 4th "on-ramp" account for staked pricing. In PreTransition mode
+    /// this account may not exist on-chain yet (the program doesn't read it then), so the loader
+    /// inserts an empty placeholder for any that are missing — keeping the 4-oracle count aligned
+    /// for both in-process pricing and the on-chain observation list.
+    pub fn get_staked_onramps(&self) -> HashSet<Pubkey> {
+        self.inner
+            .read()
+            .expect("banks cache lock poisoned")
+            .banks
+            .iter()
+            .filter_map(|(_, bank)| staked_onramp(&bank.bank))
             .collect()
     }
 
@@ -85,13 +129,7 @@ impl BanksCache {
             .banks
             .iter()
             .filter_map(|(_, bank)| {
-                if matches!(
-                    bank.bank.config.oracle_setup,
-                    OracleSetup::SwitchboardPull
-                        | OracleSetup::KaminoSwitchboardPull
-                        | OracleSetup::DriftSwitchboardPull
-                        | OracleSetup::JuplendSwitchboardPull
-                ) {
+                if is_switchboard_pull_setup(bank.bank.config.oracle_setup) {
                     Some(bank.bank.config.oracle_keys[0])
                 } else {
                     None
@@ -100,13 +138,18 @@ impl BanksCache {
             .collect()
     }
 
-    /// Returns a map of SwitchboardPull oracle pubkey → bank addresses.
     /// Multiple banks can share the same oracle key, so each entry is a Vec.
+    ///
+    /// Covers the same setups as [`get_swb_oracles`](Self::get_swb_oracles) — including the
+    /// integration variants (Kamino/Drift/Juplend SwitchboardPull) — so the Crossbar fallback
+    /// injects synthetic prices for every oracle excluded from Geyser. For integration banks
+    /// the raw underlying feed lives at `oracle_keys[0]`; the program re-applies the per-bank
+    /// exchange rate on read, so writing the raw feed price there is correct and collision-free.
     pub fn get_swb_oracle_to_bank_map(&self) -> HashMap<Pubkey, Vec<Pubkey>> {
         let mut map: HashMap<Pubkey, Vec<Pubkey>> = HashMap::new();
         let inner = self.inner.read().expect("banks cache lock poisoned");
         for (bank_addr, bank) in &inner.banks {
-            if matches!(bank.bank.config.oracle_setup, OracleSetup::SwitchboardPull) {
+            if is_switchboard_pull_setup(bank.bank.config.oracle_setup) {
                 map.entry(bank.bank.config.oracle_keys[0])
                     .or_default()
                     .push(*bank_addr);

@@ -132,11 +132,18 @@ impl MarginfiAccountWrapper {
                     vec![*bank_pk, oracle_wrapper.get_address()]
                 }
                 OracleSetup::StakedWithPythPush => {
+                    // marginfi consumes exactly 5 accounts for a staked bank (bank + pyth + lst_mint
+                    // + sol_pool + on-ramp) in EVERY transition mode; emitting fewer misaligns the
+                    // flat observation list and fails the on-chain health check with 6051. The 4th
+                    // oracle (on-ramp) is only read in OnRampEnabled mode — in PreTransition it's
+                    // ignored, so when it isn't derivable we duplicate sol_pool to keep the count.
+                    let sol_pool = bank_wrapper.bank.config.oracle_keys[2];
                     vec![
                         *bank_pk,
                         oracle_wrapper.get_address(),
                         bank_wrapper.bank.config.oracle_keys[1],
-                        bank_wrapper.bank.config.oracle_keys[2],
+                        sol_pool,
+                        crate::utils::staked_onramp(&bank_wrapper.bank).unwrap_or(sol_pool),
                     ]
                 }
                 OracleSetup::Fixed => {

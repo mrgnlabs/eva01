@@ -4,6 +4,8 @@ pub mod mints;
 mod oracles;
 mod tokens;
 
+pub use banks::is_switchboard_pull_setup;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -42,8 +44,6 @@ pub struct GroupedLuts {
     pub group1: Vec<AddressLookupTableAccount>,
     pub group2: Vec<AddressLookupTableAccount>,
     pub group3: Vec<AddressLookupTableAccount>,
-    /// On-the-fly LUT created during retry_with_targeted_lut for edge-case liquidations.
-    pub targeted: Option<AddressLookupTableAccount>,
     /// LUTs pending closure: (address, slot at which deactivation was sent).
     /// Closeable after 512-slot cooldown.
     pub deactivating: Vec<(Pubkey, u64)>,
@@ -202,38 +202,31 @@ impl Cache {
         })
     }
 
-    /// Creates (or re-uses the pre-existing one, if, for some reason, it was not deactivated)
-    /// a single targeted LUT containing exactly `accounts`, adds it to overflow,
-    /// and returns it. Used by the tx-too-large retry path so the retry uses only this
-    /// one tight LUT with no unrelated group-LUT header overhead.
+    /// Creates a fresh, self-contained targeted LUT containing exactly `accounts` and returns it.
+    /// Used only by the tx-too-large ("heavy" tx) retry path — regular liquidations fit within the
+    /// predefined group LUTs and never call this. Each call creates its own LUT (no shared slot),
+    /// so concurrent liquidations never collide; the caller owns the returned key and deactivates
+    /// exactly that key via [`deactivate_lut`](Self::deactivate_lut) once the tx has landed.
     pub fn get_targeted_lut(
         &self,
         rpc_client: &RpcClient,
         signer_keypair: &Keypair,
         accounts: Vec<Pubkey>,
     ) -> anyhow::Result<AddressLookupTableAccount> {
-        let lut = if let Some(lut) = self.luts.lock().unwrap().targeted.take() {
-            let updated_addresses = extend_lut(rpc_client, signer_keypair, lut.key, accounts)?;
-            AddressLookupTableAccount {
-                key: lut.key,
-                addresses: updated_addresses,
-            }
-        } else {
-            create_lut(rpc_client, signer_keypair, accounts)?
-        };
-        let _ = self.luts.lock().unwrap().targeted.insert(lut.clone());
-        Ok(lut)
+        create_lut(rpc_client, signer_keypair, accounts)
     }
 
-    /// Deactivates a targeted LUT after use, removing it from overflow and queuing it
-    /// for closure once the 512-slot cooldown has elapsed.
-    pub fn deactivate_targeted_lut(
+    /// Deactivates a specific targeted LUT by key and queues it for closure once the 512-slot
+    /// cooldown has elapsed. Operates only on the passed key — no shared slot — so it is inherently
+    /// concurrency-safe: each liquidation deactivates the LUT it created. On failure the tx errors
+    /// out (LUT not queued) and the caller logs it; the next `try_close_deactivated_luts` sweep is
+    /// unaffected.
+    pub fn deactivate_lut(
         &self,
         rpc_client: &RpcClient,
         signer_keypair: &Keypair,
+        lut_key: Pubkey,
     ) -> anyhow::Result<()> {
-        let lut_key = self.luts.lock().unwrap().targeted.as_ref().unwrap().key;
-
         let ix = deactivate_lookup_table(lut_key, signer_keypair.pubkey());
         let recent_blockhash = rpc_client.get_latest_blockhash()?;
         let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
@@ -252,9 +245,7 @@ impl Cache {
         )?;
 
         let slot = rpc_client.get_slot_with_commitment(CommitmentConfig::confirmed())?;
-        let mut luts = self.luts.lock().unwrap();
-        luts.targeted.take().unwrap();
-        luts.deactivating.push((lut_key, slot));
+        self.luts.lock().unwrap().deactivating.push((lut_key, slot));
         Ok(())
     }
 
@@ -326,7 +317,12 @@ fn create_lut(
     signer_keypair: &Keypair,
     addresses: Vec<Pubkey>,
 ) -> anyhow::Result<AddressLookupTableAccount> {
-    let recent_slot = rpc_client.get_slot_with_commitment(CommitmentConfig::confirmed())?;
+    // Derive the LUT from a FINALIZED slot, not the latest confirmed one. `create_lookup_table`
+    // requires `recent_slot` to be present in the on-chain `SlotHashes` when the tx executes; the
+    // latest confirmed slot can be a slot or two ahead of the node that processes the create tx
+    // (its future) → `InstructionError::InvalidArgument` ("invalid program argument"). A finalized
+    // slot is firmly in the past for every node and still well inside the 512-slot SlotHashes window.
+    let recent_slot = rpc_client.get_slot_with_commitment(CommitmentConfig::finalized())?;
     let (create_ix, lut_address) = create_lookup_table(
         signer_keypair.pubkey(),
         signer_keypair.pubkey(),

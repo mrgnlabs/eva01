@@ -97,7 +97,6 @@ impl CacheLoader {
             group1,
             group2,
             group3,
-            targeted: None,
             deactivating: vec![],
         };
 
@@ -287,6 +286,18 @@ impl CacheLoader {
             cache
                 .oracles
                 .try_insert(*oracle_address, oracle_account.clone())?;
+        }
+
+        // Staked banks need a 4th "on-ramp" account. In PreTransition mode it may not exist
+        // on-chain yet (the program doesn't read it then), so insert an empty placeholder for any
+        // that didn't load — otherwise pricing and the liquidatability eval fail to find it. Once
+        // the pool transitions to OnRampEnabled the account is created and Geyser streams the real
+        // data over this placeholder.
+        for onramp in cache.banks.get_staked_onramps() {
+            if !oracle_map.contains_key(&onramp) {
+                debug!("Inserting empty placeholder for staked on-ramp {:?}.", onramp);
+                cache.oracles.try_insert(onramp, Account::default())?;
+            }
         }
 
         info!("Loaded {} Oracles.", cache.oracles.len()?);
@@ -479,9 +490,17 @@ impl CacheLoader {
 pub fn get_accounts_to_track(cache: &Cache) -> Result<HashMap<Pubkey, AccountType>> {
     let mut accounts: HashMap<Pubkey, AccountType> = HashMap::new();
 
-    let swb_oracles = cache.banks.get_swb_oracles();
+    // Accounts that a background fetcher keeps synthetically fresh must NOT be streamed by Geyser:
+    // Geyser would clobber the patched (never-stale) value with the real, intermittently-stale
+    // on-chain account, making the affected banks flap in and out of "stale oracle" during the
+    // liquidatability check. This covers SWB pull feeds (SwbPriceFetcher) and the Kamino reserve /
+    // Juplend lending accounts that IntegrationAccountFetcher patches. Drift spot markets are NOT
+    // fetcher-owned (no refresh_drift), so they stay on Geyser to keep their staleness field fresh.
+    let mut fetcher_owned = cache.banks.get_swb_oracles();
+    fetcher_owned.extend(cache.banks.get_kamino_reserves());
+    fetcher_owned.extend(cache.banks.get_juplend_lending_states());
     for oracle_pk in cache.oracles.try_get_addresses()? {
-        if !swb_oracles.contains(&oracle_pk) {
+        if !fetcher_owned.contains(&oracle_pk) {
             accounts.insert(oracle_pk, AccountType::Oracle);
         }
     }
