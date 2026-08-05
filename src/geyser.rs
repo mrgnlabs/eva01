@@ -20,6 +20,8 @@ use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::prelude::*;
 
 const RATE_LIMIT_LOG_INTERVAL_SECS: u64 = 60;
+const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct GeyserUpdate {
@@ -112,6 +114,7 @@ impl GeyserService {
         let tracked_accounts_vec: Vec<Pubkey> = self.tracked_accounts.keys().copied().collect();
         let tls_config = ClientTlsConfig::new().with_native_roots();
         let mut from_slot: Option<u64> = None;
+        let mut backoff = INITIAL_RECONNECT_BACKOFF;
 
         while !self.stop.load(Ordering::Relaxed) {
             info!("Connecting to Geyser...");
@@ -124,21 +127,43 @@ impl GeyserService {
 
             // TODO: replace from_slot with auto-reconnect once we migrate to the up-to-date client (requires updating Solana deps):
             // https://docs.triton.one/project-yellowstone/dragons-mouth-grpc-subscriptions#auto-reconnect-rust-client
-            let mut client = self.tokio_rt.block_on(
-                GeyserGrpcClient::build_from_shared(self.endpoint.clone())?
+            //
+            // Establish the connection and subscription inside the reconnect loop so that a
+            // transient Geyser outage (e.g. connection refused) triggers a retry with backoff
+            // instead of propagating out of `start()` and panicking the whole process.
+            let connect_result = self.tokio_rt.block_on(async {
+                let mut client = GeyserGrpcClient::build_from_shared(self.endpoint.clone())?
                     .x_token(self.x_token.clone())?
                     .tls_config(tls_config.clone())?
-                    .connect(),
-            )?;
+                    .connect()
+                    .await?;
+                let (_, stream) = client.subscribe_with_request(Some(sub_req.clone())).await?;
+                Ok::<_, anyhow::Error>(stream)
+            });
 
-            let (_, mut stream) = self
-                .tokio_rt
-                .block_on(client.subscribe_with_request(Some(sub_req.clone())))?;
+            let mut stream = match connect_result {
+                // Don't reset the backoff yet: a server can accept the connection and then
+                // immediately reset the stream (REFUSED_STREAM). Only treat the connection as
+                // healthy once it actually delivers a message (see below).
+                Ok(stream) => stream,
+                Err(e) => {
+                    self.error_logger.warn(&format!(
+                        "Failed to connect to Geyser, retrying in {:?}: {:?}",
+                        backoff, e
+                    ));
+                    self.sleep_interruptible(backoff);
+                    backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
+                    continue;
+                }
+            };
+
             // TODO: use IndexerFlags
             info!("Entering the GeyserService loop");
             while let Some(msg) = self.tokio_rt.block_on(stream.next()) {
                 match msg {
                     Ok(msg) => {
+                        // A delivered message proves the connection is healthy: reset the backoff.
+                        backoff = INITIAL_RECONNECT_BACKOFF;
                         let update_oneof = ward!(msg.update_oneof, continue);
                         if let subscribe_update::UpdateOneof::Account(account) = update_oneof {
                             from_slot = Some(account.slot);
@@ -176,9 +201,14 @@ impl GeyserService {
                     }
                     Err(error) => {
                         self.error_logger.warn(&format!(
-                            "Received error message from Geyser, reconnecting: {:?}",
-                            error
+                            "Received error message from Geyser, reconnecting in {:?}: {:?}",
+                            backoff, error
                         ));
+
+                        // Back off before reconnecting so a server that keeps resetting the
+                        // stream isn't hammered in a tight loop.
+                        self.sleep_interruptible(backoff);
+                        backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
 
                         // Break the inner loop so the outer loop reconnects.
                         break;
@@ -194,6 +224,15 @@ impl GeyserService {
         info!("The GeyserService loop is stopped.");
 
         Ok(())
+    }
+
+    /// Sleeps up to `duration`, waking early if a stop is requested so the reconnect
+    /// backoff never delays a clean shutdown.
+    fn sleep_interruptible(&self, duration: Duration) {
+        let deadline = Instant::now() + duration;
+        while Instant::now() < deadline && !self.stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(200).min(deadline - Instant::now()));
+        }
     }
 
     fn send_update(&self, account_type: AccountType, address: Pubkey, account: &Account) {
