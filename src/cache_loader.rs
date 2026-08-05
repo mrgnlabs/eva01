@@ -67,6 +67,7 @@ impl CacheLoader {
         let marginfi_group =
             bytemuck::from_bytes::<MarginfiGroup>(&marginfi_group_account.data[8..]);
         cache.global_fee_wallet = marginfi_group.fee_state_cache.global_fee_wallet;
+        cache.marginfi_group = *marginfi_group;
 
         self.load_luts(cache)?;
         self.load_marginfi_accounts(cache)?;
@@ -295,7 +296,10 @@ impl CacheLoader {
         // data over this placeholder.
         for onramp in cache.banks.get_staked_onramps() {
             if !oracle_map.contains_key(&onramp) {
-                debug!("Inserting empty placeholder for staked on-ramp {:?}.", onramp);
+                debug!(
+                    "Inserting empty placeholder for staked on-ramp {:?}.",
+                    onramp
+                );
                 cache.oracles.try_insert(onramp, Account::default())?;
             }
         }

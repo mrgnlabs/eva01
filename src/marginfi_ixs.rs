@@ -62,7 +62,7 @@ pub fn make_init_liquidation_record_ix(
 }
 
 pub fn make_start_liquidate_ix(
-    _group: Pubkey,
+    group: Pubkey,
     liquidatee_account: Pubkey,
     liquidator_account: Pubkey,
     liquidation_record: Pubkey,
@@ -72,6 +72,7 @@ pub fn make_start_liquidate_ix(
     let mut accounts = marginfi::accounts::StartLiquidation {
         marginfi_account: liquidatee_account,
         liquidation_receiver: liquidator_account,
+        group,
         liquidation_record,
         instruction_sysvar: sysvar::instructions::id(),
     }
@@ -178,7 +179,7 @@ pub fn make_withdraw_ix(
 }
 
 pub fn make_end_liquidate_ix(
-    _group: Pubkey,
+    group: Pubkey,
     liquidatee_account: Pubkey,
     liquidator_account: Pubkey,
     liquidation_record: Pubkey,
@@ -189,7 +190,9 @@ pub fn make_end_liquidate_ix(
     let mut accounts = marginfi::accounts::EndLiquidation {
         marginfi_account: liquidatee_account,
         liquidation_receiver: liquidator_account,
+        fee_payer: Some(marginfi_type_crate::ID), // means None
         liquidation_record,
+        group,
         fee_state,
         global_fee_wallet,
         system_program: system_program::id(),

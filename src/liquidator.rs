@@ -28,7 +28,7 @@ use marginfi_type_crate::{
     constants::BANKRUPT_THRESHOLD,
     types::{
         reconcile_emode_configs, BalanceSide, Bank, BankOperationalState, EmodeConfig,
-        HealthPriceMode, MarginfiAccount, RequirementType,
+        HealthPriceMode, MarginfiAccount, MarginfiGroup, RequirementType,
     },
 };
 use solana_client::rpc_client::RpcClient;
@@ -391,6 +391,7 @@ impl Liquidator {
             &self.cache,
             clock,
             account,
+            &self.cache.marginfi_group,
             observation_accounts.observation_accounts.as_slice(),
             &asset_bank_wrapper,
             &liab_bank_wrapper,
@@ -463,6 +464,7 @@ impl Liquidator {
         cache: &Cache,
         clock: Clock,
         account: &MarginfiAccountWrapper,
+        group: &MarginfiGroup,
         banks_and_oracles: &[Pubkey],
         asset_bank_wrapper: &BankWrapper,
         liab_bank_wrapper: &BankWrapper,
@@ -489,6 +491,7 @@ impl Liquidator {
 
         let (total_weighted_assets, total_weighted_liabilities) = get_health_components(
             &account.account,
+            group,
             &remaining_ais,
             RequirementType::Maintenance,
             &mut None,
@@ -501,7 +504,8 @@ impl Liquidator {
             .get_active_balances_iter()
             .filter(|b| !b.is_empty(BalanceSide::Liabilities))
             .map(|b| bank_to_emode_config.remove(&b.bank_pk).unwrap());
-        let reconciled_emode_config = reconcile_emode_configs(emode_configs);
+        let reconciled_emode_config =
+            reconcile_emode_configs(emode_configs, RequirementType::Maintenance);
 
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         debug!(
