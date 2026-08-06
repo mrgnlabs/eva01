@@ -295,7 +295,10 @@ impl CacheLoader {
         // data over this placeholder.
         for onramp in cache.banks.get_staked_onramps() {
             if !oracle_map.contains_key(&onramp) {
-                debug!("Inserting empty placeholder for staked on-ramp {:?}.", onramp);
+                debug!(
+                    "Inserting empty placeholder for staked on-ramp {:?}.",
+                    onramp
+                );
                 cache.oracles.try_insert(onramp, Account::default())?;
             }
         }
