@@ -1,4 +1,4 @@
-use crate::{cache::Cache, config::Eva01Config};
+use crate::{cache::Cache, config::Eva01Config, utils::accessor};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{error, info, warn};
@@ -24,6 +24,7 @@ pub struct Rebalancer {
     cache: Arc<Cache>,
     dex_client: Arc<DexSuperAggClient>,
     empty_stake_banks: HashSet<Pubkey>,
+    unpriceable_mints: HashSet<Pubkey>,
 }
 
 impl Rebalancer {
@@ -74,6 +75,7 @@ impl Rebalancer {
             cache,
             dex_client,
             empty_stake_banks: HashSet::new(),
+            unpriceable_mints: HashSet::new(),
         })
     }
 
@@ -94,6 +96,31 @@ impl Rebalancer {
                 Ok(token) => token,
                 Err(_) => continue,
             };
+
+            // Mints backed only by integration banks (Kamino/Drift/JupLend) have no bank that
+            // prices the raw SPL token, so they can never be swept.
+            // Expected to only ever happen on staging.
+            if self.cache.banks.try_get_account_for_mint(&mint).is_err() {
+                let balance = self
+                    .cache
+                    .tokens
+                    .try_get_account(&token)
+                    .ok()
+                    .and_then(|account| accessor::amount(&account.data).ok())
+                    .unwrap_or(0);
+                if balance > 0 {
+                    warn!(
+                        "Holding {} of {} that rebalancing cannot sweep: no non-integration bank prices this mint.",
+                        balance, mint
+                    );
+                } else if self.unpriceable_mints.insert(mint) {
+                    info!(
+                        "Excluding the mint {} from rebalancing: integration banks only.",
+                        mint
+                    );
+                }
+                continue;
+            }
 
             let wrapper = match self.cache.try_get_token_wrapper_lenient(&mint, &token) {
                 Ok(wrapper) => wrapper,
