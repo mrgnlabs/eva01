@@ -12,7 +12,7 @@ use std::{collections::HashSet, sync::Arc};
 use tokio::runtime::{Builder, Runtime};
 
 /// Don't bother selling a position worth less than this (USD); the swap fee/dust isn't worth it.
-const MIN_REBALANCE_VALUE: I80F48 = I80F48!(0.5);
+const MIN_REBALANCE_VALUE: I80F48 = I80F48!(1.0);
 
 /// The rebalancer keeps the liquidator holding only the swap mint (USDC): every other token it ends
 /// up with — seized collateral from a liquidation, or a JIT-buy overshoot — is sold back to USDC on
