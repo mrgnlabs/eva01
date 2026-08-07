@@ -1,7 +1,7 @@
 use anchor_lang::{Id, InstructionData, Key, ToAccountMetas};
 
 use anchor_spl::{associated_token, token_2022};
-use log::{debug, info, trace};
+use log::{debug, trace};
 use marginfi_type_crate::{
     constants::LIQUIDATION_RECORD_SEED,
     pdas::{
@@ -10,13 +10,9 @@ use marginfi_type_crate::{
         derive_kamino_user_state,
     },
 };
-use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
-use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    signature::Keypair,
-    signer::Signer,
     sysvar,
 };
 use solana_sdk_ids::system_program;
@@ -216,25 +212,6 @@ fn maybe_add_bank_mint(accounts: &mut Vec<AccountMeta>, mint: Pubkey, token_prog
     }
 }
 
-pub fn make_create_ix(
-    marginfi_group: Pubkey,
-    marginfi_account: Pubkey,
-    signer: Pubkey,
-) -> Instruction {
-    Instruction {
-        program_id: marginfi_type_crate::ID,
-        accounts: marginfi::accounts::MarginfiAccountInitialize {
-            marginfi_group,
-            marginfi_account,
-            system_program: solana_sdk_ids::system_program::ID,
-            authority: signer,
-            fee_payer: signer,
-        }
-        .to_account_metas(Some(true)),
-        data: marginfi::instruction::MarginfiAccountInitialize.data(),
-    }
-}
-
 fn mark_signer(
     accounts: &mut [solana_sdk::instruction::AccountMeta],
     signer: solana_sdk::pubkey::Pubkey,
@@ -242,44 +219,6 @@ fn mark_signer(
     for m in accounts.iter_mut() {
         m.is_signer = m.pubkey == signer;
     }
-}
-
-pub fn initialize_marginfi_account(
-    rpc_client: &RpcClient,
-    marginfi_group: Pubkey,
-    signer_keypair: &Keypair,
-) -> anyhow::Result<Pubkey> {
-    let marginfi_account_key = Keypair::new();
-
-    let ix = make_create_ix(
-        marginfi_group,
-        marginfi_account_key.pubkey(),
-        signer_keypair.pubkey(),
-    );
-
-    let recent_blockhash = rpc_client.get_latest_blockhash()?;
-    let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
-        &[ix],
-        Some(&signer_keypair.pubkey()),
-        &[signer_keypair, &marginfi_account_key],
-        recent_blockhash,
-    );
-
-    let res = rpc_client.send_and_confirm_transaction_with_spinner_and_config(
-        &tx,
-        CommitmentConfig::finalized(),
-        RpcSendTransactionConfig {
-            skip_preflight: true,
-            ..Default::default()
-        },
-    );
-    info!(
-        "Initialized new Marginfi account {:?} (without preflight check): {:?} ",
-        marginfi_account_key.pubkey(),
-        res
-    );
-
-    Ok(marginfi_account_key.pubkey())
 }
 
 #[allow(clippy::too_many_arguments)]
