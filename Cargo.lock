@@ -9898,3 +9898,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "switchboard-protos"
+version = "0.2.7"
+source = "git+https://github.com/princedotrs/switchboard-sdk?rev=c20150b87f20d9be1ecdd4c5ebe561e2f45183d9#c20150b87f20d9be1ecdd4c5ebe561e2f45183d9"
