@@ -50,7 +50,6 @@ use std::{
 const MAX_CONCURRENT_LIQUIDATIONS: usize = 8;
 
 pub struct Liquidator {
-    liquidator_account: Arc<LiquidatorAccount>,
     rebalancer: Rebalancer,
     executor: Executor,
     strategy: InventoryStrategy,
@@ -121,7 +120,6 @@ impl Liquidator {
         )?;
 
         Ok(Liquidator {
-            liquidator_account,
             rebalancer,
             executor,
             strategy,
@@ -314,10 +312,6 @@ impl Liquidator {
         let mut result: Vec<PreparedLiquidatableAccount> = vec![];
 
         for account_address in account_addresses {
-            if account_address == self.liquidator_account.liquidator_address {
-                continue;
-            }
-
             let account = self
                 .cache
                 .marginfi_accounts

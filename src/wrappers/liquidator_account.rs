@@ -6,9 +6,9 @@ use crate::{
     juplend_ixs::make_update_lending_rate_ix,
     kamino_ixs::{make_refresh_obligation_ix, make_refresh_reserve_ix},
     marginfi_ixs::{
-        initialize_marginfi_account, make_drift_withdraw_ix, make_end_liquidate_ix,
-        make_init_liquidation_record_ix, make_juplend_withdraw_ix, make_kamino_withdraw_ix,
-        make_repay_ix, make_start_liquidate_ix, make_withdraw_ix,
+        make_drift_withdraw_ix, make_end_liquidate_ix, make_init_liquidation_record_ix,
+        make_juplend_withdraw_ix, make_kamino_withdraw_ix, make_repay_ix, make_start_liquidate_ix,
+        make_withdraw_ix,
     },
     utils::{self, marginfi_account_by_authority},
 };
@@ -35,7 +35,7 @@ use solana_sdk::{
     signer::Signer,
     transaction::VersionedTransaction,
 };
-use std::{collections::HashSet, sync::Arc, thread, time::Duration};
+use std::{collections::HashSet, sync::Arc};
 
 pub const PROFIT_SHARE: f64 = 0.085;
 
@@ -53,7 +53,6 @@ pub struct PreparedLiquidatableAccount {
 }
 
 pub struct LiquidatorAccount {
-    pub liquidator_address: Pubkey,
     pub signer: Keypair,
     group: Pubkey,
     rpc_client: RpcClient,
@@ -79,27 +78,7 @@ impl LiquidatorAccount {
             accounts
         );
 
-        let liquidator_address = if accounts.is_empty() {
-            info!("No MarginFi account found for the provided signer. Creating it...");
-            let liquidator_marginfi_account =
-                initialize_marginfi_account(&rpc_client, marginfi_group_id, &signer)?;
-
-            while cache
-                .marginfi_accounts
-                .try_get_account(&liquidator_marginfi_account)
-                .is_err()
-            {
-                info!("Waiting for the new account info to arrive...");
-                thread::sleep(Duration::from_secs(5));
-            }
-
-            liquidator_marginfi_account
-        } else {
-            accounts[0]
-        };
-
         Ok(Self {
-            liquidator_address,
             signer,
             group: marginfi_group_id,
             rpc_client,
@@ -113,8 +92,8 @@ impl LiquidatorAccount {
 
     pub fn init_liq_record(&self, liquidatee_account: &MarginfiAccountWrapper) -> Result<Pubkey> {
         info!(
-            "Initializing liquidation record for account {:?} with liquidator account {:?}.",
-            liquidatee_account.address, self.liquidator_address
+            "Initializing liquidation record for account {:?}",
+            liquidatee_account.address
         );
 
         let signer_pk = self.signer.pubkey();

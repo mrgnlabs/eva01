@@ -1,11 +1,11 @@
-use crate::cache::Cache;
+use crate::cache::{is_switchboard_pull_setup, Cache};
 
 use crate::wrappers::bank::BankWrapper;
 use marginfi::state::bank::BankImpl;
 use solana_sdk::clock::Clock;
 
-use super::oracle::OracleWrapperTrait;
-use anyhow::{Error, Result};
+use super::oracle::{oracle_account_keys, OracleWrapperTrait};
+use anyhow::Result;
 use fixed::types::I80F48;
 use marginfi_type_crate::types::{BalanceSide, LendingAccount, MarginfiAccount, OracleSetup};
 use solana_program::pubkey::Pubkey;
@@ -122,104 +122,38 @@ impl MarginfiAccountWrapper {
 
         for bank_pk in bank_pks.iter() {
             let bank_wrapper = cache.banks.try_get_bank(bank_pk)?;
-            let oracle_wrapper = T::build(cache, clock, bank_pk)?;
-            let bank_and_oracles: Vec<Pubkey> = match bank_wrapper.bank.config.oracle_setup {
-                OracleSetup::PythPushOracle => {
-                    vec![*bank_pk, oracle_wrapper.get_address()]
+            T::build(cache, clock, bank_pk)?;
+
+            let setup = bank_wrapper.bank.config.oracle_setup;
+            let oracle_keys = oracle_account_keys(&bank_wrapper.bank, bank_pk)?;
+
+            if is_switchboard_pull_setup(setup) {
+                if let Some(feed) = oracle_keys.first() {
+                    swb_oracles.push(*feed);
                 }
-                OracleSetup::SwitchboardPull => {
-                    swb_oracles.push(oracle_wrapper.get_address());
-                    vec![*bank_pk, oracle_wrapper.get_address()]
-                }
-                OracleSetup::StakedWithPythPush => {
-                    // marginfi consumes exactly 5 accounts for a staked bank (bank + pyth + lst_mint
-                    // + sol_pool + on-ramp) in EVERY transition mode; emitting fewer misaligns the
-                    // flat observation list and fails the on-chain health check with 6051. The 4th
-                    // oracle (on-ramp) is only read in OnRampEnabled mode — in PreTransition it's
-                    // ignored, so when it isn't derivable we duplicate sol_pool to keep the count.
-                    let sol_pool = bank_wrapper.bank.config.oracle_keys[2];
-                    vec![
-                        *bank_pk,
-                        oracle_wrapper.get_address(),
-                        bank_wrapper.bank.config.oracle_keys[1],
-                        sol_pool,
-                        crate::utils::staked_onramp(&bank_wrapper.bank).unwrap_or(sol_pool),
-                    ]
-                }
-                OracleSetup::Fixed => {
-                    vec![
-                        *bank_pk,
-                        // no oracles here!
-                    ]
-                }
-                OracleSetup::KaminoPythPush => {
+            }
+
+            match setup {
+                OracleSetup::KaminoPythPush
+                | OracleSetup::KaminoSwitchboardPull
+                | OracleSetup::FixedKamino => {
                     kamino_reserves.insert(bank_wrapper.bank.integration_acc_1);
-                    vec![
-                        *bank_pk,
-                        oracle_wrapper.get_address(),
-                        bank_wrapper.bank.config.oracle_keys[1],
-                    ]
                 }
-                OracleSetup::KaminoSwitchboardPull => {
-                    kamino_reserves.insert(bank_wrapper.bank.integration_acc_1);
-                    swb_oracles.push(oracle_wrapper.get_address());
-                    vec![
-                        *bank_pk,
-                        oracle_wrapper.get_address(),
-                        bank_wrapper.bank.config.oracle_keys[1],
-                    ]
-                }
-                OracleSetup::FixedKamino => {
-                    kamino_reserves.insert(bank_wrapper.bank.integration_acc_1);
-                    vec![*bank_pk, bank_wrapper.bank.config.oracle_keys[1]]
-                }
-                OracleSetup::DriftPythPull => {
+                OracleSetup::DriftPythPull
+                | OracleSetup::DriftSwitchboardPull
+                | OracleSetup::FixedDrift => {
                     drift_spot_markets.insert(bank_wrapper.bank.integration_acc_1);
-                    vec![
-                        *bank_pk,
-                        oracle_wrapper.get_address(),
-                        bank_wrapper.bank.config.oracle_keys[1],
-                    ]
                 }
-                OracleSetup::DriftSwitchboardPull => {
-                    drift_spot_markets.insert(bank_wrapper.bank.integration_acc_1);
-                    swb_oracles.push(oracle_wrapper.get_address());
-                    vec![
-                        *bank_pk,
-                        oracle_wrapper.get_address(),
-                        bank_wrapper.bank.config.oracle_keys[1],
-                    ]
-                }
-                OracleSetup::FixedDrift => {
-                    drift_spot_markets.insert(bank_wrapper.bank.integration_acc_1);
-                    vec![*bank_pk, bank_wrapper.bank.config.oracle_keys[1]]
-                }
-                OracleSetup::JuplendPythPull => {
+                OracleSetup::JuplendPythPull
+                | OracleSetup::JuplendSwitchboardPull
+                | OracleSetup::FixedJuplend => {
                     juplend_states.insert(bank_wrapper.bank.integration_acc_1);
-                    vec![
-                        *bank_pk,
-                        oracle_wrapper.get_address(),
-                        bank_wrapper.bank.config.oracle_keys[1],
-                    ]
                 }
-                OracleSetup::JuplendSwitchboardPull => {
-                    juplend_states.insert(bank_wrapper.bank.integration_acc_1);
-                    swb_oracles.push(oracle_wrapper.get_address());
-                    vec![
-                        *bank_pk,
-                        oracle_wrapper.get_address(),
-                        bank_wrapper.bank.config.oracle_keys[1],
-                    ]
-                }
-                OracleSetup::FixedJuplend => {
-                    juplend_states.insert(bank_wrapper.bank.integration_acc_1);
-                    vec![*bank_pk, bank_wrapper.bank.config.oracle_keys[1]]
-                }
-                _ => {
-                    return Err(Error::msg("Unsupported Oracle setup"));
-                }
-            };
-            observation_accounts.extend(bank_and_oracles);
+                _ => {}
+            }
+
+            observation_accounts.push(*bank_pk);
+            observation_accounts.extend(oracle_keys);
         }
 
         Ok(ObservationAccounts {

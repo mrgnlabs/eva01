@@ -3,11 +3,9 @@ use crate::{
     wrappers::bank::BankWrapper,
 };
 use anyhow::{anyhow, Result};
+use marginfi::utils::is_marginfi_asset_tag;
 use marginfi_type_crate::{
-    constants::{
-        ASSET_TAG_DEFAULT, ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO, ASSET_TAG_SOL,
-        ASSET_TAG_STAKED,
-    },
+    constants::{ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO},
     types::{Bank, OracleSetup},
 };
 use solana_sdk::{account::Account, pubkey::Pubkey};
@@ -54,10 +52,7 @@ impl BanksCache {
         inner
             .banks
             .insert(bank_address, BankWrapper::new(bank_address, bank, account));
-        if matches!(
-            bank.config.asset_tag,
-            ASSET_TAG_DEFAULT | ASSET_TAG_SOL | ASSET_TAG_STAKED
-        ) {
+        if is_marginfi_asset_tag(bank.config.asset_tag) {
             inner.mint_to_p0_bank.insert(bank.mint, bank_address);
         }
         Ok(())
