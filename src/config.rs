@@ -24,7 +24,6 @@ pub struct Eva01Config {
     pub titan_ws_endpoint: String,
     pub titan_api_key: String,
     pub jupiter_api_key: String,
-    pub use_fumarole: bool,
     /// Jito block-engine `sendBundle` endpoint; `None` uses the executor's built-in default.
     pub jito_block_engine_url: Option<String>,
     /// Hard cap on the Jito tip per bundle (lamports).
@@ -105,8 +104,6 @@ impl Eva01Config {
         let jupiter_api_key = std::env::var("JUP_SWAP_API_KEY")
             .expect("JUP_SWAP_API_KEY environment variable is not set");
 
-        let use_fumarole = std::env::var("USE_FUMAROLE").is_ok_and(|x| x == "true");
-
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").ok();
         // Default cap 0.001 SOL (matches Jito's typical max tip floor).
         let jito_tip_max_lamports: u64 = std::env::var("JITO_TIP_MAX_LAMPORTS")
@@ -137,7 +134,6 @@ impl Eva01Config {
             titan_ws_endpoint,
             titan_api_key,
             jupiter_api_key,
-            use_fumarole,
             jito_block_engine_url,
             jito_tip_max_lamports,
             bundle_api_key,

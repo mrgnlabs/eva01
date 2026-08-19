@@ -79,7 +79,6 @@ pub struct GeyserService {
     tokio_rt: Runtime,
     stop: Arc<AtomicBool>,
     error_logger: RateLimitedLogger,
-    use_fumarole: bool,
 }
 
 impl GeyserService {
@@ -104,7 +103,6 @@ impl GeyserService {
             tokio_rt,
             stop,
             error_logger: RateLimitedLogger::new(),
-            use_fumarole: config.use_fumarole,
         })
     }
 
@@ -119,11 +117,6 @@ impl GeyserService {
         while !self.stop.load(Ordering::Relaxed) {
             info!("Connecting to Geyser...");
             let sub_req = Self::build_geyser_subscribe_request(&tracked_accounts_vec, from_slot);
-
-            if self.use_fumarole {
-                // TODO: add support for Fumarole once the dependencies are updated to Solana 3
-                // https://crates.io/crates/yellowstone-fumarole-client/0.5.0+solana.3
-            }
 
             // TODO: replace from_slot with auto-reconnect once we migrate to the up-to-date client (requires updating Solana deps):
             // https://docs.triton.one/project-yellowstone/dragons-mouth-grpc-subscriptions#auto-reconnect-rust-client
