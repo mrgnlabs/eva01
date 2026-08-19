@@ -90,3 +90,14 @@ lto = true
 unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(target_os, values("solana"))',
 ] }
+
+# INTERIM: switchboard-protos 0.2.6 (latest on crates.io) is missing
+# OracleTask.pyth_push_feed_id / PythConfigs.push_feed_shard_id, so the crank
+# re-encodes a wrong feed hash for feeds using oracleTask.pythPushFeedId (e.g.
+# the ORE/USD feed) and the gateway rejects with ORACLE_UNAVAILABLE. This pulls
+# Switchboard's fixed 0.2.7 from their fork until it is published to crates.io;
+# once it is, delete this block and run `cargo update -p switchboard-protos`.
+# (Only the protos crate is taken from the fork — its client crate targets
+# solana-sdk 1.x and is incompatible with our solana 3.x stack.)
+[patch.crates-io]
+switchboard-protos = { git = "https://github.com/princedotrs/switchboard-sdk", rev = "c20150b87f20d9be1ecdd4c5ebe561e2f45183d9" }
