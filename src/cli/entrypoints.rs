@@ -34,7 +34,12 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
     let mut clock_manager = ClockManager::new(clock.clone(), config.rpc_url.clone())?;
 
     info!("Loading Cache...");
-    let mut cache = Cache::new(wallet_pubkey, config.marginfi_group_key, clock.clone());
+    let mut cache = Cache::new(
+        wallet_pubkey,
+        config.marginfi_group_key,
+        clock.clone(),
+        config.excluded_liquidation_mints.iter().copied().collect(),
+    );
 
     let cache_loader = CacheLoader::new(
         &config.wallet_keypair,

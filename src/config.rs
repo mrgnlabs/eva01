@@ -12,6 +12,7 @@ pub struct Eva01Config {
     pub luts_group1: Vec<Pubkey>,
     pub luts_group2: Vec<Pubkey>,
     pub luts_group3: Vec<Pubkey>,
+    pub excluded_liquidation_mints: Vec<Pubkey>,
     pub min_profit: f64,
     pub healthcheck_port: u16,
     pub swb_program_id: Pubkey,
@@ -61,6 +62,8 @@ impl Eva01Config {
         let luts_group1 = parse_pubkey_list("ADDRESS_LOOKUP_TABLES_GROUP1").unwrap_or_default();
         let luts_group2 = parse_pubkey_list("ADDRESS_LOOKUP_TABLES_GROUP2").unwrap_or_default();
         let luts_group3 = parse_pubkey_list("ADDRESS_LOOKUP_TABLES_GROUP3").unwrap_or_default();
+
+        let excluded_liquidation_mints = parse_pubkey_list("EXCLUDED_LIQUIDATION_MINTS")?;
 
         let min_profit: f64 = std::env::var("MIN_PROFIT")
             .expect("MIN_PROFIT environment variable is not set")
@@ -122,6 +125,7 @@ impl Eva01Config {
             luts_group1,
             luts_group2,
             luts_group3,
+            excluded_liquidation_mints,
             min_profit,
             healthcheck_port,
             swb_program_id,

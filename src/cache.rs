@@ -7,7 +7,7 @@ mod tokens;
 pub use banks::is_switchboard_pull_setup;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -114,6 +114,7 @@ impl Cache {
         signer_pk: Pubkey,
         marginfi_group_address: Pubkey,
         clock: Arc<Mutex<Clock>>,
+        excluded_mints: HashSet<Pubkey>,
     ) -> Self {
         let (global_fee_state_key, _) =
             Pubkey::find_program_address(&[FEE_STATE_SEED.as_bytes()], &marginfi_type_crate::ID);
@@ -123,7 +124,7 @@ impl Cache {
             marginfi_group: MarginfiGroup::default(),
             marginfi_accounts: MarginfiAccountsCache::default(),
             banks: BanksCache::default(),
-            mints: MintsCache::default(),
+            mints: MintsCache::new(excluded_mints),
             oracles: OraclesCache::default(),
             tokens: TokensCache::default(),
             clock,
