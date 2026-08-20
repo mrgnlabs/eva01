@@ -10,9 +10,13 @@ use std::{
 use anyhow::Result;
 use log::{info, warn};
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
+use solana_sdk::{account::Account, pubkey::Pubkey};
 
-use crate::cache::Cache;
+use crate::{
+    cache::Cache,
+    geyser::{AccountType, GeyserUpdate},
+};
+use crossbeam::channel::Sender;
 
 const FETCH_INTERVAL: Duration = Duration::from_secs(1800);
 
@@ -24,15 +28,35 @@ const JUPLEND_TIMESTAMP_OFFSET: usize = 123;
 pub struct IntegrationAccountFetcher {
     rpc_client: RpcClient,
     cache: Arc<Cache>,
+    geyser_tx: Sender<GeyserUpdate>,
     stop: Arc<AtomicBool>,
 }
 
 impl IntegrationAccountFetcher {
-    pub fn new(rpc_url: String, cache: Arc<Cache>, stop: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        rpc_url: String,
+        cache: Arc<Cache>,
+        geyser_tx: Sender<GeyserUpdate>,
+        stop: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             rpc_client: RpcClient::new(rpc_url),
             cache,
+            geyser_tx,
             stop,
+        }
+    }
+
+    /// These accounts are excluded from the Geyser subscription, so the liquidator never sees them
+    /// change. Publish every write into the same channel, otherwise a reserve / lending state
+    /// refresh queues no accounts for the liquidatability check.
+    fn publish(&self, address: Pubkey, account: Account) {
+        if let Err(e) = self.geyser_tx.send(GeyserUpdate {
+            account_type: AccountType::Oracle,
+            address,
+            account,
+        }) {
+            warn!("IntegrationAccountFetcher: failed to publish the {address} update: {e}");
         }
     }
 
@@ -70,9 +94,10 @@ impl IntegrationAccountFetcher {
                 acct.data[KAMINO_SLOT_OFFSET..KAMINO_SLOT_OFFSET + 8]
                     .copy_from_slice(&u64::MAX.to_le_bytes());
             }
-            if let Err(e) = self.cache.oracles.try_update(addr, acct) {
+            if let Err(e) = self.cache.oracles.try_update(addr, acct.clone()) {
                 warn!("IntegrationAccountFetcher: kamino update failed for {addr}: {e}");
             } else {
+                self.publish(*addr, acct);
                 count += 1;
             }
         }
@@ -99,9 +124,10 @@ impl IntegrationAccountFetcher {
                 acct.data[JUPLEND_TIMESTAMP_OFFSET..JUPLEND_TIMESTAMP_OFFSET + 8]
                     .copy_from_slice(&(i64::MAX as u64).to_le_bytes());
             }
-            if let Err(e) = self.cache.oracles.try_update(addr, acct) {
+            if let Err(e) = self.cache.oracles.try_update(addr, acct.clone()) {
                 warn!("IntegrationAccountFetcher: juplend update failed for {addr}: {e}");
             } else {
+                self.publish(*addr, acct);
                 count += 1;
             }
         }

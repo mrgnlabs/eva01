@@ -58,6 +58,22 @@ impl MarginfiAccountsCache {
             .cloned()
     }
 
+    pub fn try_get_accounts_with_liabilities(&self) -> Result<Vec<Pubkey>> {
+        let inner = self.inner.read().map_err(|e| {
+            anyhow!(
+                "Failed to lock the marginfi accounts cache for liability lookup: {}",
+                e
+            )
+        })?;
+
+        Ok(inner
+            .accounts
+            .keys()
+            .filter(|account| !inner.accounts_without_liabilities.contains(account))
+            .copied()
+            .collect())
+    }
+
     pub fn try_get_accounts_for_bank_with_liabilities(
         &self,
         bank_address: &Pubkey,

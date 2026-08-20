@@ -21,7 +21,11 @@ use solana_sdk::{account::Account, pubkey, pubkey::Pubkey};
 use switchboard_on_demand_client::{CrossbarClient, PullFeedAccountData};
 use tokio::runtime::{Builder, Runtime};
 
-use crate::cache::Cache;
+use crate::{
+    cache::Cache,
+    geyser::{AccountType, GeyserUpdate},
+};
+use crossbeam::channel::Sender;
 
 const SWITCHBOARD_PULL_PROGRAM_ID: Pubkey = pubkey!("SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv");
 const SWB_PULL_FEED_DISCRIMINATOR: [u8; 8] = [196, 27, 108, 196, 10, 215, 219, 40];
@@ -107,6 +111,7 @@ pub struct SwbPriceFetcher {
     crossbar: CrossbarClient,
     tokio_rt: Runtime,
     cache: Arc<Cache>,
+    geyser_tx: Sender<GeyserUpdate>,
     stop: Arc<AtomicBool>,
 }
 
@@ -115,6 +120,7 @@ impl SwbPriceFetcher {
         api_url: Option<String>,
         crossbar_api_url: Option<String>,
         cache: Arc<Cache>,
+        geyser_tx: Sender<GeyserUpdate>,
         stop: Arc<AtomicBool>,
     ) -> Self {
         let crossbar_url = crossbar_api_url.as_deref().unwrap_or(FALLBACK_CROSSBAR_URL);
@@ -129,7 +135,21 @@ impl SwbPriceFetcher {
             crossbar: CrossbarClient::new(crossbar_url, false),
             tokio_rt,
             cache,
+            geyser_tx,
             stop,
+        }
+    }
+
+    /// These oracles are excluded from the Geyser subscription, so the liquidator never sees them
+    /// change. Publish every write into the same channel, otherwise a price move on a Switchboard
+    /// feed queues no accounts for the liquidatability check.
+    fn publish(&self, address: Pubkey, account: Account) {
+        if let Err(e) = self.geyser_tx.send(GeyserUpdate {
+            account_type: AccountType::Oracle,
+            address,
+            account,
+        }) {
+            warn!("SwbPriceFetcher: failed to publish the oracle {address} update: {e}");
         }
     }
 
@@ -195,8 +215,14 @@ impl SwbPriceFetcher {
                 if is_switchboard_pull_setup(bank.bank.config.oracle_setup) {
                     if let Some(&oracle_key) = bank.bank.config.oracle_keys.first() {
                         let synthetic = build_synthetic_swb_account(price_rt, conf_rt);
-                        if let Err(e) = self.cache.oracles.try_update(&oracle_key, synthetic) {
+                        if let Err(e) = self
+                            .cache
+                            .oracles
+                            .try_update(&oracle_key, synthetic.clone())
+                        {
                             warn!("SwbPriceFetcher: failed to write synthetic oracle for {oracle_key}: {e}");
+                        } else {
+                            self.publish(oracle_key, synthetic);
                         }
                     }
                 }
@@ -270,6 +296,8 @@ impl SwbPriceFetcher {
                             .try_update(&oracle_key, synthetic.clone())
                         {
                             warn!("SwbPriceFetcher: failed to write synthetic oracle for {oracle_key}: {e}");
+                        } else {
+                            self.publish(oracle_key, synthetic.clone());
                         }
                     }
                 }

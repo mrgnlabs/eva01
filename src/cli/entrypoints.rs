@@ -74,6 +74,9 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
         cache.clone(),
     )?;
 
+    let swb_fetcher_tx = geyser_tx.clone();
+    let integration_fetcher_tx = geyser_tx.clone();
+
     let geyser_service = GeyserService::new(
         config,
         accounts_to_track,
@@ -93,6 +96,7 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
             swb_fetcher_api_url,
             swb_fetcher_crossbar_url,
             swb_fetcher_cache,
+            swb_fetcher_tx,
             swb_fetcher_stop,
         )
         .start();
@@ -102,6 +106,7 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
         IntegrationAccountFetcher::new(
             integration_fetcher_rpc_url,
             integration_fetcher_cache,
+            integration_fetcher_tx,
             integration_fetcher_stop,
         )
         .start();
