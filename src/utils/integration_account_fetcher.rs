@@ -75,12 +75,20 @@ impl IntegrationAccountFetcher {
     }
 
     pub fn fetch_and_update(&self) -> Result<()> {
-        self.refresh_kamino()?;
-        self.refresh_juplend()?;
-        Ok(())
+        // Publish only once the whole cycle is written: a scan triggered halfway through would
+        // still price against the not-yet-patched half and fail on its staleness check.
+        let mut updated: Vec<(Pubkey, Account)> = vec![];
+        let kamino = self.refresh_kamino(&mut updated);
+        let juplend = self.refresh_juplend(&mut updated);
+
+        for (address, account) in updated {
+            self.publish(address, account);
+        }
+
+        kamino.and(juplend)
     }
 
-    fn refresh_kamino(&self) -> Result<()> {
+    fn refresh_kamino(&self, updated: &mut Vec<(Pubkey, Account)>) -> Result<()> {
         let addresses: Vec<Pubkey> = self.cache.banks.get_kamino_reserves().into_iter().collect();
         if addresses.is_empty() {
             return Ok(());
@@ -97,7 +105,7 @@ impl IntegrationAccountFetcher {
             if let Err(e) = self.cache.oracles.try_update(addr, acct.clone()) {
                 warn!("IntegrationAccountFetcher: kamino update failed for {addr}: {e}");
             } else {
-                self.publish(*addr, acct);
+                updated.push((*addr, acct));
                 count += 1;
             }
         }
@@ -105,7 +113,7 @@ impl IntegrationAccountFetcher {
         Ok(())
     }
 
-    fn refresh_juplend(&self) -> Result<()> {
+    fn refresh_juplend(&self, updated: &mut Vec<(Pubkey, Account)>) -> Result<()> {
         let addresses: Vec<Pubkey> = self
             .cache
             .banks
@@ -127,7 +135,7 @@ impl IntegrationAccountFetcher {
             if let Err(e) = self.cache.oracles.try_update(addr, acct.clone()) {
                 warn!("IntegrationAccountFetcher: juplend update failed for {addr}: {e}");
             } else {
-                self.publish(*addr, acct);
+                updated.push((*addr, acct));
                 count += 1;
             }
         }

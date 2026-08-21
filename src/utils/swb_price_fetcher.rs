@@ -164,7 +164,7 @@ impl SwbPriceFetcher {
         info!("SwbPriceFetcher stopped.");
     }
 
-    fn fetch_and_update(&self) -> Result<()> {
+    pub fn fetch_and_update(&self) -> Result<()> {
         if let Some(api_url) = &self.api_url {
             match self.fetch_from_api(api_url) {
                 Ok(count) => {
