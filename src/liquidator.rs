@@ -187,11 +187,13 @@ impl Liquidator {
                 let intents: Vec<PreparedLiquidatableAccount> = accounts
                     .into_iter()
                     .filter(|acc| {
-                        let worth_it = (acc.profit as f64) >= self.min_profit;
+                        let worth_it = acc.profit >= I80F48::from_num(self.min_profit);
                         if !worth_it {
                             info!(
-                                "Skipping {}: est profit ${} < min ${}",
-                                acc.liquidatee_account.address, acc.profit, self.min_profit
+                                "Skipping {}: est profit ${:.6} < min ${}",
+                                acc.liquidatee_account.address,
+                                acc.profit.to_num::<f64>(),
+                                self.min_profit
                             );
                         }
                         worth_it
@@ -433,7 +435,7 @@ impl Liquidator {
             liab_bank: liab_bank_pk,
             asset_amount: slippage_adjusted_asset_amount,
             liab_amount: slippage_adjusted_liab_amount,
-            profit: liquidation_amounts.liquidator_profit.to_num(),
+            profit: liquidation_amounts.liquidator_profit,
         }))
     }
 
@@ -577,6 +579,12 @@ impl Liquidator {
             .unwrap();
 
         if liquidator_profit <= self.min_profit {
+            debug!(
+                "Account {} profit ${:.6} <= min profit ${}",
+                account.address,
+                liquidator_profit.to_num::<f64>(),
+                self.min_profit
+            );
             return Ok(LiquidationAmounts::none());
         }
 
@@ -640,6 +648,10 @@ impl Liquidator {
                         })
                     {
                         // If it's Switchboard, then it's always at position 0
+                        debug!(
+                            "Bank {} has a stale Switchboard oracle {}",
+                            bank_pk, bank_wrapper.bank.config.oracle_keys[0]
+                        );
                         stale_swb_oracles.insert(bank_wrapper.bank.config.oracle_keys[0]);
                         return Err(anyhow!(SWB_STALE_HANDLED_ERROR));
                     }
