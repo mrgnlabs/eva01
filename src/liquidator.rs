@@ -93,6 +93,7 @@ impl Liquidator {
 
         let rebalancer = Rebalancer::new(config.clone(), cache.clone())?;
         let dex_client = rebalancer.dex_client();
+        let dex_gate = rebalancer.dex_gate();
 
         let jito = JitoClient::new(
             config.jito_block_engine_url.clone(),
@@ -116,6 +117,7 @@ impl Liquidator {
             liquidator_account.clone(),
             config.swap_mint,
             dex_client,
+            dex_gate,
             config.slippage_bps,
         )?;
 
