@@ -28,7 +28,7 @@ use marginfi_type_crate::{
     constants::BANKRUPT_THRESHOLD,
     types::{
         reconcile_emode_configs, BalanceSide, Bank, BankOperationalState, EmodeConfig,
-        HealthPriceMode, MarginfiAccount, RequirementType,
+        HealthPriceMode, MarginfiAccount, MarginfiGroup, RequirementType,
     },
 };
 use solana_client::rpc_client::RpcClient;
@@ -93,6 +93,7 @@ impl Liquidator {
 
         let rebalancer = Rebalancer::new(config.clone(), cache.clone())?;
         let dex_client = rebalancer.dex_client();
+        let dex_gate = rebalancer.dex_gate();
 
         let jito = JitoClient::new(
             config.jito_block_engine_url.clone(),
@@ -116,6 +117,7 @@ impl Liquidator {
             liquidator_account.clone(),
             config.swap_mint,
             dex_client,
+            dex_gate,
             config.slippage_bps,
         )?;
 
@@ -133,74 +135,29 @@ impl Liquidator {
     pub fn start(&mut self) -> Result<()> {
         self.rebalancer.run()?;
 
+        // Geyser only delivers changes, so an account that is already underwater at startup would
+        // wait for an unrelated update to touch one of its banks. Sweep them all once up front.
+        match self
+            .cache
+            .marginfi_accounts
+            .try_get_accounts_with_liabilities()
+        {
+            Ok(accounts) => {
+                info!("Running the initial Liquidation scan...");
+                self.run_liquidation_cycle(accounts);
+            }
+            Err(error) => error!(
+                "Failed to collect accounts for the initial scan: {:?}",
+                error
+            ),
+        }
+
         info!("Staring the Liquidator loop.");
         while !self.stop_liquidator.load(Ordering::Relaxed) {
             debug!("Waiting for any data change...");
             let accounts_to_check = self.receive_geyser_updates()?;
 
-            info!(
-                "Running the Liquidation process for {} account(s)...",
-                accounts_to_check.len()
-            );
-
-            let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
-            let checked_accounts = self.check_accounts(accounts_to_check, &mut stale_swb_oracles);
-
-            match checked_accounts {
-                Ok(mut accounts) => {
-                    // Rank highest-profit first.
-                    accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
-                    accounts.reverse();
-
-                    // Drop below-min-profit intents up front so the parallel section only runs
-                    // real work.
-                    let intents: Vec<PreparedLiquidatableAccount> = accounts
-                        .into_iter()
-                        .filter(|acc| {
-                            let worth_it = (acc.profit as f64) >= self.min_profit;
-                            if !worth_it {
-                                info!(
-                                    "Skipping {}: est profit ${} < min ${}",
-                                    acc.liquidatee_account.address, acc.profit, self.min_profit
-                                );
-                            }
-                            worth_it
-                        })
-                        .collect();
-
-                    // Hand ranked intents to the execution layer concurrently, bounded to
-                    // MAX_CONCURRENT_LIQUIDATIONS in-flight. Each try_execute JIT-buys the liability
-                    // shortfall, simulate-first cranks stale oracles, and lands a Jito bundle (with a
-                    // sequential RPC fallback). Workers pull the next-highest-profit intent from the
-                    // shared queue, so a burst of liquidatable accounts is worked in parallel.
-                    if !intents.is_empty() {
-                        let worker_count = MAX_CONCURRENT_LIQUIDATIONS.min(intents.len());
-                        let queue = Mutex::new(intents.into_iter());
-                        let executor = &self.executor;
-                        let strategy = &self.strategy;
-                        thread::scope(|scope| {
-                            for _ in 0..worker_count {
-                                scope.spawn(|| loop {
-                                    let next = queue.lock().unwrap().next();
-                                    let Some(acc) = next else { break };
-                                    let liquidatee = acc.liquidatee_account.address;
-                                    if let Err(e) = executor.try_execute(strategy, &acc) {
-                                        error!(
-                                            "Failed to execute liquidation for {:?}: {:?}",
-                                            liquidatee, e
-                                        );
-                                    }
-                                });
-                            }
-                        });
-                    }
-                }
-                Err(err) => {
-                    error!("Failed to evaluate accounts in liquidation: {}", err);
-                }
-            }
-
-            info!("The Liquidation process is complete.");
+            self.run_liquidation_cycle(accounts_to_check);
 
             // Sell-only sweep: convert any seized collateral / JIT-buy overshoot back to USDC.
             if let Err(error) = self.rebalancer.run() {
@@ -210,6 +167,74 @@ impl Liquidator {
         info!("The Liquidator loop is stopped.");
 
         Ok(())
+    }
+
+    fn run_liquidation_cycle(&mut self, accounts_to_check: Vec<Pubkey>) {
+        info!(
+            "Running the Liquidation process for {} account(s)...",
+            accounts_to_check.len()
+        );
+
+        let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
+        let checked_accounts = self.check_accounts(accounts_to_check, &mut stale_swb_oracles);
+
+        match checked_accounts {
+            Ok(mut accounts) => {
+                // Rank highest-profit first.
+                accounts.sort_by(|a, b| a.profit.cmp(&b.profit));
+                accounts.reverse();
+
+                // Drop below-min-profit intents up front so the parallel section only runs
+                // real work.
+                let intents: Vec<PreparedLiquidatableAccount> = accounts
+                    .into_iter()
+                    .filter(|acc| {
+                        let worth_it = acc.profit >= I80F48::from_num(self.min_profit);
+                        if !worth_it {
+                            info!(
+                                "Skipping {}: est profit ${:.6} < min ${}",
+                                acc.liquidatee_account.address,
+                                acc.profit.to_num::<f64>(),
+                                self.min_profit
+                            );
+                        }
+                        worth_it
+                    })
+                    .collect();
+
+                // Hand ranked intents to the execution layer concurrently, bounded to
+                // MAX_CONCURRENT_LIQUIDATIONS in-flight. Each try_execute JIT-buys the liability
+                // shortfall, simulate-first cranks stale oracles, and lands a Jito bundle (with a
+                // sequential RPC fallback). Workers pull the next-highest-profit intent from the
+                // shared queue, so a burst of liquidatable accounts is worked in parallel.
+                if !intents.is_empty() {
+                    let worker_count = MAX_CONCURRENT_LIQUIDATIONS.min(intents.len());
+                    let queue = Mutex::new(intents.into_iter());
+                    let executor = &self.executor;
+                    let strategy = &self.strategy;
+                    thread::scope(|scope| {
+                        for _ in 0..worker_count {
+                            scope.spawn(|| loop {
+                                let next = queue.lock().unwrap().next();
+                                let Some(acc) = next else { break };
+                                let liquidatee = acc.liquidatee_account.address;
+                                if let Err(e) = executor.try_execute(strategy, &acc) {
+                                    error!(
+                                        "Failed to execute liquidation for {:?}: {:?}",
+                                        liquidatee, e
+                                    );
+                                }
+                            });
+                        }
+                    });
+                }
+            }
+            Err(err) => {
+                error!("Failed to evaluate accounts in liquidation: {}", err);
+            }
+        }
+
+        info!("The Liquidation process is complete.");
     }
 
     fn receive_geyser_updates(&self) -> Result<Vec<Pubkey>> {
@@ -385,6 +410,7 @@ impl Liquidator {
             &self.cache,
             clock,
             account,
+            &self.cache.marginfi_group,
             observation_accounts.observation_accounts.as_slice(),
             &asset_bank_wrapper,
             &liab_bank_wrapper,
@@ -411,7 +437,7 @@ impl Liquidator {
             liab_bank: liab_bank_pk,
             asset_amount: slippage_adjusted_asset_amount,
             liab_amount: slippage_adjusted_liab_amount,
-            profit: liquidation_amounts.liquidator_profit.to_num(),
+            profit: liquidation_amounts.liquidator_profit,
         }))
     }
 
@@ -457,6 +483,7 @@ impl Liquidator {
         cache: &Cache,
         clock: Clock,
         account: &MarginfiAccountWrapper,
+        group: &MarginfiGroup,
         banks_and_oracles: &[Pubkey],
         asset_bank_wrapper: &BankWrapper,
         liab_bank_wrapper: &BankWrapper,
@@ -483,6 +510,7 @@ impl Liquidator {
 
         let (total_weighted_assets, total_weighted_liabilities) = get_health_components(
             &account.account,
+            group,
             &remaining_ais,
             RequirementType::Maintenance,
             &mut None,
@@ -495,7 +523,8 @@ impl Liquidator {
             .get_active_balances_iter()
             .filter(|b| !b.is_empty(BalanceSide::Liabilities))
             .map(|b| bank_to_emode_config.remove(&b.bank_pk).unwrap());
-        let reconciled_emode_config = reconcile_emode_configs(emode_configs);
+        let reconciled_emode_config =
+            reconcile_emode_configs(emode_configs, RequirementType::Maintenance);
 
         let maintenance_health = total_weighted_assets - total_weighted_liabilities;
         debug!(
@@ -552,6 +581,12 @@ impl Liquidator {
             .unwrap();
 
         if liquidator_profit <= self.min_profit {
+            debug!(
+                "Account {} profit ${:.6} <= min profit ${}",
+                account.address,
+                liquidator_profit.to_num::<f64>(),
+                self.min_profit
+            );
             return Ok(LiquidationAmounts::none());
         }
 
@@ -615,6 +650,10 @@ impl Liquidator {
                         })
                     {
                         // If it's Switchboard, then it's always at position 0
+                        debug!(
+                            "Bank {} has a stale Switchboard oracle {}",
+                            bank_pk, bank_wrapper.bank.config.oracle_keys[0]
+                        );
                         stale_swb_oracles.insert(bank_wrapper.bank.config.oracle_keys[0]);
                         return Err(anyhow!(SWB_STALE_HANDLED_ERROR));
                     }

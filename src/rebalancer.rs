@@ -1,4 +1,4 @@
-use crate::{cache::Cache, config::Eva01Config};
+use crate::{cache::Cache, config::Eva01Config, utils::accessor};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
 use log::{error, info, warn};
@@ -9,7 +9,15 @@ use solana_dex_superagg::{
 };
 use solana_program::pubkey::Pubkey;
 use std::{collections::HashSet, sync::Arc};
-use tokio::runtime::{Builder, Runtime};
+use tokio::{
+    runtime::{Builder, Runtime},
+    sync::Semaphore,
+};
+
+/// Concurrent DEX operations allowed across the liquidation workers and the rebalancer. Each one
+/// costs several aggregator round-trips, so an unbounded burst trips the Jupiter rate limit (429)
+/// and the failing targets then sit in the executor's backoff.
+const MAX_CONCURRENT_DEX_CALLS: usize = 2;
 
 /// Don't bother selling a position worth less than this (USD); the swap fee/dust isn't worth it.
 const MIN_REBALANCE_VALUE: I80F48 = I80F48!(1.0);
@@ -23,7 +31,9 @@ pub struct Rebalancer {
     tokio_rt: Runtime,
     cache: Arc<Cache>,
     dex_client: Arc<DexSuperAggClient>,
+    dex_gate: Arc<Semaphore>,
     empty_stake_banks: HashSet<Pubkey>,
+    unpriceable_mints: HashSet<Pubkey>,
 }
 
 impl Rebalancer {
@@ -73,12 +83,18 @@ impl Rebalancer {
             tokio_rt,
             cache,
             dex_client,
+            dex_gate: Arc::new(Semaphore::new(MAX_CONCURRENT_DEX_CALLS)),
             empty_stake_banks: HashSet::new(),
+            unpriceable_mints: HashSet::new(),
         })
     }
 
     pub fn dex_client(&self) -> Arc<DexSuperAggClient> {
         Arc::clone(&self.dex_client)
+    }
+
+    pub fn dex_gate(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.dex_gate)
     }
 
     /// Sell every non-swap-mint token the wallet holds (above the dust floor) back to the swap mint.
@@ -94,6 +110,31 @@ impl Rebalancer {
                 Ok(token) => token,
                 Err(_) => continue,
             };
+
+            // Mints backed only by integration banks (Kamino/Drift/JupLend) have no bank that
+            // prices the raw SPL token, so they can never be swept.
+            // Expected to only ever happen on staging.
+            if self.cache.banks.try_get_account_for_mint(&mint).is_err() {
+                let balance = self
+                    .cache
+                    .tokens
+                    .try_get_account(&token)
+                    .ok()
+                    .and_then(|account| accessor::amount(&account.data).ok())
+                    .unwrap_or(0);
+                if balance > 0 {
+                    warn!(
+                        "Holding {} of {} that rebalancing cannot sweep: no non-integration bank prices this mint.",
+                        balance, mint
+                    );
+                } else if self.unpriceable_mints.insert(mint) {
+                    info!(
+                        "Excluding the mint {} from rebalancing: integration banks only.",
+                        mint
+                    );
+                }
+                continue;
+            }
 
             let wrapper = match self.cache.try_get_token_wrapper_lenient(&mint, &token) {
                 Ok(wrapper) => wrapper,
@@ -164,12 +205,17 @@ impl Rebalancer {
         const WSOL: Pubkey = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
         let wrap_and_unwrap_sol = input_mint == WSOL || output_mint == WSOL;
 
-        let result = self.tokio_rt.block_on(self.dex_client.swap(
-            &input_mint.to_string(),
-            &output_mint.to_string(),
-            amount,
-            wrap_and_unwrap_sol,
-        ))?;
+        let result = self.tokio_rt.block_on(async {
+            let _permit = self.dex_gate.acquire().await?;
+            self.dex_client
+                .swap(
+                    &input_mint.to_string(),
+                    &output_mint.to_string(),
+                    amount,
+                    wrap_and_unwrap_sol,
+                )
+                .await
+        })?;
 
         info!(
             "Swap successful! Transaction: {}, Output: {} tokens of mint {}",

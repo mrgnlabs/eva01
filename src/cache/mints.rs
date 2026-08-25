@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use solana_sdk::{account::Account, pubkey::Pubkey};
@@ -9,9 +9,17 @@ use crate::wrappers::mint::MintWrapper;
 pub struct MintsCache {
     mints: HashMap<Pubkey, MintWrapper>,
     token_to_mint: HashMap<Pubkey, Pubkey>,
+    excluded_mints: HashSet<Pubkey>,
 }
 
 impl MintsCache {
+    pub fn new(excluded_mints: HashSet<Pubkey>) -> Self {
+        Self {
+            excluded_mints,
+            ..Default::default()
+        }
+    }
+
     pub fn insert(&mut self, mint_address: Pubkey, mint: Account, token_address: Pubkey) {
         self.mints
             .insert(mint_address, MintWrapper::new(token_address, mint));
@@ -26,14 +34,10 @@ impl MintsCache {
     }
 
     pub fn get_mints(&self) -> Vec<Pubkey> {
-        // TODO: remove once UXD & sUSD are sunset
         self.mints
             .keys()
+            .filter(|mint| !self.excluded_mints.contains(mint))
             .cloned()
-            .filter(|&mint| {
-                mint != Pubkey::from_str_const("7kbnvuGBxxj8AG9qp8Scn56muWGaRaFqxg1FsRp3PaFT")
-                    && mint != Pubkey::from_str_const("susdabGDNbhrnCa6ncrYo81u4s9GM8ecK2UwMyZiq4X")
-            })
             .collect()
     }
 

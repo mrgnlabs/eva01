@@ -10,7 +10,7 @@ use crate::{
     },
     wrappers::liquidator_account::LiquidatorAccount,
 };
-use log::{error, info};
+use log::{error, info, warn};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::Signer};
 use std::{
@@ -34,7 +34,12 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
     let mut clock_manager = ClockManager::new(clock.clone(), config.rpc_url.clone())?;
 
     info!("Loading Cache...");
-    let mut cache = Cache::new(wallet_pubkey, config.marginfi_group_key, clock.clone());
+    let mut cache = Cache::new(
+        wallet_pubkey,
+        config.marginfi_group_key,
+        clock.clone(),
+        config.excluded_liquidation_mints.iter().copied().collect(),
+    );
 
     let cache_loader = CacheLoader::new(
         &config.wallet_keypair,
@@ -69,6 +74,9 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
         cache.clone(),
     )?;
 
+    let swb_fetcher_tx = geyser_tx.clone();
+    let integration_fetcher_tx = geyser_tx.clone();
+
     let geyser_service = GeyserService::new(
         config,
         accounts_to_track,
@@ -76,31 +84,36 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
         stop_liquidator.clone(),
     )?;
 
-    let swb_fetcher_cache = cache.clone();
-    let swb_fetcher_stop = stop_liquidator.clone();
-    let integration_fetcher_cache = cache.clone();
-    let integration_fetcher_stop = stop_liquidator.clone();
+    let swb_fetcher = SwbPriceFetcher::new(
+        swb_fetcher_api_url,
+        swb_fetcher_crossbar_url,
+        cache.clone(),
+        swb_fetcher_tx,
+        stop_liquidator.clone(),
+    );
+    let integration_fetcher = IntegrationAccountFetcher::new(
+        integration_fetcher_rpc_url,
+        cache.clone(),
+        integration_fetcher_tx,
+        stop_liquidator.clone(),
+    );
+
+    // Prime both fetchers before any service runs: the accounts they own are loaded from chain in
+    // a state marginfi rejects as stale (Switchboard feeds, Kamino reserves, JupLend lending
+    // states), so anything pricing a bank before their first cycle — the Liquidator's initial scan
+    // above all — fails on staleness instead of evaluating the account.
+    info!("Priming the fetcher-owned accounts...");
+    if let Err(e) = integration_fetcher.fetch_and_update() {
+        warn!("Failed to prime the integration accounts: {:?}", e);
+    }
+    if let Err(e) = swb_fetcher.fetch_and_update() {
+        warn!("Failed to prime the Switchboard prices: {:?}", e);
+    }
 
     info!("Starting services...");
 
-    thread::spawn(move || {
-        SwbPriceFetcher::new(
-            swb_fetcher_api_url,
-            swb_fetcher_crossbar_url,
-            swb_fetcher_cache,
-            swb_fetcher_stop,
-        )
-        .start();
-    });
-
-    thread::spawn(move || {
-        IntegrationAccountFetcher::new(
-            integration_fetcher_rpc_url,
-            integration_fetcher_cache,
-            integration_fetcher_stop,
-        )
-        .start();
-    });
+    thread::spawn(move || swb_fetcher.start());
+    thread::spawn(move || integration_fetcher.start());
 
     let cloned_stop = stop_liquidator.clone();
     thread::spawn(move || clock_manager.start(cloned_stop));

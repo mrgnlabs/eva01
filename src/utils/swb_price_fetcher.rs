@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -21,7 +22,11 @@ use solana_sdk::{account::Account, pubkey, pubkey::Pubkey};
 use switchboard_on_demand_client::{CrossbarClient, PullFeedAccountData};
 use tokio::runtime::{Builder, Runtime};
 
-use crate::cache::Cache;
+use crate::{
+    cache::Cache,
+    geyser::{AccountType, GeyserUpdate},
+};
+use crossbeam::channel::Sender;
 
 const SWITCHBOARD_PULL_PROGRAM_ID: Pubkey = pubkey!("SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv");
 const SWB_PULL_FEED_DISCRIMINATOR: [u8; 8] = [196, 27, 108, 196, 10, 215, 219, 40];
@@ -107,6 +112,7 @@ pub struct SwbPriceFetcher {
     crossbar: CrossbarClient,
     tokio_rt: Runtime,
     cache: Arc<Cache>,
+    geyser_tx: Sender<GeyserUpdate>,
     stop: Arc<AtomicBool>,
 }
 
@@ -115,6 +121,7 @@ impl SwbPriceFetcher {
         api_url: Option<String>,
         crossbar_api_url: Option<String>,
         cache: Arc<Cache>,
+        geyser_tx: Sender<GeyserUpdate>,
         stop: Arc<AtomicBool>,
     ) -> Self {
         let crossbar_url = crossbar_api_url.as_deref().unwrap_or(FALLBACK_CROSSBAR_URL);
@@ -129,7 +136,21 @@ impl SwbPriceFetcher {
             crossbar: CrossbarClient::new(crossbar_url, false),
             tokio_rt,
             cache,
+            geyser_tx,
             stop,
+        }
+    }
+
+    /// These oracles are excluded from the Geyser subscription, so the liquidator never sees them
+    /// change. Publish every write into the same channel, otherwise a price move on a Switchboard
+    /// feed queues no accounts for the liquidatability check.
+    fn publish(&self, address: Pubkey, account: Account) {
+        if let Err(e) = self.geyser_tx.send(GeyserUpdate {
+            account_type: AccountType::Oracle,
+            address,
+            account,
+        }) {
+            warn!("SwbPriceFetcher: failed to publish the oracle {address} update: {e}");
         }
     }
 
@@ -144,35 +165,52 @@ impl SwbPriceFetcher {
         info!("SwbPriceFetcher stopped.");
     }
 
-    fn fetch_and_update(&self) -> Result<()> {
+    pub fn fetch_and_update(&self) -> Result<()> {
+        // The API only serves the banks of its own group, so fall back to Crossbar whenever it
+        // covered fewer than all of ours, not only when the request itself failed.
+        let tracked = self.cache.banks.get_swb_oracles();
+        if tracked.is_empty() {
+            return Ok(());
+        }
+
+        let mut updated: HashSet<Pubkey> = HashSet::new();
         if let Some(api_url) = &self.api_url {
             match self.fetch_from_api(api_url) {
-                Ok(count) => {
-                    debug!("SwbPriceFetcher: updated {} bank prices from API", count);
-                    return Ok(());
-                }
+                Ok(from_api) => updated = from_api,
                 Err(e) => {
                     warn!("SwbPriceFetcher: API fetch failed, falling back to Crossbar: {e}");
                 }
             }
         }
-        match self.fetch_from_crossbar() {
-            Ok(count) => {
-                debug!(
-                    "SwbPriceFetcher: updated {} bank prices from Crossbar",
-                    count
-                );
-                Ok(())
-            }
-            Err(e) => Err(e),
+
+        let missing: Vec<Pubkey> = tracked.difference(&updated).copied().collect();
+        if missing.is_empty() {
+            return Ok(());
         }
+
+        debug!(
+            "SwbPriceFetcher: querying Crossbar for {} oracle(s) the API didn't cover",
+            missing.len()
+        );
+        let from_crossbar = self.fetch_from_crossbar()?;
+        let still_missing: Vec<&Pubkey> = missing
+            .iter()
+            .filter(|oracle| !from_crossbar.contains(oracle))
+            .collect();
+        if !still_missing.is_empty() {
+            warn!(
+                "SwbPriceFetcher: no price for {:?}; accounts using them cannot be evaluated",
+                still_missing
+            );
+        }
+        Ok(())
     }
 
-    fn fetch_from_api(&self, api_url: &str) -> Result<usize> {
+    fn fetch_from_api(&self, api_url: &str) -> Result<HashSet<Pubkey>> {
         let url = format!("{}/v0/realprice", api_url.trim_end_matches('/'));
         let resp: ViewPriceResponse = self.http_client.get(&url).send()?.json()?;
 
-        let mut count = 0usize;
+        let mut updated: HashSet<Pubkey> = HashSet::new();
         for (bank_addr_str, entry) in resp.prices {
             let bank_address = Pubkey::from_str(&bank_addr_str).map_err(|e| {
                 anyhow::anyhow!("Invalid bank pubkey '{bank_addr_str}' in /v0/realprice: {e}")
@@ -189,27 +227,38 @@ impl SwbPriceFetcher {
                 .as_ref()
                 .map(|sp| &sp.price_realtime)
                 .unwrap_or(&entry.oracle_price.price_realtime);
+            if raw.price <= 0.0 {
+                warn!("SwbPriceFetcher: the API reported a non-positive price for bank {bank_address}, skipping");
+                continue;
+            }
             let price_rt = I80F48::from_num(raw.price);
             let conf_rt = I80F48::from_num(raw.confidence);
             if let Ok(bank) = self.cache.banks.try_get_bank(&bank_address) {
                 if is_switchboard_pull_setup(bank.bank.config.oracle_setup) {
                     if let Some(&oracle_key) = bank.bank.config.oracle_keys.first() {
                         let synthetic = build_synthetic_swb_account(price_rt, conf_rt);
-                        if let Err(e) = self.cache.oracles.try_update(&oracle_key, synthetic) {
+                        if let Err(e) = self
+                            .cache
+                            .oracles
+                            .try_update(&oracle_key, synthetic.clone())
+                        {
                             warn!("SwbPriceFetcher: failed to write synthetic oracle for {oracle_key}: {e}");
+                        } else {
+                            self.publish(oracle_key, synthetic);
+                            updated.insert(oracle_key);
                         }
                     }
                 }
             }
-            count += 1;
         }
-        Ok(count)
+
+        Ok(updated)
     }
 
-    fn fetch_from_crossbar(&self) -> Result<usize> {
+    fn fetch_from_crossbar(&self) -> Result<HashSet<Pubkey>> {
         let oracle_to_bank = self.cache.banks.get_swb_oracle_to_bank_map();
         if oracle_to_bank.is_empty() {
-            return Ok(0);
+            return Ok(HashSet::new());
         }
 
         let oracle_addresses: Vec<Pubkey> = oracle_to_bank.keys().cloned().collect();
@@ -218,7 +267,7 @@ impl SwbPriceFetcher {
                 .simulate_solana_feeds(ClusterType::MainnetBeta, &oracle_addresses),
         )?;
 
-        let mut count = 0usize;
+        let mut updated: HashSet<Pubkey> = HashSet::new();
         for response in responses {
             let oracle_pk: Pubkey = response.feed.parse().map_err(|e| {
                 anyhow::anyhow!(
@@ -242,6 +291,12 @@ impl SwbPriceFetcher {
             let price: f64 = result
                 .to_f64()
                 .ok_or_else(|| anyhow::anyhow!("Decimal overflow converting price to f64"))?;
+
+            // A feed Crossbar can't resolve reports 0, which would value the asset at nothing.
+            if price <= 0.0 {
+                warn!("SwbPriceFetcher: Crossbar reported a non-positive price for the oracle {oracle_pk}, skipping");
+                continue;
+            }
 
             // Half-range across oracle submissions as confidence interval
             let valid: Vec<f64> = response
@@ -270,12 +325,14 @@ impl SwbPriceFetcher {
                             .try_update(&oracle_key, synthetic.clone())
                         {
                             warn!("SwbPriceFetcher: failed to write synthetic oracle for {oracle_key}: {e}");
+                        } else {
+                            self.publish(oracle_key, synthetic.clone());
+                            updated.insert(oracle_key);
                         }
                     }
                 }
             }
-            count += 1;
         }
-        Ok(count)
+        Ok(updated)
     }
 }

@@ -7,7 +7,7 @@ mod tokens;
 pub use banks::is_switchboard_pull_setup;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -18,6 +18,7 @@ use banks::BanksCache;
 use marginfi_type_crate::{
     constants::{ASSET_TAG_DEFAULT, ASSET_TAG_SOL, ASSET_TAG_STAKED, FEE_STATE_SEED},
     pdas::derive_kamino_lending_market_authority,
+    types::MarginfiGroup,
 };
 use mints::MintsCache;
 use oracles::OraclesCache;
@@ -82,6 +83,7 @@ impl GroupedLuts {
 pub struct Cache {
     pub signer_pk: Pubkey,
     pub marginfi_group_address: Pubkey,
+    pub marginfi_group: MarginfiGroup,
     pub marginfi_accounts: MarginfiAccountsCache,
     pub banks: BanksCache,
     pub mints: MintsCache,
@@ -112,15 +114,17 @@ impl Cache {
         signer_pk: Pubkey,
         marginfi_group_address: Pubkey,
         clock: Arc<Mutex<Clock>>,
+        excluded_mints: HashSet<Pubkey>,
     ) -> Self {
         let (global_fee_state_key, _) =
             Pubkey::find_program_address(&[FEE_STATE_SEED.as_bytes()], &marginfi_type_crate::ID);
         Self {
             signer_pk,
             marginfi_group_address,
+            marginfi_group: MarginfiGroup::default(),
             marginfi_accounts: MarginfiAccountsCache::default(),
             banks: BanksCache::default(),
-            mints: MintsCache::default(),
+            mints: MintsCache::new(excluded_mints),
             oracles: OraclesCache::default(),
             tokens: TokensCache::default(),
             clock,

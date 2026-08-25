@@ -54,7 +54,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 signal-hook = "0.4.3"
 tiny_http = "0.12.0"
-tokio = { version = "1.50.0", features = ["rt", "macros"] }
+tokio = { version = "1.50.0", features = ["rt", "macros", "sync"] }
 warp = "0.4.2"
 
 yellowstone-grpc-client = "10.2.0"
@@ -65,16 +65,16 @@ switchboard-on-demand-client = { git = "https://github.com/switchboard-xyz/switc
 
 [dependencies.marginfi_type_crate]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-tag = "mrgn-0.1.9-rc3"
-#rev = "4abf7d0a45e1f719a630487c2d09d3d1e9d36c85"
+#tag = "mrgn-0.1.10-rc1"
+rev = "e3c9b4e104d22c54aca180c31b90ff44c337f42d"
 package = "marginfi-type-crate"
 default-features = false
 features = ["client"]
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-tag = "mrgn-0.1.9-rc3"
-#rev = "4abf7d0a45e1f719a630487c2d09d3d1e9d36c85"
+#tag = "mrgn-0.1.10-rc1"
+rev = "e3c9b4e104d22c54aca180c31b90ff44c337f42d"
 default-features = false
 features = ["client", "no-entrypoint", "custom-heap"]
 

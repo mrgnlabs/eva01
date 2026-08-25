@@ -22,7 +22,10 @@ use log::{debug, info};
 use solana_dex_superagg::{buy_shortfall, DexSuperAggClient};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::transaction::VersionedTransaction;
-use tokio::runtime::{Builder, Runtime};
+use tokio::{
+    runtime::{Builder, Runtime},
+    sync::Semaphore,
+};
 
 use crate::clock_manager;
 use crate::wrappers::{
@@ -41,6 +44,7 @@ const INPUT_BUFFER: f64 = 1.02;
 pub struct InventoryStrategy {
     liquidator_account: Arc<LiquidatorAccount>,
     dex_client: Arc<DexSuperAggClient>,
+    dex_gate: Arc<Semaphore>,
     tokio_rt: Runtime,
     swap_mint: Pubkey,
     slippage_bps: u16,
@@ -51,6 +55,7 @@ impl InventoryStrategy {
         liquidator_account: Arc<LiquidatorAccount>,
         swap_mint: Pubkey,
         dex_client: Arc<DexSuperAggClient>,
+        dex_gate: Arc<Semaphore>,
         slippage_bps: u16,
     ) -> Result<Self> {
         // Multi-threaded so concurrent liquidations can `block_on` DEX quotes at the same time —
@@ -64,6 +69,7 @@ impl InventoryStrategy {
 
         Ok(Self {
             liquidator_account,
+            dex_gate,
             dex_client,
             tokio_rt,
             swap_mint,
@@ -114,7 +120,10 @@ impl InventoryStrategy {
         route_config.slippage_bps = Some(self.slippage_bps);
         route_config.wrap_and_unwrap_sol = false;
 
-        let prepared = self.tokio_rt.block_on(
+        // One permit for the whole sequence: the min-out flow quotes, re-quotes and then builds,
+        // which is a handful of aggregator requests per liquidation.
+        let prepared = self.tokio_rt.block_on(async {
+            let _permit = self.dex_gate.acquire().await?;
             self.dex_client
                 .build_swap_transaction_for_min_out_with_route_config(
                     &self.swap_mint.to_string(),
@@ -122,8 +131,9 @@ impl InventoryStrategy {
                     input_amount,
                     min_out,
                     route_config,
-                ),
-        )?;
+                )
+                .await
+        })?;
         debug!(
             "InventoryStrategy: ExactIn spends {} {} for {} {} (need {})",
             prepared.in_amount, self.swap_mint, prepared.out_amount, output_mint, min_out

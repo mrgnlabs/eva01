@@ -49,7 +49,7 @@ pub struct PreparedLiquidatableAccount {
     pub liab_bank: Pubkey,
     pub asset_amount: I80F48,
     pub liab_amount: I80F48,
-    pub profit: u64,
+    pub profit: I80F48,
 }
 
 pub struct LiquidatorAccount {

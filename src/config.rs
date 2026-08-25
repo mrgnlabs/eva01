@@ -12,6 +12,7 @@ pub struct Eva01Config {
     pub luts_group1: Vec<Pubkey>,
     pub luts_group2: Vec<Pubkey>,
     pub luts_group3: Vec<Pubkey>,
+    pub excluded_liquidation_mints: Vec<Pubkey>,
     pub min_profit: f64,
     pub healthcheck_port: u16,
     pub swb_program_id: Pubkey,
@@ -23,7 +24,6 @@ pub struct Eva01Config {
     pub titan_ws_endpoint: String,
     pub titan_api_key: String,
     pub jupiter_api_key: String,
-    pub use_fumarole: bool,
     /// Jito block-engine `sendBundle` endpoint; `None` uses the executor's built-in default.
     pub jito_block_engine_url: Option<String>,
     /// Hard cap on the Jito tip per bundle (lamports).
@@ -61,6 +61,8 @@ impl Eva01Config {
         let luts_group1 = parse_pubkey_list("ADDRESS_LOOKUP_TABLES_GROUP1").unwrap_or_default();
         let luts_group2 = parse_pubkey_list("ADDRESS_LOOKUP_TABLES_GROUP2").unwrap_or_default();
         let luts_group3 = parse_pubkey_list("ADDRESS_LOOKUP_TABLES_GROUP3").unwrap_or_default();
+
+        let excluded_liquidation_mints = parse_pubkey_list("EXCLUDED_LIQUIDATION_MINTS")?;
 
         let min_profit: f64 = std::env::var("MIN_PROFIT")
             .expect("MIN_PROFIT environment variable is not set")
@@ -102,8 +104,6 @@ impl Eva01Config {
         let jupiter_api_key = std::env::var("JUP_SWAP_API_KEY")
             .expect("JUP_SWAP_API_KEY environment variable is not set");
 
-        let use_fumarole = std::env::var("USE_FUMAROLE").is_ok_and(|x| x == "true");
-
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").ok();
         // Default cap 0.001 SOL (matches Jito's typical max tip floor).
         let jito_tip_max_lamports: u64 = std::env::var("JITO_TIP_MAX_LAMPORTS")
@@ -122,6 +122,7 @@ impl Eva01Config {
             luts_group1,
             luts_group2,
             luts_group3,
+            excluded_liquidation_mints,
             min_profit,
             healthcheck_port,
             swb_program_id,
@@ -133,7 +134,6 @@ impl Eva01Config {
             titan_ws_endpoint,
             titan_api_key,
             jupiter_api_key,
-            use_fumarole,
             jito_block_engine_url,
             jito_tip_max_lamports,
             bundle_api_key,
