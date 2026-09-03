@@ -3,7 +3,7 @@ use crate::{
     wrappers::bank::BankWrapper,
 };
 use anyhow::{anyhow, Result};
-use marginfi::utils::is_marginfi_asset_tag;
+use marginfi::{state::bank_config::BankConfigImpl, utils::is_marginfi_asset_tag};
 use marginfi_type_crate::{
     constants::{ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO},
     types::{Bank, OracleSetup},
@@ -115,6 +115,32 @@ impl BanksCache {
                     .then_some(*bank_address)
             })
             .collect())
+    }
+
+    /// `oracle_keys[0] -> oracle_max_age` for every bank priced from a Pyth push account.
+    pub fn get_pyth_push_oracles(&self) -> HashMap<Pubkey, u64> {
+        self.inner
+            .read()
+            .expect("banks cache lock poisoned")
+            .banks
+            .values()
+            .filter(|bank| {
+                matches!(
+                    bank.bank.config.oracle_setup,
+                    OracleSetup::PythPushOracle
+                        | OracleSetup::StakedWithPythPush
+                        | OracleSetup::KaminoPythPush
+                        | OracleSetup::DriftPythPull
+                        | OracleSetup::JuplendPythPull
+                )
+            })
+            .map(|bank| {
+                (
+                    bank.bank.config.oracle_keys[0],
+                    bank.bank.config.get_oracle_max_age(),
+                )
+            })
+            .collect()
     }
 
     pub fn get_swb_oracles(&self) -> HashSet<Pubkey> {

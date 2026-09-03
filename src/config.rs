@@ -16,6 +16,8 @@ pub struct Eva01Config {
     pub min_profit: f64,
     pub healthcheck_port: u16,
     pub swb_program_id: Pubkey,
+    pub pyth_hermes_url: String,
+    pub pyth_api_key: Option<String>,
     pub crossbar_api_url: Option<String>,
     pub project0_api_url: Option<String>,
     pub jup_swap_api_url: String,
@@ -104,6 +106,11 @@ impl Eva01Config {
         let jupiter_api_key = std::env::var("JUP_SWAP_API_KEY")
             .expect("JUP_SWAP_API_KEY environment variable is not set");
 
+        let pyth_hermes_url = std::env::var("PYTH_HERMES_URL")
+            .unwrap_or_else(|_| crate::utils::pyth_cranker::DEFAULT_HERMES_URL.to_string());
+
+        let pyth_api_key = std::env::var("PYTH_API_KEY").ok();
+
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").ok();
         // Default cap 0.001 SOL (matches Jito's typical max tip floor).
         let jito_tip_max_lamports: u64 = std::env::var("JITO_TIP_MAX_LAMPORTS")
@@ -126,6 +133,8 @@ impl Eva01Config {
             min_profit,
             healthcheck_port,
             swb_program_id,
+            pyth_hermes_url,
+            pyth_api_key,
             crossbar_api_url,
             project0_api_url,
             jup_swap_api_url,

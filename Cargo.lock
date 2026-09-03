@@ -1842,6 +1842,8 @@ dependencies = [
  "log",
  "marginfi",
  "marginfi-type-crate",
+ "pyth-solana-receiver-sdk",
+ "pythnet-sdk",
  "rayon",
  "reqwest 0.12.28",
  "rust_decimal",
