@@ -6,7 +6,8 @@ use crate::{
     geyser::{GeyserService, GeyserUpdate},
     liquidator::Liquidator,
     utils::{
-        integration_account_fetcher::IntegrationAccountFetcher, swb_price_fetcher::SwbPriceFetcher,
+        integration_account_fetcher::IntegrationAccountFetcher, pyth_cranker::PythCranker,
+        swb_price_fetcher::SwbPriceFetcher,
     },
     wrappers::liquidator_account::LiquidatorAccount,
 };
@@ -74,6 +75,17 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
         cache.clone(),
     )?;
 
+    let pyth_cranker = if config.pyth_cranker_enabled {
+        Some(PythCranker::new(
+            &config,
+            cache.clone(),
+            stop_liquidator.clone(),
+        )?)
+    } else {
+        info!("The Pyth cranker is disabled (set PYTH_CRANKER_ENABLED=true to enable it).");
+        None
+    };
+
     let swb_fetcher_tx = geyser_tx.clone();
     let integration_fetcher_tx = geyser_tx.clone();
 
@@ -112,6 +124,9 @@ pub fn run_liquidator(config: Eva01Config, stop_liquidator: Arc<AtomicBool>) -> 
 
     info!("Starting services...");
 
+    if let Some(pyth_cranker) = pyth_cranker {
+        thread::spawn(move || pyth_cranker.start());
+    }
     thread::spawn(move || swb_fetcher.start());
     thread::spawn(move || integration_fetcher.start());
 

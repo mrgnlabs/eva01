@@ -22,7 +22,7 @@ use anyhow::{anyhow, Result};
 use crossbeam::channel::{Receiver, RecvTimeoutError};
 use fixed::types::I80F48;
 use fixed_macro::types::I80F48;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use marginfi::state::{bank::BankImpl, marginfi_account::get_health_components};
 use marginfi_type_crate::{
     constants::BANKRUPT_THRESHOLD,
@@ -31,6 +31,7 @@ use marginfi_type_crate::{
         HealthPriceMode, MarginfiAccount, MarginfiGroup, RequirementType,
     },
 };
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use solana_client::rpc_client::RpcClient;
 use solana_commitment_config::CommitmentConfig;
 use solana_program::pubkey::Pubkey;
@@ -39,15 +40,18 @@ use std::sync::atomic::Ordering;
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Max liquidations executed concurrently. Bounds in-flight RPC/sim/bundle load while still
 /// letting a burst of liquidatable accounts (e.g. a price crash) be worked in parallel rather
 /// than one-at-a-time.
 const MAX_CONCURRENT_LIQUIDATIONS: usize = 8;
+
+/// How often the feeds that are blocking accounts are reported.
+const STALE_ORACLE_REPORT_INTERVAL: Duration = Duration::from_secs(300);
 
 pub struct Liquidator {
     rebalancer: Rebalancer,
@@ -57,6 +61,7 @@ pub struct Liquidator {
     geyser_rx: Receiver<GeyserUpdate>,
     stop_liquidator: Arc<AtomicBool>,
     cache: Arc<Cache>,
+    stale_reported_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,6 +134,7 @@ impl Liquidator {
             geyser_rx,
             stop_liquidator,
             cache,
+            stale_reported_at: Instant::now() - STALE_ORACLE_REPORT_INTERVAL,
         })
     }
 
@@ -175,8 +181,10 @@ impl Liquidator {
             accounts_to_check.len()
         );
 
-        let mut stale_swb_oracles: HashSet<Pubkey> = HashSet::new();
-        let checked_accounts = self.check_accounts(accounts_to_check, &mut stale_swb_oracles);
+        let account_count = accounts_to_check.len();
+        let stale_swb_oracles: RwLock<HashSet<Pubkey>> = RwLock::new(HashSet::new());
+        let checked_accounts = self.check_accounts(accounts_to_check, &stale_swb_oracles);
+        self.report_stale_oracles(&stale_swb_oracles, account_count);
 
         match checked_accounts {
             Ok(mut accounts) => {
@@ -327,43 +335,65 @@ impl Liquidator {
         Ok(())
     }
 
+    /// Switchboard feeds that neither the price fetcher nor Crossbar could price block every
+    /// account touching them, silently. Surface them at most once per interval, since the same
+    /// feeds recur on every cycle.
+    fn report_stale_oracles(&mut self, stale: &RwLock<HashSet<Pubkey>>, accounts: usize) {
+        let stale = match stale.read() {
+            Ok(stale) if !stale.is_empty() => stale,
+            _ => return,
+        };
+
+        if self.stale_reported_at.elapsed() < STALE_ORACLE_REPORT_INTERVAL {
+            return;
+        }
+        self.stale_reported_at = Instant::now();
+
+        warn!(
+            "{} Switchboard oracle(s) have no usable price and block accounts from being \
+             evaluated (of {} scanned): {:?}",
+            stale.len(),
+            accounts,
+            stale.iter().collect::<Vec<_>>()
+        );
+    }
+
     fn check_accounts(
-        &mut self,
+        &self,
         account_addresses: Vec<Pubkey>,
-        stale_swb_oracles: &mut HashSet<Pubkey>,
+        stale_swb_oracles: &RwLock<HashSet<Pubkey>>,
     ) -> Result<Vec<PreparedLiquidatableAccount>> {
         let clock = clock_manager::get_clock(&self.cache.clock)?;
 
-        let mut result: Vec<PreparedLiquidatableAccount> = vec![];
+        // Evaluation is CPU-bound (oracle parsing + health math) and independent per account, so a
+        // full scan of every borrower parallelises cleanly across cores.
+        Ok(account_addresses
+            .into_par_iter()
+            .filter_map(|account_address| {
+                let account = self
+                    .cache
+                    .marginfi_accounts
+                    .try_get_account(&account_address)
+                    .ok()?;
 
-        for account_address in account_addresses {
-            let account = self
-                .cache
-                .marginfi_accounts
-                .try_get_account(&account_address)?;
-
-            match self.process_account(&account, clock.clone(), stale_swb_oracles) {
-                Ok(acc_opt) => {
-                    if let Some(acc) = acc_opt {
-                        result.push(acc);
+                match self.process_account(&account, clock.clone(), stale_swb_oracles) {
+                    Ok(acc_opt) => acc_opt,
+                    Err(err) => {
+                        if !err.to_string().contains(SWB_STALE_HANDLED_ERROR) {
+                            debug!("Failed to process account {:?}: {:?}", account.address, err);
+                        }
+                        None
                     }
                 }
-                Err(err) => {
-                    if !err.to_string().contains(SWB_STALE_HANDLED_ERROR) {
-                        debug!("Failed to process account {:?}: {:?}", account.address, err);
-                    }
-                }
-            }
-        }
-
-        Ok(result)
+            })
+            .collect())
     }
 
     fn process_account(
         &self,
         account: &MarginfiAccountWrapper,
         clock: Clock,
-        stale_swb_oracles: &mut HashSet<Pubkey>,
+        stale_swb_oracles: &RwLock<HashSet<Pubkey>>,
     ) -> Result<Option<PreparedLiquidatableAccount>> {
         let (deposit_shares, liab_shares) = account.get_deposits_and_liabilities_shares();
         if deposit_shares.is_empty() || liab_shares.is_empty() {
@@ -522,7 +552,11 @@ impl Liquidator {
             .lending_account
             .get_active_balances_iter()
             .filter(|b| !b.is_empty(BalanceSide::Liabilities))
-            .map(|b| bank_to_emode_config.remove(&b.bank_pk).unwrap());
+            .map(|b| {
+                bank_to_emode_config
+                    .remove(&b.bank_pk)
+                    .expect("every liability bank is in the observation accounts")
+            });
         let reconciled_emode_config =
             reconcile_emode_configs(emode_configs, RequirementType::Maintenance);
 
@@ -578,7 +612,7 @@ impl Liquidator {
         let max_liquidatable_value = min(min(asset_value, liab_value), underwater_value);
         let liquidator_profit = max_liquidatable_value
             .checked_mul(I80F48::from_num(PROFIT_SHARE))
-            .unwrap();
+            .ok_or_else(|| anyhow!("Liquidator profit overflow"))?;
 
         if liquidator_profit <= self.min_profit {
             debug!(
@@ -626,13 +660,17 @@ impl Liquidator {
         shares: Vec<(I80F48, Pubkey)>,
         balance_side: &BalanceSide,
         requirement_type: RequirementType,
-        stale_swb_oracles: &mut HashSet<Pubkey>,
+        stale_swb_oracles: &RwLock<HashSet<Pubkey>>,
     ) -> Result<Vec<(I80F48, Pubkey)>> {
         let mut values: Vec<(I80F48, Pubkey)> = Vec::new();
 
         for (shares_amount, bank_pk) in shares {
             let bank_wrapper = self.cache.banks.try_get_bank(&bank_pk)?;
-            if stale_swb_oracles.contains(&bank_wrapper.bank.config.oracle_keys[0]) {
+            if stale_swb_oracles
+                .read()
+                .map_err(|_| anyhow!("stale oracle set is poisoned"))?
+                .contains(&bank_wrapper.bank.config.oracle_keys[0])
+            {
                 return Err(anyhow!(SWB_STALE_HANDLED_ERROR));
             }
 
@@ -650,11 +688,10 @@ impl Liquidator {
                         })
                     {
                         // If it's Switchboard, then it's always at position 0
-                        debug!(
-                            "Bank {} has a stale Switchboard oracle {}",
-                            bank_pk, bank_wrapper.bank.config.oracle_keys[0]
-                        );
-                        stale_swb_oracles.insert(bank_wrapper.bank.config.oracle_keys[0]);
+                        stale_swb_oracles
+                            .write()
+                            .map_err(|_| anyhow!("stale oracle set is poisoned"))?
+                            .insert(bank_wrapper.bank.config.oracle_keys[0]);
                         return Err(anyhow!(SWB_STALE_HANDLED_ERROR));
                     }
 

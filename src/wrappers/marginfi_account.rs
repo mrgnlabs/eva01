@@ -136,7 +136,9 @@ impl MarginfiAccountWrapper {
             match setup {
                 OracleSetup::KaminoPythPush
                 | OracleSetup::KaminoSwitchboardPull
-                | OracleSetup::FixedKamino => {
+                | OracleSetup::FixedKamino
+                | OracleSetup::KaminoMSOL
+                | OracleSetup::KaminoLST => {
                     kamino_reserves.insert(bank_wrapper.bank.integration_acc_1);
                 }
                 OracleSetup::DriftPythPull
@@ -146,7 +148,9 @@ impl MarginfiAccountWrapper {
                 }
                 OracleSetup::JuplendPythPull
                 | OracleSetup::JuplendSwitchboardPull
-                | OracleSetup::FixedJuplend => {
+                | OracleSetup::FixedJuplend
+                | OracleSetup::JuplendMSOL
+                | OracleSetup::JuplendLST => {
                     juplend_states.insert(bank_wrapper.bank.integration_acc_1);
                 }
                 _ => {}

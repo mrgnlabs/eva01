@@ -1627,7 +1627,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 [[package]]
 name = "drift-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=e3c9b4e104d22c54aca180c31b90ff44c337f42d#e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -1828,6 +1828,7 @@ dependencies = [
  "bincode",
  "bytemuck",
  "bytemuck_derive",
+ "byteorder",
  "chrono",
  "crossbeam",
  "ctrlc",
@@ -1842,6 +1843,8 @@ dependencies = [
  "log",
  "marginfi",
  "marginfi-type-crate",
+ "pyth-solana-receiver-sdk",
+ "pythnet-sdk",
  "rayon",
  "reqwest 0.12.28",
  "rust_decimal",
@@ -1890,6 +1893,17 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "exponent-mocks"
+version = "0.1.0"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "marginfi-type-crate",
+ "static_assertions",
 ]
 
 [[package]]
@@ -2792,7 +2806,7 @@ dependencies = [
 [[package]]
 name = "id-crate"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=e3c9b4e104d22c54aca180c31b90ff44c337f42d#e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
 dependencies = [
  "anchor-lang",
  "cfg-if",
@@ -3028,7 +3042,7 @@ dependencies = [
 [[package]]
 name = "juplend-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=e3c9b4e104d22c54aca180c31b90ff44c337f42d#e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -3051,7 +3065,7 @@ dependencies = [
 [[package]]
 name = "kamino-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=e3c9b4e104d22c54aca180c31b90ff44c337f42d#e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -3186,8 +3200,8 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "marginfi"
-version = "0.1.10"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=e3c9b4e104d22c54aca180c31b90ff44c337f42d#e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+version = "0.1.11"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -3196,6 +3210,7 @@ dependencies = [
  "cfg-if",
  "drift-mocks",
  "enum_dispatch",
+ "exponent-mocks",
  "fixed",
  "fixed-macro",
  "id-crate",
@@ -3203,7 +3218,9 @@ dependencies = [
  "kamino-mocks",
  "lazy_static",
  "marginfi-type-crate",
+ "marinade-mocks",
  "pyth-solana-receiver-sdk",
+ "scope-mocks",
  "solana-borsh",
  "solana-instructions-sysvar",
  "solana-msg",
@@ -3222,7 +3239,7 @@ dependencies = [
 [[package]]
 name = "marginfi-type-crate"
 version = "0.1.10"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=e3c9b4e104d22c54aca180c31b90ff44c337f42d#e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
 dependencies = [
  "anchor-lang",
  "bs58 0.5.1",
@@ -3232,6 +3249,17 @@ dependencies = [
  "id-crate",
  "solana-instruction",
  "spl-associated-token-account",
+ "static_assertions",
+]
+
+[[package]]
+name = "marinade-mocks"
+version = "0.1.0"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "marginfi-type-crate",
  "static_assertions",
 ]
 
@@ -4910,6 +4938,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f29ebaa345f945cec9fbbc532eb307f0fdad8161f281b6369539c8d84876b3d"
 dependencies = [
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "scope-mocks"
+version = "0.1.0"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "marginfi-type-crate",
+ "static_assertions",
 ]
 
 [[package]]
@@ -7545,7 +7584,7 @@ dependencies = [
 [[package]]
 name = "solend-mocks"
 version = "0.1.0"
-source = "git+https://github.com/mrgnlabs/marginfi-v2?rev=e3c9b4e104d22c54aca180c31b90ff44c337f42d#e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+source = "git+https://github.com/mrgnlabs/marginfi-v2?tag=mrgn-0.1.11-rc1#33c67987a661f59c6683a65485ebb4f0ef030b77"
 dependencies = [
  "anchor-lang",
  "bytemuck",

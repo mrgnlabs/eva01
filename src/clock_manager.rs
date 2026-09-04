@@ -4,9 +4,10 @@ use solana_sdk::clock::Clock;
 use solana_sdk::sysvar::{self};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const REFRESH_INTERVAL_SEC: u64 = 10;
+const TICK_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct ClockManager {
     rpc_client: RpcClient,
@@ -30,8 +31,18 @@ impl ClockManager {
 
     pub fn start(&mut self, stop_liquidator: Arc<AtomicBool>) {
         info!("Starting the ClockManager loop.");
+        let mut last_refresh = Instant::now();
+
         while !stop_liquidator.load(Ordering::Relaxed) {
-            std::thread::sleep(self.refresh_interval);
+            std::thread::sleep(TICK_INTERVAL);
+
+            if last_refresh.elapsed() < self.refresh_interval {
+                if let Ok(mut clock_guard) = self.clock.lock() {
+                    clock_guard.unix_timestamp += TICK_INTERVAL.as_secs() as i64;
+                }
+                continue;
+            }
+
             debug!("Updating the Solana Clock...");
             match fetch_clock(&self.rpc_client) {
                 Ok(clock) => {
@@ -43,6 +54,7 @@ impl ClockManager {
                             error!("Failed to lock the clock mutex for update: {:?}", err);
                         }
                     }
+                    last_refresh = Instant::now();
                     debug!("Updated the Solana Clock: {:?}", self.clock);
                 }
                 Err(e) => {
