@@ -1,15 +1,16 @@
 //! Keeps Pyth push-oracle accounts fresh when their sponsor stops pushing.
 //!
-//! marginfi prices a Pyth bank from the `PriceUpdateV2` account at
-//! `PDA([shard_id, feed_id], pyth-push-oracle)`, and rejects it once it is older than the bank's
-//! `oracle_max_age`. Normally Pyth (shard 0) or marginfi (shard 3301) sponsors those updates; if
-//! that stops, this service posts the update itself: pull the signed price from Hermes, post its
-//! VAA to the Wormhole core bridge, then `update_price_feed` on the push-oracle program.
+//! marginfi prices a Pyth bank from the Pyth-sponsored `PriceUpdateV2` account at
+//! `PDA([0, feed_id], pyth-push-oracle)`, and rejects it once it is older than the bank's
+//! `oracle_max_age`. If its sponsors stop pushing, this service posts the update itself: pull the
+//! signed price from Hermes, post its VAA to the Wormhole program the receiver verifies against,
+//! then `update_price_feed` on the push-oracle program.
 
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -19,20 +20,30 @@ use anchor_lang::{prelude::borsh, AccountDeserialize};
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use log::{debug, info, warn};
-use marginfi_type_crate::constants::{MARGINFI_SPONSORED_SHARD_ID, PYTH_SPONSORED_SHARD_ID};
+use marginfi_type_crate::constants::PYTH_SPONSORED_SHARD_ID;
 use pyth_solana_receiver_sdk::{
+    config::Config,
     pda::{get_config_address, get_treasury_address},
     price_update::PriceUpdateV2,
     PostUpdateParams, PYTH_PUSH_ORACLE_ID,
 };
-use pythnet_sdk::wire::v1::{AccumulatorUpdateData, MerklePriceUpdate, Proof};
+use pythnet_sdk::{
+    messages::Message,
+    wire::{
+        from_slice,
+        v1::{AccumulatorUpdateData, MerklePriceUpdate, Proof},
+    },
+};
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    client_error::ClientErrorKind,
+    rpc_client::RpcClient,
+    rpc_request::{RpcError, RpcResponseErrorData},
+};
 use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
-    pubkey,
     pubkey::Pubkey,
     signature::Keypair,
     signer::Signer,
@@ -43,14 +54,16 @@ use solana_system_interface::instruction as system_instruction;
 
 use crate::{cache::Cache, clock_manager, config::Eva01Config};
 
-const WORMHOLE_PROGRAM_ID: Pubkey = pubkey!("worm2ZoG2kUd4vFXhvjh93UUH596ayRfgQ2MgjNMTth");
 pub const DEFAULT_HERMES_URL: &str = "https://hermes.pyth.network";
 
 /// How often the cached price accounts are checked for staleness (in-memory, no RPC).
 const CHECK_INTERVAL: Duration = Duration::from_secs(5);
-/// Crank once a feed has burned this much of its `oracle_max_age`, so it is refreshed before it
-/// actually goes stale rather than after evaluations have already started failing.
-const STALE_FRACTION: f64 = 0.5;
+/// Two independent crankers keep these feeds fresh, so this one only adopts a feed once it is this
+/// many times past its `oracle_max_age`, i.e. long after the others gave up on it.
+const ADOPT_AGE_MULTIPLE: u64 = 3;
+/// While a feed is adopted it is refreshed at this fraction of its `oracle_max_age`, which keeps it
+/// inside the window marginfi accepts instead of letting it decay back to the adoption threshold.
+const REFRESH_AGE_DIVISOR: u64 = 2;
 
 /// Anchor `global:<name>` discriminators of the instructions this builds.
 const IX_INIT_ENCODED_VAA: [u8; 8] = [209, 193, 173, 25, 91, 202, 181, 218];
@@ -79,33 +92,42 @@ struct HermesBinary {
 struct StaleFeed {
     oracle: Pubkey,
     feed_id: [u8; 32],
-    shard_id: u16,
     age: i64,
     max_age: u64,
 }
 
 pub struct PythCranker {
+    wormhole_program_id: Pubkey,
     hermes_url: String,
     hermes_api_key: Option<String>,
     http_client: Client,
     rpc_client: RpcClient,
     payer: Keypair,
     cache: Arc<Cache>,
+    /// Feeds this cranker is keeping alive, and the publish time it last posted for each. A newer
+    /// publish time on-chain means their sponsor resumed, so the feed is released.
+    adopted: Mutex<HashMap<Pubkey, i64>>,
     stop: Arc<AtomicBool>,
 }
 
 impl PythCranker {
     pub fn new(config: &Eva01Config, cache: Arc<Cache>, stop: Arc<AtomicBool>) -> Result<Self> {
+        let rpc_client =
+            RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
+        let receiver_config = rpc_client.get_account(&get_config_address())?;
+        let wormhole_program_id = Config::try_deserialize(&mut receiver_config.data.as_slice())
+            .map_err(|e| anyhow!("Failed to read the Pyth receiver config: {e:?}"))?
+            .wormhole;
+
         Ok(Self {
+            wormhole_program_id,
             hermes_url: config.pyth_hermes_url.clone(),
             hermes_api_key: config.pyth_api_key.clone(),
             http_client: Client::new(),
-            rpc_client: RpcClient::new_with_commitment(
-                config.rpc_url.clone(),
-                CommitmentConfig::confirmed(),
-            ),
+            rpc_client,
             payer: Keypair::try_from(config.wallet_keypair.as_slice())?,
             cache,
+            adopted: Mutex::new(HashMap::new()),
             stop,
         })
     }
@@ -116,8 +138,8 @@ impl PythCranker {
             match self.stale_feeds() {
                 Ok(feeds) => {
                     for feed in feeds {
-                        warn!(
-                            "Pyth feed {} is {}s old (max {}s): the sponsor stopped, cranking it.",
+                        debug!(
+                            "PythCranker: cranking {} ({}s old, max {}s)",
                             feed.oracle, feed.age, feed.max_age
                         );
                         if let Err(e) = self.crank(&feed) {
@@ -132,10 +154,17 @@ impl PythCranker {
         info!("PythCranker stopped.");
     }
 
-    /// Push-oracle accounts that have burned most of their max age, with the feed id read from the
-    /// account itself and the shard whose PDA matches the bank's configured oracle.
+    /// Feeds to crank this cycle.
+    ///
+    /// A feed is adopted once it is [`ADOPT_AGE_MULTIPLE`] times past its max age, and is then kept
+    /// alive on the [`REFRESH_AGE_DIVISOR`] cadence until its sponsor comes back: a publish time
+    /// newer than the one we posted means somebody else cranked it, so we release it.
     fn stale_feeds(&self) -> Result<Vec<StaleFeed>> {
         let now = clock_manager::get_clock(&self.cache.clock)?.unix_timestamp;
+        let mut adopted = self
+            .adopted
+            .lock()
+            .map_err(|_| anyhow!("The adopted feeds map is poisoned"))?;
         let mut feeds = Vec::new();
 
         for (oracle, max_age) in self.cache.banks.get_pyth_push_oracles() {
@@ -151,33 +180,50 @@ impl PythCranker {
                 Err(_) => continue,
             };
 
-            let age = now.saturating_sub(price_update.price_message.publish_time);
-            if (age as f64) < (max_age as f64) * STALE_FRACTION {
-                continue;
-            }
+            let published = price_update.price_message.publish_time;
+            let threshold = match adopted.get(&oracle) {
+                Some(&ours) if published > ours => {
+                    info!(
+                        "PythCranker: the Pyth feed {oracle} is being cranked again, releasing it"
+                    );
+                    adopted.remove(&oracle);
+                    continue;
+                }
+                // Our own write may not have reached the cache yet, so age from whichever is newer.
+                Some(&ours) => {
+                    let age = now.saturating_sub(ours.max(published));
+                    if (age as u64) < max_age / REFRESH_AGE_DIVISOR {
+                        continue;
+                    }
+                    age
+                }
+                None => {
+                    let age = now.saturating_sub(published);
+                    if (age as u64) < max_age.saturating_mul(ADOPT_AGE_MULTIPLE) {
+                        continue;
+                    }
+                    warn!(
+                        "Pyth feed {oracle} is {age}s old (max {max_age}s): its sponsors stopped, \
+                         adopting it until they resume."
+                    );
+                    age
+                }
+            };
 
             let feed_id = price_update.price_message.feed_id;
-            let Some(shard_id) = self.shard_for(&oracle, &feed_id) else {
-                debug!("Pyth feed {oracle} is on an unknown shard, skipping the crank");
+            if price_feed_address(&feed_id) != oracle {
+                debug!("Pyth feed {oracle} is not a sponsored push feed, skipping the crank");
                 continue;
-            };
+            }
             feeds.push(StaleFeed {
                 oracle,
                 feed_id,
-                shard_id,
-                age,
+                age: threshold,
                 max_age,
             });
         }
 
         Ok(feeds)
-    }
-
-    /// The sponsored shard whose PDA is the bank's oracle account.
-    fn shard_for(&self, oracle: &Pubkey, feed_id: &[u8; 32]) -> Option<u16> {
-        [PYTH_SPONSORED_SHARD_ID, MARGINFI_SPONSORED_SHARD_ID]
-            .into_iter()
-            .find(|shard_id| &price_feed_address(*shard_id, feed_id) == oracle)
     }
 
     /// Latest signed update for a feed, as the accumulator payload Hermes serves.
@@ -212,6 +258,7 @@ impl PythCranker {
             .first()
             .ok_or_else(|| anyhow!("Hermes update carried no merkle price update"))?
             .clone();
+        let posted_publish_time = publish_time(&merkle_price_update)?;
 
         let payer = self.payer.pubkey();
         let encoded_vaa = Keypair::new();
@@ -229,16 +276,16 @@ impl PythCranker {
                 &encoded_vaa.pubkey(),
                 lamports,
                 vaa_account_size as u64,
-                &WORMHOLE_PROGRAM_ID,
+                &self.wormhole_program_id,
             ),
-            init_encoded_vaa_ix(&payer, &encoded_vaa.pubkey()),
-            write_encoded_vaa_ix(&payer, &encoded_vaa.pubkey(), 0, &vaa[..split]),
+            self.init_encoded_vaa_ix(&payer, &encoded_vaa.pubkey()),
+            self.write_encoded_vaa_ix(&payer, &encoded_vaa.pubkey(), 0, &vaa[..split]),
         ];
         self.send(&post, &[&self.payer, &encoded_vaa])?;
 
         let mut update = Vec::new();
         if split < vaa.len() {
-            update.push(write_encoded_vaa_ix(
+            update.push(self.write_encoded_vaa_ix(
                 &payer,
                 &encoded_vaa.pubkey(),
                 split as u32,
@@ -246,21 +293,25 @@ impl PythCranker {
             ));
         }
         update.extend([
-            verify_encoded_vaa_ix(&payer, &encoded_vaa.pubkey(), guardian_set_index(&vaa)?),
+            self.verify_encoded_vaa_ix(&payer, &encoded_vaa.pubkey(), guardian_set_index(&vaa)?),
             update_price_feed_ix(
                 &payer,
                 &encoded_vaa.pubkey(),
-                feed.shard_id,
                 feed.feed_id,
                 merkle_price_update,
             )?,
-            close_encoded_vaa_ix(&payer, &encoded_vaa.pubkey()),
+            self.close_encoded_vaa_ix(&payer, &encoded_vaa.pubkey()),
         ]);
         let signature = self.send(&update, &[&self.payer])?;
 
+        self.adopted
+            .lock()
+            .map_err(|_| anyhow!("The adopted feeds map is poisoned"))?
+            .insert(feed.oracle, posted_publish_time);
+
         info!(
-            "PythCranker: cranked the Pyth feed {} (shard {}): {}",
-            feed.oracle, feed.shard_id, signature
+            "PythCranker: cranked the Pyth feed {}: {}",
+            feed.oracle, signature
         );
         Ok(())
     }
@@ -273,15 +324,101 @@ impl PythCranker {
             signers,
             blockhash,
         );
-        Ok(self
-            .rpc_client
-            .send_and_confirm_transaction(&tx)?
-            .to_string())
+        match self.rpc_client.send_and_confirm_transaction(&tx) {
+            Ok(signature) => Ok(signature.to_string()),
+            Err(e) => {
+                if let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+                    data: RpcResponseErrorData::SendTransactionPreflightFailure(result),
+                    ..
+                }) = e.kind()
+                {
+                    if let Some(logs) = &result.logs {
+                        warn!("PythCranker: crank simulation failed:\n{}", logs.join("\n"));
+                    }
+                }
+                Err(e.into())
+            }
+        }
+    }
+
+    fn guardian_set_address(&self, index: u32) -> Pubkey {
+        Pubkey::find_program_address(
+            &[b"GuardianSet", &index.to_be_bytes()],
+            &self.wormhole_program_id,
+        )
+        .0
+    }
+
+    fn init_encoded_vaa_ix(&self, write_authority: &Pubkey, encoded_vaa: &Pubkey) -> Instruction {
+        Instruction {
+            program_id: self.wormhole_program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(*write_authority, true),
+                AccountMeta::new(*encoded_vaa, false),
+            ],
+            data: IX_INIT_ENCODED_VAA.to_vec(),
+        }
+    }
+
+    fn write_encoded_vaa_ix(
+        &self,
+        write_authority: &Pubkey,
+        draft_vaa: &Pubkey,
+        index: u32,
+        data: &[u8],
+    ) -> Instruction {
+        let mut ix_data = IX_WRITE_ENCODED_VAA.to_vec();
+        ix_data.extend_from_slice(&index.to_le_bytes());
+        ix_data.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        ix_data.extend_from_slice(data);
+
+        Instruction {
+            program_id: self.wormhole_program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(*write_authority, true),
+                AccountMeta::new(*draft_vaa, false),
+            ],
+            data: ix_data,
+        }
+    }
+
+    fn verify_encoded_vaa_ix(
+        &self,
+        write_authority: &Pubkey,
+        draft_vaa: &Pubkey,
+        guardian_set_index: u32,
+    ) -> Instruction {
+        Instruction {
+            program_id: self.wormhole_program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(*write_authority, true),
+                AccountMeta::new(*draft_vaa, false),
+                AccountMeta::new_readonly(self.guardian_set_address(guardian_set_index), false),
+            ],
+            data: IX_VERIFY_ENCODED_VAA_V1.to_vec(),
+        }
+    }
+
+    fn close_encoded_vaa_ix(&self, write_authority: &Pubkey, encoded_vaa: &Pubkey) -> Instruction {
+        Instruction {
+            program_id: self.wormhole_program_id,
+            accounts: vec![
+                AccountMeta::new(*write_authority, true),
+                AccountMeta::new(*encoded_vaa, false),
+            ],
+            data: IX_CLOSE_ENCODED_VAA.to_vec(),
+        }
     }
 }
 
-fn price_feed_address(shard_id: u16, feed_id: &[u8; 32]) -> Pubkey {
-    Pubkey::find_program_address(&[&shard_id.to_le_bytes(), feed_id], &PYTH_PUSH_ORACLE_ID).0
+/// The Pyth-sponsored push feed account for `feed_id`. marginfi no longer sponsors a shard of its
+/// own, so shard 0 is the only one banks point at.
+fn price_feed_address(feed_id: &[u8; 32]) -> Pubkey {
+    Pubkey::find_program_address(
+        &[&PYTH_SPONSORED_SHARD_ID.to_le_bytes(), feed_id],
+        &PYTH_PUSH_ORACLE_ID,
+    )
+    .0
 }
 
 /// Guardian set that signed the VAA: bytes 1..5 of the header, big-endian.
@@ -292,77 +429,9 @@ fn guardian_set_index(vaa: &[u8]) -> Result<u32> {
     Ok(u32::from_be_bytes(bytes.try_into()?))
 }
 
-fn guardian_set_address(index: u32) -> Pubkey {
-    Pubkey::find_program_address(
-        &[b"GuardianSet", &index.to_be_bytes()],
-        &WORMHOLE_PROGRAM_ID,
-    )
-    .0
-}
-
-fn init_encoded_vaa_ix(write_authority: &Pubkey, encoded_vaa: &Pubkey) -> Instruction {
-    Instruction {
-        program_id: WORMHOLE_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new_readonly(*write_authority, true),
-            AccountMeta::new(*encoded_vaa, false),
-        ],
-        data: IX_INIT_ENCODED_VAA.to_vec(),
-    }
-}
-
-fn write_encoded_vaa_ix(
-    write_authority: &Pubkey,
-    draft_vaa: &Pubkey,
-    index: u32,
-    data: &[u8],
-) -> Instruction {
-    let mut ix_data = IX_WRITE_ENCODED_VAA.to_vec();
-    ix_data.extend_from_slice(&index.to_le_bytes());
-    ix_data.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    ix_data.extend_from_slice(data);
-
-    Instruction {
-        program_id: WORMHOLE_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new_readonly(*write_authority, true),
-            AccountMeta::new(*draft_vaa, false),
-        ],
-        data: ix_data,
-    }
-}
-
-fn verify_encoded_vaa_ix(
-    write_authority: &Pubkey,
-    draft_vaa: &Pubkey,
-    guardian_set_index: u32,
-) -> Instruction {
-    Instruction {
-        program_id: WORMHOLE_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new_readonly(*write_authority, true),
-            AccountMeta::new(*draft_vaa, false),
-            AccountMeta::new_readonly(guardian_set_address(guardian_set_index), false),
-        ],
-        data: IX_VERIFY_ENCODED_VAA_V1.to_vec(),
-    }
-}
-
-fn close_encoded_vaa_ix(write_authority: &Pubkey, encoded_vaa: &Pubkey) -> Instruction {
-    Instruction {
-        program_id: WORMHOLE_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(*write_authority, true),
-            AccountMeta::new(*encoded_vaa, false),
-        ],
-        data: IX_CLOSE_ENCODED_VAA.to_vec(),
-    }
-}
-
 fn update_price_feed_ix(
     payer: &Pubkey,
     encoded_vaa: &Pubkey,
-    shard_id: u16,
     feed_id: [u8; 32],
     merkle_price_update: MerklePriceUpdate,
 ) -> Result<Instruction> {
@@ -373,7 +442,7 @@ fn update_price_feed_ix(
 
     let mut data = IX_UPDATE_PRICE_FEED.to_vec();
     data.extend_from_slice(&borsh::to_vec(&params)?);
-    data.extend_from_slice(&shard_id.to_le_bytes());
+    data.extend_from_slice(&PYTH_SPONSORED_SHARD_ID.to_le_bytes());
     data.extend_from_slice(&feed_id);
 
     Ok(Instruction {
@@ -384,11 +453,21 @@ fn update_price_feed_ix(
             AccountMeta::new_readonly(*encoded_vaa, false),
             AccountMeta::new_readonly(get_config_address(), false),
             AccountMeta::new(get_treasury_address(DEFAULT_TREASURY_ID), false),
-            AccountMeta::new(price_feed_address(shard_id, &feed_id), false),
+            AccountMeta::new(price_feed_address(&feed_id), false),
             AccountMeta::new_readonly(system_program::ID, false),
         ],
         data,
     })
+}
+
+/// Publish time carried by the update we post, used to recognise our own write later.
+fn publish_time(update: &MerklePriceUpdate) -> Result<i64> {
+    match from_slice::<byteorder::BE, Message>(update.message.as_ref())
+        .map_err(|e| anyhow!("Failed to parse the price message: {e:?}"))?
+    {
+        Message::PriceFeedMessage(message) => Ok(message.publish_time),
+        _ => Err(anyhow!("The Hermes update is not a price feed message")),
+    }
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

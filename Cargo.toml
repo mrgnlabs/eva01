@@ -34,6 +34,7 @@ backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 base64 = "0.22.1"
 base64ct = "=1.7.3"
 bincode = "1.3.3"
+byteorder = "1.5.0"
 bytemuck = "1.22.0"
 bytemuck_derive = "1.10.2"
 chrono = "0.4.44"
@@ -61,7 +62,7 @@ yellowstone-grpc-client = "10.2.0"
 yellowstone-grpc-proto = "10.1.1"
 
 solana-dex-superagg = { git = "https://github.com/0dotxyz/solana-dex-superagg", rev = "0feb633981961307fa170130895a887324ffa923" }
-pyth-solana-receiver-sdk = { git = "https://github.com/0dotxyz/pyth-crosschain", rev = "f170d205e47a6ea34ad30c424d9ec8cc61a1f1fc" }
+pyth-solana-receiver-sdk = { git = "https://github.com/0dotxyz/pyth-crosschain", rev = "f170d205e47a6ea34ad30c424d9ec8cc61a1f1fc", features = ["pro-compatible"] }
 pythnet-sdk = { git = "https://github.com/0dotxyz/pyth-crosschain", rev = "f170d205e47a6ea34ad30c424d9ec8cc61a1f1fc" }
 switchboard-on-demand-client = { git = "https://github.com/switchboard-xyz/switchboard-sdk", rev = "d2c50213359bb35b5e0902ffcd4bafb4315860c1" }
 

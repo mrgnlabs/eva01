@@ -18,6 +18,7 @@ pub struct Eva01Config {
     pub swb_program_id: Pubkey,
     pub pyth_hermes_url: String,
     pub pyth_api_key: Option<String>,
+    pub pyth_cranker_enabled: bool,
     pub crossbar_api_url: Option<String>,
     pub project0_api_url: Option<String>,
     pub jup_swap_api_url: String,
@@ -110,6 +111,8 @@ impl Eva01Config {
             .unwrap_or_else(|_| crate::utils::pyth_cranker::DEFAULT_HERMES_URL.to_string());
 
         let pyth_api_key = std::env::var("PYTH_API_KEY").ok();
+        let pyth_cranker_enabled =
+            std::env::var("PYTH_CRANKER_ENABLED").is_ok_and(|value| value == "true");
 
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").ok();
         // Default cap 0.001 SOL (matches Jito's typical max tip floor).
@@ -135,6 +138,7 @@ impl Eva01Config {
             swb_program_id,
             pyth_hermes_url,
             pyth_api_key,
+            pyth_cranker_enabled,
             crossbar_api_url,
             project0_api_url,
             jup_swap_api_url,
