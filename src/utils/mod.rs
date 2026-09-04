@@ -8,8 +8,11 @@ pub mod swb_price_fetcher;
 use anyhow::{anyhow, Error, Result};
 use backoff::ExponentialBackoff;
 use log::{debug, error};
-use marginfi::{bank_authority_seed, errors::MarginfiError, state::bank::BankVaultType};
-use marginfi_type_crate::types::BankConfig;
+use marginfi::errors::MarginfiError;
+use marginfi_type_crate::{
+    bank_authority_seed,
+    types::{BankConfig, BankVaultType},
+};
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{

@@ -3,10 +3,10 @@ use crate::{
     wrappers::bank::BankWrapper,
 };
 use anyhow::{anyhow, Result};
-use marginfi::{state::bank_config::BankConfigImpl, utils::is_marginfi_asset_tag};
+use marginfi::state::bank_config::BankConfigImpl;
 use marginfi_type_crate::{
     constants::{ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, ASSET_TAG_KAMINO},
-    types::{Bank, OracleSetup},
+    types::{is_marginfi_asset_tag, Bank, OracleSetup},
 };
 use solana_sdk::{account::Account, pubkey::Pubkey};
 use std::{
@@ -132,6 +132,13 @@ impl BanksCache {
                         | OracleSetup::KaminoPythPush
                         | OracleSetup::DriftPythPull
                         | OracleSetup::JuplendPythPull
+                        | OracleSetup::PythMSOL
+                        | OracleSetup::KaminoMSOL
+                        | OracleSetup::JuplendMSOL
+                        | OracleSetup::PythLST
+                        | OracleSetup::KaminoLST
+                        | OracleSetup::JuplendLST
+                        | OracleSetup::PTPyth
                 )
             })
             .map(|bank| {

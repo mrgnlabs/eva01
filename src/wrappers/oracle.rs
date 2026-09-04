@@ -28,18 +28,33 @@ pub fn oracle_account_keys(bank: &Bank, bank_address: &Pubkey) -> Result<Vec<Pub
     };
 
     let addresses = match bank.config.oracle_setup {
-        OracleSetup::PythPushOracle | OracleSetup::SwitchboardPull => vec![key(0)?],
+        // `oracle_keys[0]` alone: a plain feed (Pyth/Switchboard/Scope), or the Exponent vault
+        // that PTFixed prices from directly.
+        OracleSetup::PythPushOracle
+        | OracleSetup::SwitchboardPull
+        | OracleSetup::Scope
+        | OracleSetup::PTFixed => vec![key(0)?],
         OracleSetup::StakedWithPythPush => {
             let sol_pool = key(SOL_POOL_INDEX)?;
             let onramp = staked_onramp(bank).unwrap_or(sol_pool);
             vec![key(0)?, key(1)?, sol_pool, onramp]
         }
+        // Feed + one multiplier account: the venue's reserve/market/lending state, the Marinade
+        // state (mSOL/SOL), the SPL stake pool (LST/SOL), or the Exponent vault (PT).
         OracleSetup::KaminoPythPush
         | OracleSetup::KaminoSwitchboardPull
         | OracleSetup::DriftPythPull
         | OracleSetup::DriftSwitchboardPull
         | OracleSetup::JuplendPythPull
-        | OracleSetup::JuplendSwitchboardPull => vec![key(0)?, key(1)?],
+        | OracleSetup::JuplendSwitchboardPull
+        | OracleSetup::PythMSOL
+        | OracleSetup::PythLST
+        | OracleSetup::PTPyth => vec![key(0)?, key(1)?],
+        // Feed + venue multiplier (`oracle_keys[1]`) + native multiplier (`oracle_keys[2]`).
+        OracleSetup::KaminoMSOL
+        | OracleSetup::JuplendMSOL
+        | OracleSetup::KaminoLST
+        | OracleSetup::JuplendLST => vec![key(0)?, key(1)?, key(2)?],
         OracleSetup::FixedKamino | OracleSetup::FixedDrift | OracleSetup::FixedJuplend => {
             vec![key(1)?]
         }

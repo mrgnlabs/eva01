@@ -67,16 +67,16 @@ switchboard-on-demand-client = { git = "https://github.com/switchboard-xyz/switc
 
 [dependencies.marginfi_type_crate]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-#tag = "mrgn-0.1.10-rc1"
-rev = "e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+tag = "mrgn-0.1.11-rc1"
+#rev = "c2ff79441abed715008abdeafefbec4f447a4bda"
 package = "marginfi-type-crate"
 default-features = false
 features = ["client"]
 
 [dependencies.marginfi]
 git = "https://github.com/mrgnlabs/marginfi-v2"
-#tag = "mrgn-0.1.10-rc1"
-rev = "e3c9b4e104d22c54aca180c31b90ff44c337f42d"
+tag = "mrgn-0.1.11-rc1"
+#rev = "c2ff79441abed715008abdeafefbec4f447a4bda"
 default-features = false
 features = ["client", "no-entrypoint", "custom-heap"]
 

@@ -139,6 +139,9 @@ impl PythCranker {
         let mut feeds = Vec::new();
 
         for (oracle, max_age) in self.cache.banks.get_pyth_push_oracles() {
+            if max_age == 0 {
+                continue;
+            }
             let account = match self.cache.oracles.try_get_account(&oracle) {
                 Ok(account) => account,
                 Err(_) => continue,
